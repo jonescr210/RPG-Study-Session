@@ -1,0 +1,622 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Study Adventure Mission Console</title>
+    <link rel="stylesheet" href="styles.css?v=parse-issue-highlight-1">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Text-Based Study Adventure</p>
+          <h1>Mission Console</h1>
+        </div>
+        <div class="topbar-actions">
+          <button id="copyScriptBtn" class="ghost" type="button">Copy DM Script</button>
+          <button id="resetBtn" class="danger" type="button">Reset</button>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="setup-panel" id="setupPanel" aria-label="Mission preflight">
+          <div class="panel-header">
+            <p class="eyebrow">Instructor Console</p>
+            <h2>Mission Preflight</h2>
+            <p>Build the scenario, load the study material, and send the squad into the facility.</p>
+          </div>
+
+          <div class="setup-command-strip" aria-label="Preflight overview">
+            <div>
+              <span>Input Mode</span>
+              <strong id="setupModeStatus">Device Lobby</strong>
+            </div>
+            <div>
+              <span>Question Routing</span>
+              <strong id="setupRouteStatus">Randomized</strong>
+            </div>
+            <div>
+              <span>DM Engine</span>
+              <strong id="setupDmStatus">Local Ready</strong>
+            </div>
+            <div>
+              <span>Systems</span>
+              <strong id="setupSystemsStatus">Checking</strong>
+            </div>
+          </div>
+
+          <div class="preflight-grid">
+            <div class="preflight-column">
+              <section class="setup-section">
+                <div class="section-heading">
+                  <span>01</span>
+                  <div>
+                    <h3>Mission</h3>
+                    <p>Set the tone and location for this run.</p>
+                  </div>
+                </div>
+                <label>
+                  Mission Theme
+                  <select id="missionType">
+                    <option>Horror</option>
+                    <option>Military Thriller</option>
+                    <option>Sci-Fi Survival</option>
+                    <option>Cyberpunk</option>
+                    <option>Fantasy Tech</option>
+                    <option>Post-Apocalyptic</option>
+                    <option>Naval Operations</option>
+                    <option>Space Station</option>
+                    <option>Alien Survival</option>
+                    <option>Custom</option>
+                  </select>
+                </label>
+                <label>
+                  Custom Environment
+                  <input id="customTheme" type="text" placeholder="RF bunker under a storm-damaged mountain">
+                </label>
+                <div class="environment-generator">
+                  <button id="generateEnvironmentBtn" class="secondary" type="button">Generate Environment + Boss</button>
+                  <p id="generatedEnvironmentNote" class="field-note">Let the local DM create a custom mission location and persistent enemy.</p>
+                </div>
+              </section>
+
+              <section class="setup-section">
+                <div class="section-heading">
+                  <span>02</span>
+                  <div>
+                    <h3>Squad</h3>
+                    <p>Choose whether answers come from the teacher screen or individual player devices.</p>
+                  </div>
+                </div>
+                <div class="device-mode-toggle" aria-label="Answer input mode">
+                  <label>
+                    <input id="deviceModeSingle" type="radio" name="deviceMode" value="single">
+                    <span>
+                      Single Device
+                      <small>All answers are entered on the teacher screen.</small>
+                    </span>
+                  </label>
+                  <label>
+                    <input id="deviceModeMulti" type="radio" name="deviceMode" value="multi" checked>
+                    <span>
+                      Multi Device
+                      <small>Players join and answer from their own devices.</small>
+                    </span>
+                  </label>
+                </div>
+                <label>
+                  Squad Roster
+                  <textarea id="playersInput" rows="6" placeholder="Single Device: enter one player per line. Multi Device: players join in the lobby."></textarea>
+                </label>
+                <p id="playerCountNote" class="field-note">Players join after mission setup.</p>
+              </section>
+            </div>
+
+            <div class="preflight-column">
+              <section class="setup-section study-material">
+                <div class="section-heading">
+                  <span>03</span>
+                  <div>
+                    <h3>Study Material</h3>
+                    <p>Paste your question bank or load the built-in demonstration set.</p>
+                  </div>
+                </div>
+
+                <div class="setup-inline-grid">
+                  <label>
+                    Question Source
+                    <select id="questionSource">
+                      <option value="demo">Demo Questions</option>
+                      <option value="paste">Paste Questions</option>
+                      <option value="saved">Saved Question Sets</option>
+                    </select>
+                  </label>
+                  <label>
+                    Mission Length
+                    <input id="missionLength" type="number" min="1" max="60" placeholder="Auto">
+                    <span class="field-note">Defaults to the available question total.</span>
+                  </label>
+                </div>
+
+                <label id="difficultyPoolsGroup" class="toggle-field">
+                  <input id="difficultyPools" type="checkbox">
+                  <span>
+                    Use difficulty pools
+                    <small>Let the mission draw harder material for major encounters.</small>
+                  </span>
+                </label>
+
+                <label class="toggle-field">
+                  <input id="bossTestMode" type="checkbox">
+                  <span>
+                    Boss test start
+                    <small>Start one encounter before the final boss to test readiness, phase plans, and boss flow.</small>
+                  </span>
+                </label>
+
+                <label class="toggle-field">
+                  <input id="actionDrivenMode" type="checkbox">
+                  <span>
+                    Action-driven mission
+                    <small>No study questions. Players submit field actions each turn and the mission resolves from their choices.</small>
+                  </span>
+                </label>
+
+                <label id="questionBankGroup">
+                  Study Questions
+                  <textarea id="questionsInput" rows="14" placeholder="Multiple choice:&#10;1. What is the primary purpose of a heat sink in a transistor circuit?&#10;A. To increase voltage gain&#10;B. To provide a path for DC current&#10;C. To dissipate heat and lower operating temperature&#10;D. To act as a voltage regulator&#10;Correct Answer: C&#10;&#10;Fill in the blank:&#10;2. A device that converts DC power into AC power is a ______.&#10;Correct Answer: Inverter&#10;&#10;True/False:&#10;3. A diode allows current to flow in only one direction.&#10;Correct Answer: True"></textarea>
+                </label>
+
+                <div id="difficultyQuestionBanks" class="difficulty-question-banks" hidden>
+                  <label>
+                    Easy Questions
+                    <textarea id="easyQuestionsInput" rows="6" placeholder="Paste introductory questions here."></textarea>
+                  </label>
+                  <label>
+                    Medium Questions
+                    <textarea id="mediumQuestionsInput" rows="6" placeholder="Paste standard questions here."></textarea>
+                  </label>
+                  <label>
+                    Hard Questions
+                    <textarea id="hardQuestionsInput" rows="6" placeholder="Paste advanced questions here."></textarea>
+                  </label>
+                </div>
+
+                <p id="questionCountNote" class="question-count-note">No questions parsed yet.</p>
+                <details id="questionParseIssues" class="parse-issues" hidden>
+                  <summary>Review unparsed blocks</summary>
+                  <ol id="questionParseIssuesList"></ol>
+                </details>
+
+                <section class="saved-question-sets" id="savedQuestionSetsPanel">
+                  <div class="saved-question-header">
+                    <div>
+                      <h4>Saved Question Sets</h4>
+                      <p id="savedQuestionSetsNote">No saved sets yet.</p>
+                    </div>
+                    <div class="saved-question-save">
+                      <input id="questionSetNameInput" type="text" placeholder="Set name">
+                      <button id="saveQuestionSetBtn" class="secondary" type="button">Save Pasted Set</button>
+                    </div>
+                  </div>
+                  <div id="savedQuestionSetsList" class="saved-question-list"></div>
+                </section>
+
+                <details id="questionTips">
+                  <summary>NotebookLM question prompt</summary>
+                  <p>Copy this prompt into NotebookLM when generating a study bank.</p>
+                  <textarea id="notebookPrompt" class="prompt-template" rows="24" readonly>Generate study questions from the provided source material for a classroom review game.
+
+Use these supported formats only.
+
+Multiple-choice format:
+
+1. Write the question on one line.
+A. First answer choice
+B. Second answer choice
+C. Third answer choice
+D. Fourth answer choice
+Correct Answer: C
+
+Fill-in-the-blank format:
+
+2. Write a sentence or prompt with a blank shown as ______.
+Correct Answer: Short answer
+
+True/False format:
+
+3. Write a clear true-or-false statement.
+Correct Answer: True
+
+Add one blank line between questions.
+For multiple-choice questions, use exactly four answer choices labeled A, B, C, and D.
+For fill-in-the-blank questions, do not include answer choices.
+For true/false questions, do not include answer choices; use "Correct Answer: True" or "Correct Answer: False".
+Place the correct answer on its own final line.
+Do not add explanations, headings, introductions, summaries, tables, or markdown formatting.
+Mix straightforward recall questions with application questions.
+Make about 70% multiple choice, 15% fill in the blank, and 15% true/false.
+Fill-in-the-blank answers should usually be 1-3 words.
+
+Generate [NUMBER] questions.</textarea>
+                  <button id="copyNotebookPromptBtn" class="secondary" type="button">Copy NotebookLM Prompt</button>
+                </details>
+              </section>
+            </div>
+          </div>
+
+          <section class="setup-section engine-section">
+            <div class="section-heading">
+              <span>04</span>
+              <div>
+                <h3>DM Engine</h3>
+                <p>Local Auto DM is the recommended classroom mode.</p>
+              </div>
+            </div>
+            <div class="setup-inline-grid engine-grid">
+              <label>
+                Mission Control
+                <select id="dmEngine">
+                  <option value="local">Local Auto DM</option>
+                  <option value="manual">Manual Live DM</option>
+                  <option value="classic">Classic Browser</option>
+                </select>
+              </label>
+              <details class="advanced-settings" id="advancedSettings">
+                <summary>Advanced settings</summary>
+                <label id="localDmProviderGroup">
+                  Local DM Provider
+                  <select id="localDmProvider">
+                    <option value="lmstudio">LM Studio</option>
+                    <option value="ollama">Ollama</option>
+                  </select>
+                </label>
+                <label id="ollamaModelGroup">
+                  Local DM Model
+                  <select id="ollamaModel">
+                    <option value="google/gemma-4-e4b">google/gemma-4-e4b</option>
+                    <option value="qwen/qwen3.5-9b">qwen/qwen3.5-9b</option>
+                    <option value="qwen3.5:9b">qwen3.5:9b</option>
+                    <option value="llama3.2:3b">llama3.2:3b</option>
+                  </select>
+                  <span id="ollamaModelStatus" class="field-note">Checking installed local models...</span>
+                </label>
+                <label class="toggle-field">
+                  <input id="emergencyTimerEnabled" type="checkbox" checked>
+                  <span>
+                    Challenge countdown
+                    <small>Timed challenges resolve as a failure if the squad does not act.</small>
+                  </span>
+                </label>
+                <label class="toggle-field">
+                  <input id="fastModeEnabled" type="checkbox">
+                  <span>
+                    Fast classroom pacing
+                    <small>Shorter narration, faster text, and shorter pauses between questions.</small>
+                  </span>
+                </label>
+                <label id="emergencyTimerDurationGroup">
+                  Challenge countdown
+                  <select id="emergencyTimerDuration">
+                    <option value="8">8 seconds</option>
+                    <option value="12">12 seconds</option>
+                    <option value="15">15 seconds</option>
+                    <option value="20">20 seconds</option>
+                    <option value="30">30 seconds</option>
+                    <option value="60" selected>60 seconds</option>
+                    <option value="90">90 seconds</option>
+                  </select>
+                </label>
+              </details>
+            </div>
+            <div class="system-check-panel" id="systemCheckPanel">
+              <div class="system-check-heading">
+                <div>
+                  <strong>System Link Check</strong>
+                  <span>Verifies the game server, local narrator, and optional voice system before launch.</span>
+                </div>
+                <button id="recheckSystemsBtn" class="secondary" type="button">Recheck</button>
+              </div>
+              <div class="system-check-list" id="systemCheckList">
+                <div class="system-check-row checking"><span>Game Server</span><strong>Checking</strong></div>
+                <div class="system-check-row checking"><span>Local Narrator</span><strong>Checking</strong></div>
+                <div class="system-check-row checking"><span>Voice System</span><strong>Checking</strong></div>
+              </div>
+            </div>
+          </section>
+
+          <div class="setup-footer">
+            <div>
+              <p id="preflightSummary" class="preflight-summary">Add players and study questions to begin.</p>
+              <p id="launchStatus" class="launch-status" aria-live="polite"></p>
+            </div>
+            <div class="setup-actions">
+              <button id="loadSampleBtn" class="secondary" type="button">Load Demo Session</button>
+              <button id="startBtn" type="button">Start Mission</button>
+            </div>
+          </div>
+
+          <section class="join-lobby" id="joinLobby" hidden>
+            <div class="join-lobby-dialog">
+              <div class="section-heading">
+                <span>05</span>
+                <div>
+                  <h3>Squad Join Lobby</h3>
+                  <p>Have players scan the QR code, enter their name, and join before the mission deploys.</p>
+                </div>
+              </div>
+              <div class="join-lobby-grid">
+                <div>
+                  <div class="player-session-heading">
+                    <div>
+                      <span>Room Code</span>
+                      <strong id="lobbyRoomCode">----</strong>
+                    </div>
+                    <a id="lobbyJoinLink" href="player.html" target="_blank" rel="noreferrer">Open player screen</a>
+                  </div>
+                  <p id="lobbyJoinHelp" class="field-note">Waiting for lobby link.</p>
+                  <div class="player-qr-code" id="lobbyQrCode" aria-label="Lobby join QR code"></div>
+                </div>
+                <div>
+                  <h4>Joined Players</h4>
+                  <div id="lobbyPlayerList" class="lobby-player-list"></div>
+                  <div class="sim-tool-panel">
+                    <strong>Multi-Device Test Tool</strong>
+                    <p>Add simulated devices for quick boss-fight testing.</p>
+                    <button id="addSimPlayersBtn" class="secondary" type="button">Add 3 Sim Players</button>
+                  </div>
+                  <div class="setup-actions">
+                    <button id="cancelLobbyBtn" class="secondary" type="button">Back to Setup</button>
+                    <button id="launchFromLobbyBtn" type="button" disabled>Launch Mission</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </section>
+
+        <section class="map-panel" id="mapPanel" aria-label="Mission map">
+          <div class="panel-header compact">
+            <div>
+              <p class="eyebrow">Visual Dungeon Map</p>
+              <h2 id="mapTitle">Awaiting Mission</h2>
+            </div>
+            <div class="progress-pill" id="progressPill">0 / 0</div>
+          </div>
+          <div class="map-wrap">
+            <svg id="missionMap" viewBox="0 0 900 560" role="img" aria-label="Mission route map"></svg>
+            <div class="map-question-overlay" id="mapQuestionOverlay" hidden></div>
+            <div class="map-radar-sweep" aria-hidden="true"></div>
+            <div class="map-static-overlay" aria-hidden="true"></div>
+          </div>
+          <div class="map-control-dock" id="mapControlDock" aria-label="Single-device answer controls"></div>
+          <div class="route-telemetry" id="routeTelemetry">
+            <div class="route-telemetry-header">
+              <span>Route Telemetry</span>
+              <strong id="routeTelemetryLabel">Standing by</strong>
+            </div>
+            <div class="route-progress-track">
+              <div class="route-progress-fill" id="routeProgressFill"></div>
+            </div>
+          </div>
+          <div class="map-emergency-timer" id="mapEmergencyTimer" hidden>
+            <span id="mapEmergencyTimerLabel">Challenge Window</span>
+            <strong id="mapEmergencyTimerValue">12.0</strong>
+            <button id="mapEmergencyPauseBtn" class="secondary" type="button">Pause Timer</button>
+          </div>
+          <div class="legend">
+            <div class="map-legend-dots">
+              <span><i class="node-dot current"></i> Current</span>
+              <span><i class="node-dot correct"></i> Correct</span>
+              <span><i class="node-dot incorrect"></i> Incorrect</span>
+              <span><i class="node-dot boss"></i> Boss</span>
+              <span><i class="node-dot recovery"></i> Recovery</span>
+            </div>
+            <div id="simulatorPanel" class="sim-tool-panel sim-legend-panel" hidden></div>
+          </div>
+          <div class="mission-progress" id="missionProgress">
+            <span>Mission Progress</span>
+            <strong id="progressSummary">0 / 0 questions resolved</strong>
+          </div>
+          <div class="last-answer-panel" id="lastAnswerPanel" hidden>
+            <div class="last-answer-heading">
+              <span>Previous Response</span>
+              <strong id="lastAnswerResult"></strong>
+            </div>
+            <div class="last-answer-grid">
+              <div>
+                <span>Submitted</span>
+                <strong id="lastSubmittedDisplay"></strong>
+              </div>
+              <div>
+                <span>Required</span>
+                <strong id="lastCorrectDisplay"></strong>
+              </div>
+            </div>
+          </div>
+          <div class="status-grid" id="statusGrid" aria-label="Player-facing status"></div>
+          <div class="inventory-actions" id="inventoryActions" aria-label="Shared supplies"></div>
+          <section class="player-session-panel" id="playerSessionPanel" hidden>
+            <div class="player-session-heading">
+              <div>
+                <span>Player Devices</span>
+                <strong id="playerRoomCode">----</strong>
+              </div>
+              <div class="player-session-actions">
+                <button id="playerDeviceToggleBtn" class="secondary" type="button">Collapse</button>
+                <a id="playerJoinLink" href="player.html" target="_blank" rel="noreferrer">Open player screen</a>
+              </div>
+            </div>
+            <div class="player-session-content">
+              <p id="playerJoinHelp">Students join from the same Wi-Fi using this room code.</p>
+              <div id="playerAnswerBoard" class="player-answer-board"></div>
+            </div>
+          </section>
+        </section>
+
+        <section class="play-panel" id="playPanel" aria-label="Mission play area">
+          <div class="briefing" id="briefingCard">
+            <p class="eyebrow">Briefing</p>
+            <h2>Ready for orders</h2>
+            <p>Start a mission to generate the briefing, player state, dungeon route, and first challenge.</p>
+          </div>
+
+          <div class="mission-log-heading" id="missionLogHeading">
+            <span>Mission Log</span>
+          </div>
+
+          <article class="encounter" id="encounterCard" aria-live="polite">
+            <div class="transmission-display placeholder-transmission">
+              <div class="transmission-heading">
+                <strong>RECEIVING TRANSMISSION...</strong>
+                <span class="signal-bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+              </div>
+              <div class="transmission-waveform" aria-hidden="true">
+                <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+                <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+              </div>
+              <p>Mission channel standing by.</p>
+            </div>
+          </article>
+
+          <section class="status-update-panel" id="statusUpdatePanel" aria-label="Status updates">
+            <div class="status-update-heading">
+              <span>Status Updates</span>
+            </div>
+            <div class="status-update-feed" id="statusUpdateFeed">
+              <p class="muted-small">No status changes yet.</p>
+            </div>
+          </section>
+
+          <div class="play-control-dock" id="playControlDock">
+            <div class="control-row" id="answerControls"></div>
+          </div>
+
+          <section class="mission-utility-shell" id="missionUtilityShell" aria-label="Mission utility drawers">
+            <div class="mission-utility-buttons">
+              <button id="missionControlsToggle" class="secondary" type="button" aria-expanded="false">Mission Controls</button>
+              <button id="missionLogHistoryToggle" class="secondary" type="button" aria-expanded="false">Mission Log History</button>
+              <button id="debugConsoleToggle" class="secondary" type="button" aria-expanded="false">Debug Console</button>
+              <button id="missionAudioToggle" class="secondary" type="button" aria-expanded="false">Mission Audio</button>
+            </div>
+            <div id="missionUtilityOverlay" class="mission-utility-overlay" hidden>
+              <section id="missionControlsPanel" class="mission-utility-panel mission-controls-panel" hidden></section>
+              <div id="missionLogHistoryPanel" class="mission-utility-panel mission-log-history-panel" hidden>
+                <div class="debug-console-heading">
+                  <span>Mission Log History</span>
+                  <button id="missionLogHistoryClear" class="secondary" type="button">Clear</button>
+                </div>
+                <div id="missionLogHistoryList" class="mission-log-history-list">
+                  <p>No mission logs yet.</p>
+                </div>
+              </div>
+              <div id="debugConsolePanel" class="mission-utility-panel debug-console-panel" hidden>
+                <div class="debug-console-heading">
+                  <span>Response Timing</span>
+                  <button id="debugConsoleClear" class="secondary" type="button">Clear</button>
+                </div>
+                <div id="debugConsoleLog" class="debug-console-log">
+                  <p>No debug events yet.</p>
+                </div>
+              </div>
+              <section class="mission-utility-panel mission-audio-panel" id="missionAudioPanel" aria-label="Mission audio controls" hidden>
+              <div class="mission-audio-heading">
+                <span>Text to Speech</span>
+                <strong id="ttsStatus">Silent</strong>
+              </div>
+              <div class="mission-audio-controls">
+                <button id="ttsPlayBtn" class="secondary" type="button">Play</button>
+                <button id="ttsPauseBtn" class="secondary" type="button">Pause</button>
+                <button id="ttsStopBtn" class="secondary" type="button">Stop</button>
+                <button id="ttsReplayBtn" class="secondary" type="button">Replay</button>
+              </div>
+              <div class="mission-audio-settings">
+                <label>
+                  Provider
+                  <select id="ttsProvider">
+                    <option value="browser">Browser Voice</option>
+                    <option value="piper">Local Piper</option>
+                  </select>
+                </label>
+                <label>
+                  Voice
+                  <select id="ttsVoiceSelect"></select>
+                </label>
+                <label>
+                  Speed
+                  <input id="ttsRate" type="range" min="0.75" max="1.25" step="0.05" value="1">
+                </label>
+                <label>
+                  Text Delay
+                  <select id="ttsTextDelay">
+                    <option value="0">0.0 sec</option>
+                    <option value="500">0.5 sec</option>
+                    <option value="1000" selected>1.0 sec</option>
+                    <option value="1500">1.5 sec</option>
+                    <option value="2000">2.0 sec</option>
+                  </select>
+                </label>
+              </div>
+              <div class="mission-audio-toggles">
+                <label><input id="ttsAutoLog" type="checkbox"> Auto-read log</label>
+                <label><input id="ttsAutoQuestion" type="checkbox"> Auto-read questions</label>
+              </div>
+            </section>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <section class="deployment-overlay" id="deploymentOverlay" aria-live="polite" hidden>
+      <div class="deployment-scanline" aria-hidden="true"></div>
+      <div class="deployment-shell">
+        <div class="deployment-header">
+          <p class="eyebrow">Mission Deployment Sequence</p>
+          <strong id="deploymentTheme">TACTICAL UPLINK</strong>
+        </div>
+        <div class="deployment-grid">
+          <section class="deployment-map" aria-label="Deployment route scan">
+            <div class="deployment-map-grid" aria-hidden="true"></div>
+            <div class="deployment-route" id="deploymentRoute" aria-hidden="true"></div>
+            <div class="deployment-threat-pings" id="deploymentThreatPings" aria-hidden="true"></div>
+            <div class="deployment-sweep" aria-hidden="true"></div>
+            <div class="deployment-signal-spike" aria-hidden="true"></div>
+          </section>
+          <section class="deployment-console">
+            <div class="deployment-status">
+              <span id="deploymentPhase">ESTABLISHING SQUAD UPLINK</span>
+              <strong id="deploymentElapsed">00:00</strong>
+            </div>
+            <div class="deployment-progress-track">
+              <div class="deployment-progress-fill" id="deploymentProgressFill"></div>
+            </div>
+            <div class="deployment-waveform" aria-hidden="true">
+              <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+              <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+            </div>
+            <div class="deployment-roster">
+              <p>Squad Channel</p>
+              <div id="deploymentRoster"></div>
+              <div class="operators-deployed-message" id="deploymentReadyMessage" hidden>OPERATORS DEPLOYED</div>
+            </div>
+            <p class="deployment-fragment" id="deploymentFragment">Scanning emergency channels...</p>
+          </section>
+        </div>
+        <div class="deployment-title" id="deploymentTitle" hidden>
+          <span>SIGNAL ACQUIRED</span>
+          <strong id="deploymentOperation">OPERATION PENDING</strong>
+        </div>
+      </div>
+    </section>
+
+  <script src="shared-data.js?v=cleanup-2"></script>
+  <script src="question-bank.js?v=cleanup-2"></script>
+  <script src="local-dm-prompts.js?v=cleanup-2"></script>
+  <script src="player-session.js?v=cleanup-1"></script>
+  <script src="action-rooms.js?v=cleanup-1"></script>
+  <script src="tts-manager.js?v=cleanup-1"></script>
+  <script src="app.js?v=cleanup-4"></script>
+</body>
+</html>

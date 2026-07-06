@@ -1,0 +1,24 @@
+logs/
+*.log
+node-output-check.txt
+
+# Local runtime state
+dm-answer.json
+dm-briefing.json
+dm-feed.json
+question-sets.json
+
+# Local speech engine downloads/cache
+.tts-cache/
+tts/
+
+# Local manual checkpoints/backups
+checkpoints/
+
+# Scratch screenshots and generated captures
+desktop-screenshot.png
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
