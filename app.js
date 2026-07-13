@@ -113,6 +113,7 @@ const state = {
   emergencyTimerEnabled: true,
   emergencyTimerDuration: 60,
   fastMode: window.localStorage.getItem("studyAdventureFastMode") === "true",
+  teacherTextSize: window.localStorage.getItem("studyAdventureTeacherTextSize") || "normal",
   emergencyTimer: null,
   transmissionPending: false,
   transmissionStartedAt: 0,
@@ -201,6 +202,16 @@ function continueCountdownSeconds() {
   return isFastMode() ? 5 : 10;
 }
 
+function normalizeTeacherTextSize(value) {
+  return ["compact", "normal", "large", "xl", "projector"].includes(value) ? value : "normal";
+}
+
+function applyTeacherTextSize(value = state.teacherTextSize) {
+  state.teacherTextSize = normalizeTeacherTextSize(value);
+  document.documentElement.dataset.teacherTextSize = state.teacherTextSize;
+  if (els.teacherTextSize) els.teacherTextSize.value = state.teacherTextSize;
+}
+
 function typewriterDelayFor(previous) {
   if (isFastMode()) {
     return /[.!?]/.test(previous) ? 36 : previous === "," ? 18 : 7;
@@ -251,6 +262,8 @@ const els = {
   fastModeEnabled: document.getElementById("fastModeEnabled"),
   emergencyTimerDuration: document.getElementById("emergencyTimerDuration"),
   emergencyTimerDurationGroup: document.getElementById("emergencyTimerDurationGroup"),
+  teacherTextSize: document.getElementById("teacherTextSize"),
+  teacherTextSizeGroup: document.getElementById("teacherTextSizeGroup"),
   missionLength: document.getElementById("missionLength"),
   questionBankGroup: document.getElementById("questionBankGroup"),
   questionTips: document.getElementById("questionTips"),
@@ -450,6 +463,11 @@ if (els.fastModeEnabled) {
     updateSetupSummary();
   });
 }
+applyTeacherTextSize();
+els.teacherTextSize?.addEventListener("change", () => {
+  applyTeacherTextSize(els.teacherTextSize.value);
+  window.localStorage.setItem("studyAdventureTeacherTextSize", state.teacherTextSize);
+});
 els.mapEmergencyPauseBtn?.addEventListener("click", toggleEmergencyTimerPause);
 els.missionControlsToggle?.addEventListener("click", () => toggleUtilityPanel("controls"));
 els.missionLogHistoryToggle?.addEventListener("click", () => toggleUtilityPanel("history"));
