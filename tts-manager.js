@@ -14,6 +14,22 @@
     const escapeAttribute = options.escapeAttribute || escapeHtml;
     const cleanText = options.cleanText || ((value) => String(value || "").trim());
     const getCurrentLogText = options.getCurrentLogText || (() => "");
+    const onPlaybackStart = typeof options.onPlaybackStart === "function" ? options.onPlaybackStart : () => {};
+    const onPlaybackEnd = typeof options.onPlaybackEnd === "function" ? options.onPlaybackEnd : () => {};
+    state.ttsPlaybackToken = Number(state.ttsPlaybackToken) || 0;
+    let playbackActive = false;
+
+    function notifyPlaybackStart() {
+      if (playbackActive) return;
+      playbackActive = true;
+      onPlaybackStart();
+    }
+
+    function notifyPlaybackEnd() {
+      if (!playbackActive) return;
+      playbackActive = false;
+      onPlaybackEnd();
+    }
 
     function init() {
       if (!els.missionAudioPanel) return;
@@ -207,6 +223,7 @@
       return rememberPlayback(new Promise((resolve) => {
         const finish = () => {
           if (state.ttsPlaybackResolve === finish) state.ttsPlaybackResolve = null;
+          notifyPlaybackEnd();
           resolve();
         };
         state.ttsPlaybackResolve = finish;
@@ -229,6 +246,7 @@
             state.ttsAudioUrl = audioUrl;
             state.ttsAudio = audio;
             audio.onplay = () => {
+              notifyPlaybackStart();
               if (els.ttsStatus) els.ttsStatus.textContent = options.label || "Reading";
               if (els.ttsPauseBtn) els.ttsPauseBtn.textContent = "Pause";
             };
@@ -269,8 +287,9 @@
         if (els.ttsStatus) els.ttsStatus.textContent = "Browser TTS unavailable";
         return Promise.resolve();
       }
+      notifyPlaybackEnd();
       resolveActivePlayback();
-      state.ttsPlaybackToken += 1;
+      const playbackToken = ++state.ttsPlaybackToken;
       window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(clean);
       const voice = selectedVoice();
@@ -279,12 +298,18 @@
       utterance.pitch = 1;
       utterance.volume = 1;
       utterance.onstart = () => {
+        notifyPlaybackStart();
         if (els.ttsStatus) els.ttsStatus.textContent = options.label || "Reading";
         if (els.ttsPauseBtn) els.ttsPauseBtn.textContent = "Pause";
       };
       return rememberPlayback(new Promise((resolve) => {
         const finish = () => {
           if (state.ttsPlaybackResolve === finish) state.ttsPlaybackResolve = null;
+          if (playbackToken !== state.ttsPlaybackToken) {
+            resolve();
+            return;
+          }
+          notifyPlaybackEnd();
           if (els.ttsStatus) els.ttsStatus.textContent = "Ready";
           if (els.ttsPauseBtn) els.ttsPauseBtn.textContent = "Pause";
           resolve();
@@ -312,6 +337,7 @@
         URL.revokeObjectURL(state.ttsAudioUrl);
         state.ttsAudioUrl = "";
       }
+      notifyPlaybackEnd();
       if (els.ttsStatus) els.ttsStatus.textContent = "Stopped";
       if (els.ttsPauseBtn) els.ttsPauseBtn.textContent = "Pause";
     }
@@ -324,6 +350,7 @@
           if (els.ttsStatus) els.ttsStatus.textContent = "Reading";
         } else {
           state.ttsAudio.pause();
+          notifyPlaybackEnd();
           if (els.ttsPauseBtn) els.ttsPauseBtn.textContent = "Resume";
           if (els.ttsStatus) els.ttsStatus.textContent = "Paused";
         }
@@ -332,10 +359,12 @@
       if (!supported()) return;
       if (window.speechSynthesis.paused) {
         window.speechSynthesis.resume();
+        notifyPlaybackStart();
         if (els.ttsPauseBtn) els.ttsPauseBtn.textContent = "Pause";
         if (els.ttsStatus) els.ttsStatus.textContent = "Reading";
       } else if (window.speechSynthesis.speaking) {
         window.speechSynthesis.pause();
+        notifyPlaybackEnd();
         if (els.ttsPauseBtn) els.ttsPauseBtn.textContent = "Resume";
         if (els.ttsStatus) els.ttsStatus.textContent = "Paused";
       }

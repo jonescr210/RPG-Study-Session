@@ -7,6 +7,7 @@ dm-answer.json
 dm-briefing.json
 dm-feed.json
 question-sets.json
+music-presets.json
 
 # Local speech engine downloads/cache
 .tts-cache/

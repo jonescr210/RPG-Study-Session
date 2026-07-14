@@ -29,6 +29,37 @@ const playerSessionApi = {
   ...(window.StudyAdventurePlayerSession || {})
 };
 
+const AUDIO_EFFECT_SELECTIONS_STORAGE_KEY = "studyAdventureAudioEffectSelections";
+const FINAL_SUBMISSION_HOLD_MS = 800;
+const DEPLOYMENT_ROSTER_REVEAL_DELAY_MS = 1450;
+const DEPLOYMENT_ROSTER_STAGGER_MS = 160;
+const GAME_SFX_EVENTS = [
+  { id: "ui", label: "UI / Button" },
+  { id: "typewriter", label: "Text Typewriter" },
+  { id: "question", label: "Query Incoming" },
+  { id: "submitted", label: "Player Submitted" },
+  { id: "correct", label: "Correct Answer" },
+  { id: "incorrect", label: "Incorrect Answer" },
+  { id: "damage", label: "Damage Taken" },
+  { id: "loot", label: "Item Found" },
+  { id: "timer", label: "Timer Tick" },
+  { id: "emergency", label: "Emergency Alert" },
+  { id: "transition", label: "Room Transition" },
+  { id: "recovery", label: "Recovery Room" },
+  { id: "boss", label: "Boss Encounter" },
+  { id: "failure", label: "Mission Failure" },
+  { id: "ending", label: "Mission Ending" }
+];
+
+function readStoredAudioEffectSelections() {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(AUDIO_EFFECT_SELECTIONS_STORAGE_KEY) || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
 const state = {
   started: false,
   resolved: false,
@@ -45,6 +76,8 @@ const state = {
   currentNode: 0,
   nodes: [],
   roomNames: {},
+  mapPositions: [],
+  mapLayoutSeed: 0,
   bossAreaNames: { mid: "", final: "" },
   bossPhasePlans: {},
   bossPhasePlanRequests: {},
@@ -83,7 +116,13 @@ const state = {
   playerAnswers: [],
   playerActions: [],
   playerSubmissionLogKey: "",
+  resolutionDelayPending: false,
+  resolutionDelayPromptId: "",
+  resolutionDelayTimer: null,
   processedPlayerActionIds: new Set(),
+  simulatorAutoAnswer: window.localStorage.getItem("studyAdventureSimulatorAutoAnswer") === "true",
+  simulatorAutoAnswerPromptId: "",
+  simulatorAutoAnswerTimers: [],
   playerParticipants: [],
   playerJoinUrl: "",
   playerJoinUrlReady: false,
@@ -97,6 +136,9 @@ const state = {
   teamReady: false,
   bossReadyPending: false,
   bossReadyChecks: new Set(),
+  bossAudioStartedNodes: new Set(),
+  bossMusicStartedNodes: new Set(),
+  bossEyesStrikeTimer: null,
   answerPending: false,
   lastSubmittedAnswer: "",
   previousAnswerFlashId: "",
@@ -114,6 +156,28 @@ const state = {
   emergencyTimerDuration: 60,
   fastMode: window.localStorage.getItem("studyAdventureFastMode") === "true",
   teacherTextSize: window.localStorage.getItem("studyAdventureTeacherTextSize") || "normal",
+  sfxPreset: window.localStorage.getItem("studyAdventureSfxPreset") || "subtle",
+  youtubeMusicUrl: window.localStorage.getItem("studyAdventureYoutubeMusicUrl") || "",
+  youtubeBossMusicUrl: window.localStorage.getItem("studyAdventureYoutubeBossMusicUrl") || "",
+  backgroundMusicLoaded: false,
+  backgroundMusicMode: "normal",
+  backgroundMusicVideoId: "",
+  backgroundMusicFadeTimer: null,
+  backgroundMusicTransitionRunId: 0,
+  backgroundMusicCurrentVolume: 72,
+  backgroundMusicFadingOutForBossReady: false,
+  ttsPlaybackActive: false,
+  audioEffects: [],
+  audioEffectDefaults: {},
+  audioEffectSelections: readStoredAudioEffectSelections(),
+  audioEffectPlayers: {},
+  lastSfxAt: {},
+  introSequenceAudio: null,
+  introSequenceAudioRunId: 0,
+  introSequenceFadingAudio: null,
+  introSequenceFadeTimer: null,
+  failureAudio: null,
+  failureAudioRunId: 0,
   emergencyTimer: null,
   transmissionPending: false,
   transmissionStartedAt: 0,
@@ -123,8 +187,14 @@ const state = {
   deploymentCompletionStartedAt: 0,
   deploymentCompletionWait: 0,
   deploymentTimer: null,
+  deploymentReadySfxTimer: null,
+  deploymentRosterSfxTimers: [],
+  deploymentRosterAudio: [],
   deploymentReady: false,
   deploymentRunId: 0,
+  setupTransitionTimers: [],
+  dashboardBootTimers: [],
+  dashboardBootAudio: [],
   openingWaitStartedAt: 0,
   openingWaitTimer: null,
   mapQuestionOverlayHideTimer: null,
@@ -132,6 +202,7 @@ const state = {
   mapQuestionAlertActive: false,
   questionSurfaceVisible: false,
   questionPresentationReady: false,
+  questionRevealRunId: 0,
   continueGateTimer: null,
   teamFailurePending: false,
   logPresentationPending: false,
@@ -144,6 +215,8 @@ const state = {
   savedQuestionSetsCache: [],
   selectedQuestionSetIdsCache: [],
   questionSetsServerReady: false,
+  savedMusicPresetsCache: [],
+  musicPresetsServerReady: false,
   parseIssueHighlightKey: "",
   localRequestCounter: 0,
   localDmQueue: Promise.resolve(),
@@ -176,11 +249,14 @@ const FINAL_BOSS_QUESTIONS = 6;
 const ROUTE_TRAVEL_MS = 4600;
 const QUESTION_SET_STORAGE_KEY = "studyAdventureQuestionSets";
 const SELECTED_QUESTION_SETS_KEY = "studyAdventureSelectedQuestionSets";
+const MUSIC_PRESET_STORAGE_KEY = "studyAdventureMusicPresets";
 const STATUS_NAME_DISPLAY_LIMIT = 14;
 const PLAYER_ACTION_COOLDOWN_MS = 120000;
 const ACTION_DIALOGUE_HOLD_MS = 12000;
 const PLAYER_PROMPT_DELIVERY_GRACE_MS = 3000;
 const GENERATED_ENVIRONMENT_NOTE = "Let the local DM create a custom mission location and persistent enemy.";
+const BACKGROUND_MUSIC_VOLUME = 72;
+const BACKGROUND_MUSIC_DUCK_VOLUME = 38;
 
 function isFastMode() {
   return Boolean(state.fastMode);
@@ -264,6 +340,15 @@ const els = {
   emergencyTimerDurationGroup: document.getElementById("emergencyTimerDurationGroup"),
   teacherTextSize: document.getElementById("teacherTextSize"),
   teacherTextSizeGroup: document.getElementById("teacherTextSizeGroup"),
+  sfxPreset: document.getElementById("sfxPreset"),
+  sfxMappingGrid: document.getElementById("sfxMappingGrid"),
+  youtubeMusicUrl: document.getElementById("youtubeMusicUrl"),
+  youtubeBossMusicUrl: document.getElementById("youtubeBossMusicUrl"),
+  savedMusicPresetsPanel: document.getElementById("savedMusicPresetsPanel"),
+  savedMusicPresetsNote: document.getElementById("savedMusicPresetsNote"),
+  savedMusicPresetsList: document.getElementById("savedMusicPresetsList"),
+  musicPresetNameInput: document.getElementById("musicPresetNameInput"),
+  saveMusicPresetBtn: document.getElementById("saveMusicPresetBtn"),
   missionLength: document.getElementById("missionLength"),
   questionBankGroup: document.getElementById("questionBankGroup"),
   questionTips: document.getElementById("questionTips"),
@@ -302,6 +387,11 @@ const els = {
   ttsTextDelay: document.getElementById("ttsTextDelay"),
   ttsAutoLog: document.getElementById("ttsAutoLog"),
   ttsAutoQuestion: document.getElementById("ttsAutoQuestion"),
+  backgroundMusicPanel: document.getElementById("backgroundMusicPanel"),
+  backgroundMusicStatus: document.getElementById("backgroundMusicStatus"),
+  backgroundMusicLoadBtn: document.getElementById("backgroundMusicLoadBtn"),
+  backgroundMusicStopBtn: document.getElementById("backgroundMusicStopBtn"),
+  backgroundMusicEmbed: document.getElementById("backgroundMusicEmbed"),
   statusUpdatePanel: document.getElementById("statusUpdatePanel"),
   statusUpdateFeed: document.getElementById("statusUpdateFeed"),
   statusGrid: document.getElementById("statusGrid"),
@@ -323,11 +413,14 @@ const els = {
   routeTelemetryLabel: document.getElementById("routeTelemetryLabel"),
   routeProgressFill: document.getElementById("routeProgressFill"),
   mapQuestionOverlay: document.getElementById("mapQuestionOverlay"),
+  mapFailureOverlay: document.getElementById("mapFailureOverlay"),
   mapEmergencyTimer: document.getElementById("mapEmergencyTimer"),
   mapEmergencyTimerLabel: document.getElementById("mapEmergencyTimerLabel"),
   mapEmergencyTimerValue: document.getElementById("mapEmergencyTimerValue"),
   mapEmergencyPauseBtn: document.getElementById("mapEmergencyPauseBtn"),
   deploymentOverlay: document.getElementById("deploymentOverlay"),
+  setupTransitionBlackout: document.getElementById("setupTransitionBlackout"),
+  setupTransitionLabel: document.getElementById("setupTransitionLabel"),
   deploymentTheme: document.getElementById("deploymentTheme"),
   deploymentPhase: document.getElementById("deploymentPhase"),
   deploymentElapsed: document.getElementById("deploymentElapsed"),
@@ -397,6 +490,34 @@ els.playerDeviceToggleBtn?.addEventListener("click", () => {
 els.resetBtn.addEventListener("click", resetMission);
 els.copyScriptBtn.addEventListener("click", copyDmScript);
 els.recheckSystemsBtn?.addEventListener("click", checkMissionSystems);
+els.sfxPreset?.addEventListener("change", () => {
+  state.sfxPreset = els.sfxPreset.value || "subtle";
+  window.localStorage.setItem("studyAdventureSfxPreset", state.sfxPreset);
+  syncMapAudioReactor();
+  playGameSfx("ui");
+});
+els.sfxMappingGrid?.addEventListener("change", (event) => {
+  const select = event.target.closest(".sfx-event-select");
+  if (!select) return;
+  const eventId = select.dataset.eventId || "";
+  if (!eventId) return;
+  state.audioEffectSelections[eventId] = select.value;
+  window.localStorage.setItem(AUDIO_EFFECT_SELECTIONS_STORAGE_KEY, JSON.stringify(state.audioEffectSelections));
+  playGameSfx(eventId);
+});
+els.youtubeMusicUrl?.addEventListener("input", () => {
+  state.youtubeMusicUrl = els.youtubeMusicUrl.value.trim();
+  window.localStorage.setItem("studyAdventureYoutubeMusicUrl", state.youtubeMusicUrl);
+  syncBackgroundMusicPanel();
+});
+els.youtubeBossMusicUrl?.addEventListener("input", () => {
+  state.youtubeBossMusicUrl = els.youtubeBossMusicUrl.value.trim();
+  window.localStorage.setItem("studyAdventureYoutubeBossMusicUrl", state.youtubeBossMusicUrl);
+  syncBackgroundMusicPanel();
+});
+els.saveMusicPresetBtn?.addEventListener("click", saveCurrentMusicPreset);
+els.backgroundMusicLoadBtn?.addEventListener("click", () => loadBackgroundMusic());
+els.backgroundMusicStopBtn?.addEventListener("click", () => stopBackgroundMusic());
 els.missionType.addEventListener("change", () => {
   state.setupGeneratedMission = null;
   if (els.generatedEnvironmentNote) els.generatedEnvironmentNote.textContent = GENERATED_ENVIRONMENT_NOTE;
@@ -464,6 +585,9 @@ if (els.fastModeEnabled) {
   });
 }
 applyTeacherTextSize();
+initGameAudioControls();
+renderSavedMusicPresets();
+loadSavedMusicPresetsFromServer();
 els.teacherTextSize?.addEventListener("change", () => {
   applyTeacherTextSize(els.teacherTextSize.value);
   window.localStorage.setItem("studyAdventureTeacherTextSize", state.teacherTextSize);
@@ -484,6 +608,7 @@ els.debugConsoleClear?.addEventListener("click", () => {
   renderDebugConsole();
 });
 initTtsControls();
+syncBackgroundMusicPanel();
 syncSetupMode();
 renderSavedQuestionSets();
 loadSavedQuestionSetsFromServer();
@@ -517,6 +642,730 @@ function copyNotebookPrompt() {
   });
 }
 
+function initGameAudioControls() {
+  if (els.sfxPreset) els.sfxPreset.value = state.sfxPreset;
+  if (els.youtubeMusicUrl) els.youtubeMusicUrl.value = state.youtubeMusicUrl;
+  if (els.youtubeBossMusicUrl) els.youtubeBossMusicUrl.value = state.youtubeBossMusicUrl;
+  loadAudioEffectManifest();
+}
+
+function readLocalSavedMusicPresets() {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(MUSIC_PRESET_STORAGE_KEY) || "[]");
+    return Array.isArray(parsed) ? parsed.filter((preset) => preset && preset.id && preset.name) : [];
+  } catch {
+    return [];
+  }
+}
+
+function readSavedMusicPresets() {
+  if (!state.musicPresetsServerReady && !state.savedMusicPresetsCache.length) {
+    state.savedMusicPresetsCache = readLocalSavedMusicPresets();
+  }
+  return state.savedMusicPresetsCache;
+}
+
+function writeSavedMusicPresets(presets) {
+  state.savedMusicPresetsCache = Array.isArray(presets)
+    ? presets.filter((preset) => preset && preset.id && preset.name)
+    : [];
+  window.localStorage.setItem(MUSIC_PRESET_STORAGE_KEY, JSON.stringify(state.savedMusicPresetsCache));
+  persistMusicPresetsToServer();
+}
+
+function mergeMusicPresets(primary = [], secondary = []) {
+  const byId = new Map();
+  for (const preset of [...secondary, ...primary]) {
+    if (!preset?.id || !preset?.name) continue;
+    byId.set(preset.id, preset);
+  }
+  return [...byId.values()];
+}
+
+function loadSavedMusicPresetsFromServer() {
+  state.savedMusicPresetsCache = readLocalSavedMusicPresets();
+  return fetch("/api/music-presets", { cache: "no-store" })
+    .then((response) => response.ok ? response.json() : null)
+    .then((payload) => {
+      if (!payload?.ok) return;
+      const serverPresets = Array.isArray(payload.presets)
+        ? payload.presets.filter((preset) => preset && preset.id && preset.name)
+        : [];
+      const localPresets = readLocalSavedMusicPresets();
+      if (serverPresets.length) {
+        const merged = mergeMusicPresets(serverPresets, localPresets);
+        state.savedMusicPresetsCache = merged;
+        window.localStorage.setItem(MUSIC_PRESET_STORAGE_KEY, JSON.stringify(merged));
+        if (merged.length !== serverPresets.length) persistMusicPresetsToServer();
+      } else if (localPresets.length) {
+        state.savedMusicPresetsCache = localPresets;
+        persistMusicPresetsToServer();
+      } else {
+        state.savedMusicPresetsCache = [];
+      }
+      state.musicPresetsServerReady = true;
+      renderSavedMusicPresets();
+    })
+    .catch(() => {
+      state.musicPresetsServerReady = false;
+    });
+}
+
+function persistMusicPresetsToServer() {
+  fetch("/api/music-presets", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ presets: state.savedMusicPresetsCache })
+  })
+    .then((response) => response.ok ? response.json() : null)
+    .then((payload) => {
+      if (!payload?.ok) return;
+      state.musicPresetsServerReady = true;
+      state.savedMusicPresetsCache = Array.isArray(payload.presets)
+        ? payload.presets
+        : state.savedMusicPresetsCache;
+      window.localStorage.setItem(MUSIC_PRESET_STORAGE_KEY, JSON.stringify(state.savedMusicPresetsCache));
+      renderSavedMusicPresets();
+    })
+    .catch(() => {
+      state.musicPresetsServerReady = false;
+    });
+}
+
+function saveCurrentMusicPreset() {
+  const normalUrl = els.youtubeMusicUrl?.value.trim() || "";
+  const bossUrl = els.youtubeBossMusicUrl?.value.trim() || "";
+  if (!normalUrl && !bossUrl) {
+    setLaunchStatus("Add a normal or boss YouTube link before saving a music preset.", true);
+    return;
+  }
+  if ((normalUrl && !extractYouTubeId(normalUrl)) || (bossUrl && !extractYouTubeId(bossUrl))) {
+    setLaunchStatus("One of the music links is not a valid YouTube URL.", true);
+    return;
+  }
+
+  const name = sanitizeText(els.musicPresetNameInput?.value, { maxLength: 70 });
+  if (!name) {
+    setLaunchStatus("Enter a name for this music preset.", true);
+    els.musicPresetNameInput?.focus();
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const presets = readSavedMusicPresets();
+  const existing = presets.find((preset) => normalize(preset.name) === normalize(name));
+  const savedPreset = {
+    id: existing?.id || `music-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
+    name,
+    normalUrl,
+    bossUrl,
+    createdAt: existing?.createdAt || now,
+    updatedAt: now
+  };
+  writeSavedMusicPresets(existing
+    ? presets.map((preset) => preset.id === existing.id ? savedPreset : preset)
+    : [...presets, savedPreset]);
+  if (els.musicPresetNameInput) els.musicPresetNameInput.value = "";
+  setLaunchStatus(`${existing ? "Updated" : "Saved"} music preset "${name}".`);
+  renderSavedMusicPresets();
+}
+
+function renderSavedMusicPresets() {
+  if (!els.savedMusicPresetsList || !els.savedMusicPresetsNote) return;
+  const presets = readSavedMusicPresets();
+  els.savedMusicPresetsNote.textContent = presets.length
+    ? `${presets.length} saved preset${presets.length === 1 ? "" : "s"}. Load one to use its normal and boss tracks.`
+    : "No saved presets yet.";
+  els.savedMusicPresetsList.innerHTML = presets.length ? presets.map((preset) => {
+    const normalLabel = preset.normalUrl ? "Normal track linked" : "No normal track";
+    const bossLabel = preset.bossUrl ? "Boss track linked" : "No boss track";
+    return `
+      <div class="saved-question-row">
+        <div class="saved-music-links">
+          <strong>${escapeHtml(preset.name)}</strong>
+          <small title="${escapeAttribute(preset.normalUrl || "")}">${escapeHtml(normalLabel)}</small>
+          <small title="${escapeAttribute(preset.bossUrl || "")}">${escapeHtml(bossLabel)}</small>
+        </div>
+        <div class="saved-question-actions">
+          <button class="secondary loadMusicPresetBtn" type="button" data-preset-id="${escapeAttribute(preset.id)}">Load</button>
+          <button class="secondary renameMusicPresetBtn" type="button" data-preset-id="${escapeAttribute(preset.id)}">Rename</button>
+          <button class="secondary deleteMusicPresetBtn" type="button" data-preset-id="${escapeAttribute(preset.id)}">Delete</button>
+        </div>
+      </div>
+    `;
+  }).join("") : `<p class="muted-small">Saved normal and boss music pairs will appear here.</p>`;
+
+  els.savedMusicPresetsList.querySelectorAll(".loadMusicPresetBtn").forEach((button) => {
+    button.addEventListener("click", () => loadMusicPreset(button.dataset.presetId || ""));
+  });
+  els.savedMusicPresetsList.querySelectorAll(".renameMusicPresetBtn").forEach((button) => {
+    button.addEventListener("click", () => renameMusicPreset(button.dataset.presetId || ""));
+  });
+  els.savedMusicPresetsList.querySelectorAll(".deleteMusicPresetBtn").forEach((button) => {
+    button.addEventListener("click", () => deleteMusicPreset(button.dataset.presetId || ""));
+  });
+}
+
+function loadMusicPreset(id) {
+  const preset = readSavedMusicPresets().find((entry) => entry.id === id);
+  if (!preset) return;
+  state.youtubeMusicUrl = preset.normalUrl || "";
+  state.youtubeBossMusicUrl = preset.bossUrl || "";
+  if (els.youtubeMusicUrl) els.youtubeMusicUrl.value = state.youtubeMusicUrl;
+  if (els.youtubeBossMusicUrl) els.youtubeBossMusicUrl.value = state.youtubeBossMusicUrl;
+  if (els.musicPresetNameInput) els.musicPresetNameInput.value = preset.name;
+  window.localStorage.setItem("studyAdventureYoutubeMusicUrl", state.youtubeMusicUrl);
+  window.localStorage.setItem("studyAdventureYoutubeBossMusicUrl", state.youtubeBossMusicUrl);
+  syncBackgroundMusicPanel();
+  setLaunchStatus(`Loaded music preset "${preset.name}".`);
+}
+
+function renameMusicPreset(id) {
+  const presets = readSavedMusicPresets();
+  const preset = presets.find((entry) => entry.id === id);
+  if (!preset) return;
+  const nextName = sanitizeText(window.prompt("Rename music preset:", preset.name), { maxLength: 70 });
+  if (!nextName || nextName === preset.name) return;
+  if (presets.some((entry) => entry.id !== id && normalize(entry.name) === normalize(nextName))) {
+    setLaunchStatus(`A music preset named "${nextName}" already exists.`, true);
+    return;
+  }
+  writeSavedMusicPresets(presets.map((entry) => entry.id === id
+    ? { ...entry, name: nextName, updatedAt: new Date().toISOString() }
+    : entry));
+  setLaunchStatus(`Renamed music preset to "${nextName}".`);
+  renderSavedMusicPresets();
+}
+
+function deleteMusicPreset(id) {
+  const presets = readSavedMusicPresets();
+  const preset = presets.find((entry) => entry.id === id);
+  if (!preset || !window.confirm(`Delete saved music preset "${preset.name}"?`)) return;
+  writeSavedMusicPresets(presets.filter((entry) => entry.id !== id));
+  setLaunchStatus(`Deleted music preset "${preset.name}".`);
+  renderSavedMusicPresets();
+}
+
+function loadAudioEffectManifest() {
+  if (els.sfxMappingGrid) {
+    els.sfxMappingGrid.innerHTML = `<p class="field-note">Loading custom sound effect list...</p>`;
+  }
+  fetch(`audio-effects.json?ts=${Date.now()}`, { cache: "no-store" })
+    .then((response) => {
+      if (!response.ok) throw new Error("audio-effects.json not found");
+      return response.json();
+    })
+    .then((manifest) => {
+      state.audioEffects = Array.isArray(manifest.effects)
+        ? manifest.effects
+            .filter((effect) => effect && effect.id && effect.src)
+            .map((effect) => ({
+              id: String(effect.id),
+              label: String(effect.label || effect.id),
+              src: String(effect.src)
+            }))
+        : [];
+      state.audioEffectDefaults = manifest.defaults && typeof manifest.defaults === "object" ? manifest.defaults : {};
+      renderAudioEffectMapping();
+    })
+    .catch((error) => {
+      state.audioEffects = [];
+      state.audioEffectDefaults = {};
+      renderAudioEffectMapping(error.message);
+    });
+}
+
+function renderAudioEffectMapping(errorMessage = "") {
+  if (!els.sfxMappingGrid) return;
+  if (!state.audioEffects.length) {
+    els.sfxMappingGrid.innerHTML = `
+      <p class="field-note">No custom sound files are listed yet. Add files under <strong>audio-effects</strong>, then list them in <strong>audio-effects.json</strong>.</p>
+      ${errorMessage ? `<p class="field-note warning">${escapeHtml(errorMessage)}</p>` : ""}
+    `;
+    return;
+  }
+  const options = [
+    `<option value="">No sound</option>`,
+    ...state.audioEffects.map((effect) => `<option value="${escapeAttribute(effect.id)}">${escapeHtml(effect.label)}</option>`)
+  ].join("");
+  els.sfxMappingGrid.innerHTML = GAME_SFX_EVENTS.map((eventInfo) => {
+    const selected = Object.prototype.hasOwnProperty.call(state.audioEffectSelections, eventInfo.id)
+      ? state.audioEffectSelections[eventInfo.id]
+      : state.audioEffectDefaults[eventInfo.id] || "";
+    return `
+      <label class="sfx-event-field">
+        <span>${escapeHtml(eventInfo.label)}</span>
+        <select class="sfx-event-select" data-event-id="${escapeAttribute(eventInfo.id)}">
+          ${options}
+        </select>
+      </label>
+    `.trim();
+  }).join("");
+  els.sfxMappingGrid.querySelectorAll(".sfx-event-select").forEach((select) => {
+    const eventId = select.dataset.eventId || "";
+    const selected = Object.prototype.hasOwnProperty.call(state.audioEffectSelections, eventId)
+      ? state.audioEffectSelections[eventId]
+      : state.audioEffectDefaults[eventId] || "";
+    select.value = selected;
+  });
+}
+
+function audioEffectForEvent(eventName) {
+  const selectedId = Object.prototype.hasOwnProperty.call(state.audioEffectSelections, eventName)
+    ? state.audioEffectSelections[eventName]
+    : state.audioEffectDefaults[eventName] || "";
+  if (!selectedId) return null;
+  return state.audioEffects.find((effect) => effect.id === selectedId) || null;
+}
+
+function playGameSfx(eventName, options = {}) {
+  if (state.sfxPreset === "off") return;
+  if (eventName === "ending") stopBackgroundMusic();
+  const nowMs = Date.now();
+  const minInterval = Number.isFinite(options.minInterval) ? Math.max(0, options.minInterval) : 90;
+  if (nowMs - (state.lastSfxAt[eventName] || 0) < minInterval) return;
+  const effect = audioEffectForEvent(eventName);
+  if (!effect) return;
+  state.lastSfxAt[eventName] = nowMs;
+  try {
+    const key = `${effect.id}:${effect.src}`;
+    const audio = state.audioEffectPlayers[key] || new Audio(effect.src);
+    state.audioEffectPlayers[key] = audio;
+    if (audio.studyAdventureFadeTimer) window.clearInterval(audio.studyAdventureFadeTimer);
+    audio.studyAdventureFadeTimer = null;
+    audio.pause();
+    audio.currentTime = 0;
+    const baseVolume = state.sfxPreset === "cinematic" ? 0.92 : 0.48;
+    audio.volume = Math.max(0, Math.min(1, baseVolume * (Number.isFinite(options.volumeScale) ? options.volumeScale : 1)));
+    audio.play().catch(() => {});
+    if (options.pulse !== false) pulseMapAudioReactor(eventName);
+  } catch {
+    // Custom SFX should never interrupt the game loop.
+  }
+}
+
+function stopGameSfx(eventName) {
+  const effect = audioEffectForEvent(eventName);
+  if (!effect) return;
+  const key = `${effect.id}:${effect.src}`;
+  const audio = state.audioEffectPlayers[key];
+  if (!audio) return;
+  try {
+    if (audio.studyAdventureFadeTimer) window.clearInterval(audio.studyAdventureFadeTimer);
+    audio.studyAdventureFadeTimer = null;
+    audio.pause();
+    audio.currentTime = 0;
+  } catch {
+    // Custom SFX should never interrupt the game loop.
+  }
+}
+
+function fadeOutGameSfx(eventName, durationMs = 450) {
+  const effect = audioEffectForEvent(eventName);
+  if (!effect) return;
+  const key = `${effect.id}:${effect.src}`;
+  const audio = state.audioEffectPlayers[key];
+  if (!audio || audio.paused) return;
+  if (audio.studyAdventureFadeTimer) window.clearInterval(audio.studyAdventureFadeTimer);
+  const startedAt = performance.now();
+  const startingVolume = audio.volume;
+  audio.studyAdventureFadeTimer = window.setInterval(() => {
+    const progress = Math.min(1, (performance.now() - startedAt) / Math.max(1, durationMs));
+    audio.volume = Math.max(0, startingVolume * (1 - progress));
+    if (progress < 1) return;
+    window.clearInterval(audio.studyAdventureFadeTimer);
+    audio.studyAdventureFadeTimer = null;
+    try {
+      audio.pause();
+      audio.currentTime = 0;
+      audio.volume = startingVolume;
+    } catch {
+      // Custom SFX should never interrupt the game loop.
+    }
+  }, 35);
+}
+
+function stopAllGameSfx() {
+  Object.values(state.audioEffectPlayers).forEach((audio) => {
+    try {
+      if (audio.studyAdventureFadeTimer) window.clearInterval(audio.studyAdventureFadeTimer);
+      audio.studyAdventureFadeTimer = null;
+      audio.pause();
+      audio.currentTime = 0;
+    } catch {
+      // Audio cleanup must not interrupt a reset or a new mission.
+    }
+  });
+  state.lastSfxAt = {};
+}
+
+function startIntroSequenceAudio() {
+  stopIntroSequenceAudio();
+  if (state.sfxPreset === "off" || state.teamReady) return;
+  const endingEffect = audioEffectForEvent("ending");
+  const sources = [...new Set(["audio-effects/ending.wav", endingEffect?.src, "audio-effects/ending.mp3"].filter(Boolean))];
+  const runId = ++state.introSequenceAudioRunId;
+
+  const playSource = (index) => {
+    if (runId !== state.introSequenceAudioRunId || state.teamReady || index >= sources.length) return;
+    const audio = new Audio(sources[index]);
+    let advanced = false;
+    const tryNextSource = () => {
+      if (advanced) return;
+      advanced = true;
+      if (state.introSequenceAudio === audio) state.introSequenceAudio = null;
+      playSource(index + 1);
+    };
+    audio.loop = true;
+    audio.preload = "auto";
+    audio.volume = state.sfxPreset === "cinematic" ? 0.72 : 0.42;
+    state.introSequenceAudio = audio;
+    audio.addEventListener("error", tryNextSource, { once: true });
+    audio.play().catch(() => {
+      if (audio.error && runId === state.introSequenceAudioRunId) tryNextSource();
+    });
+  };
+
+  playSource(0);
+}
+
+function stopIntroSequenceAudio() {
+  state.introSequenceAudioRunId += 1;
+  if (state.introSequenceFadeTimer) window.clearInterval(state.introSequenceFadeTimer);
+  state.introSequenceFadeTimer = null;
+  const audioPlayers = [state.introSequenceAudio, state.introSequenceFadingAudio].filter(Boolean);
+  state.introSequenceAudio = null;
+  state.introSequenceFadingAudio = null;
+  for (const audio of audioPlayers) {
+    try {
+      audio.pause();
+      audio.currentTime = 0;
+    } catch {
+      // Intro audio should never interrupt the mission flow.
+    }
+  }
+}
+
+function fadeOutIntroSequenceAudio(durationMs = 1400) {
+  const audio = state.introSequenceAudio;
+  if (!audio) return;
+  state.introSequenceAudioRunId += 1;
+  if (state.introSequenceFadeTimer) window.clearInterval(state.introSequenceFadeTimer);
+  state.introSequenceAudio = null;
+  state.introSequenceFadingAudio = audio;
+  const startedAt = Date.now();
+  const startingVolume = audio.volume;
+  state.introSequenceFadeTimer = window.setInterval(() => {
+    const ratio = Math.min(1, (Date.now() - startedAt) / Math.max(1, durationMs));
+    audio.volume = Math.max(0, startingVolume * (1 - ratio));
+    if (ratio < 1) return;
+    window.clearInterval(state.introSequenceFadeTimer);
+    state.introSequenceFadeTimer = null;
+    if (state.introSequenceFadingAudio === audio) state.introSequenceFadingAudio = null;
+    try {
+      audio.pause();
+      audio.currentTime = 0;
+    } catch {
+      // Intro audio should never interrupt the mission flow.
+    }
+  }, 50);
+}
+
+function playMissionFailureAudio() {
+  stopBackgroundMusic();
+  stopIntroSequenceAudio();
+  stopGameSfx("boss");
+  stopGameSfx("ending");
+  stopMissionFailureAudio();
+  if (state.sfxPreset === "off") return;
+
+  const configuredEffect = audioEffectForEvent("failure");
+  const sources = [...new Set([
+    configuredEffect?.src,
+    "audio-effects/failure.wav",
+    "audio-effects/failure.mp3"
+  ].filter(Boolean))];
+  const runId = ++state.failureAudioRunId;
+
+  const playSource = (index) => {
+    if (runId !== state.failureAudioRunId || index >= sources.length) return;
+    const audio = new Audio(sources[index]);
+    let advanced = false;
+    const tryNextSource = () => {
+      if (advanced) return;
+      advanced = true;
+      if (state.failureAudio === audio) state.failureAudio = null;
+      playSource(index + 1);
+    };
+    audio.preload = "auto";
+    audio.volume = state.sfxPreset === "cinematic" ? 0.96 : 0.58;
+    state.failureAudio = audio;
+    audio.addEventListener("error", tryNextSource, { once: true });
+    audio.play().then(() => pulseMapAudioReactor("failure")).catch(() => {
+      if (audio.error && runId === state.failureAudioRunId) tryNextSource();
+    });
+  };
+
+  playSource(0);
+}
+
+function stopMissionFailureAudio() {
+  state.failureAudioRunId += 1;
+  const audio = state.failureAudio;
+  state.failureAudio = null;
+  if (!audio) return;
+  try {
+    audio.pause();
+    audio.currentTime = 0;
+    audio.removeAttribute("src");
+    audio.load();
+  } catch {
+    // Failure audio should never interrupt the mission flow.
+  }
+}
+
+function startNormalBackgroundMusicAfterReady() {
+  fadeOutIntroSequenceAudio();
+  if (state.youtubeMusicUrl || state.youtubeBossMusicUrl) loadBackgroundMusic("normal", { fadeIn: true });
+}
+
+function syncBackgroundMusicPanel() {
+  const enabled = Boolean(
+    state.youtubeMusicUrl
+    || state.youtubeBossMusicUrl
+    || els.youtubeMusicUrl?.value?.trim()
+    || els.youtubeBossMusicUrl?.value?.trim()
+  );
+  if (els.backgroundMusicPanel) els.backgroundMusicPanel.hidden = !enabled;
+  if (els.backgroundMusicStatus) {
+    els.backgroundMusicStatus.textContent = enabled
+      ? state.backgroundMusicLoaded ? `${titleCase(state.backgroundMusicMode)} music loaded` : "Ready to load"
+      : "Not loaded";
+  }
+  syncMapAudioReactor();
+}
+
+function sendYouTubePlayerCommand(iframe, func, args = []) {
+  if (!iframe?.contentWindow) return;
+  iframe.contentWindow.postMessage(JSON.stringify({ event: "command", func, args }), "*");
+}
+
+function rampBackgroundMusic(iframe, fromVolume, toVolume, durationMs, onComplete) {
+  window.clearInterval(state.backgroundMusicFadeTimer);
+  state.backgroundMusicFadeTimer = null;
+  state.backgroundMusicCurrentVolume = fromVolume;
+  sendYouTubePlayerCommand(iframe, "setVolume", [fromVolume]);
+  sendYouTubePlayerCommand(iframe, "playVideo");
+
+  const startedAt = performance.now();
+  state.backgroundMusicFadeTimer = window.setInterval(() => {
+    const progress = Math.min(1, (performance.now() - startedAt) / durationMs);
+    const eased = 1 - ((1 - progress) ** 3);
+    const volume = fromVolume + ((toVolume - fromVolume) * eased);
+    state.backgroundMusicCurrentVolume = volume;
+    sendYouTubePlayerCommand(iframe, "setVolume", [Math.round(volume)]);
+    if (progress >= 1) {
+      window.clearInterval(state.backgroundMusicFadeTimer);
+      state.backgroundMusicFadeTimer = null;
+      if (typeof onComplete === "function") onComplete();
+    }
+  }, 100);
+}
+
+function backgroundMusicListeningVolume() {
+  return state.ttsPlaybackActive ? BACKGROUND_MUSIC_DUCK_VOLUME : BACKGROUND_MUSIC_VOLUME;
+}
+
+function fadeInBackgroundMusic(iframe, durationMs = 2200, targetVolume = backgroundMusicListeningVolume()) {
+  rampBackgroundMusic(iframe, 0, targetVolume, durationMs);
+}
+
+function duckBackgroundMusicForTts() {
+  state.ttsPlaybackActive = true;
+  if (!state.backgroundMusicLoaded || state.backgroundMusicFadingOutForBossReady) return;
+  const iframe = els.backgroundMusicEmbed?.querySelector("iframe");
+  if (!iframe) return;
+  rampBackgroundMusic(iframe, state.backgroundMusicCurrentVolume, BACKGROUND_MUSIC_DUCK_VOLUME, 320);
+}
+
+function restoreBackgroundMusicAfterTts() {
+  state.ttsPlaybackActive = false;
+  if (!state.backgroundMusicLoaded || state.backgroundMusicFadingOutForBossReady) return;
+  const iframe = els.backgroundMusicEmbed?.querySelector("iframe");
+  if (!iframe) return;
+  rampBackgroundMusic(iframe, state.backgroundMusicCurrentVolume, BACKGROUND_MUSIC_VOLUME, 620);
+}
+
+function fadeOutBackgroundMusicForBossReady(durationMs = 1200) {
+  if (!state.backgroundMusicLoaded) return;
+  const iframe = els.backgroundMusicEmbed?.querySelector("iframe");
+  if (!iframe) {
+    stopBackgroundMusic();
+    return;
+  }
+  state.backgroundMusicFadingOutForBossReady = true;
+  if (els.backgroundMusicStatus) els.backgroundMusicStatus.textContent = "Fading out for critical contact...";
+  rampBackgroundMusic(iframe, state.backgroundMusicCurrentVolume, 0, durationMs, () => stopBackgroundMusic());
+}
+
+function loadBackgroundMusic(mode = desiredBackgroundMusicMode(), options = {}) {
+  const requestedMode = mode === "boss" ? "boss" : "normal";
+  const normalUrl = els.youtubeMusicUrl?.value?.trim() || state.youtubeMusicUrl;
+  const bossUrl = els.youtubeBossMusicUrl?.value?.trim() || state.youtubeBossMusicUrl;
+  const url = requestedMode === "boss" ? bossUrl || normalUrl : normalUrl || bossUrl;
+  const id = extractYouTubeId(url);
+  if (!id) {
+    if (els.backgroundMusicStatus) els.backgroundMusicStatus.textContent = "Invalid YouTube URL";
+    return;
+  }
+  state.youtubeMusicUrl = normalUrl;
+  state.youtubeBossMusicUrl = bossUrl;
+  window.localStorage.setItem("studyAdventureYoutubeMusicUrl", normalUrl);
+  window.localStorage.setItem("studyAdventureYoutubeBossMusicUrl", bossUrl);
+  if (state.backgroundMusicLoaded && state.backgroundMusicVideoId === id) {
+    state.backgroundMusicMode = requestedMode;
+    if (els.backgroundMusicPanel) els.backgroundMusicPanel.hidden = false;
+    if (els.backgroundMusicStatus) els.backgroundMusicStatus.textContent = `${titleCase(state.backgroundMusicMode)} music loaded`;
+    const iframe = els.backgroundMusicEmbed?.querySelector("iframe");
+    if (iframe && !state.backgroundMusicFadingOutForBossReady) {
+      rampBackgroundMusic(iframe, state.backgroundMusicCurrentVolume, backgroundMusicListeningVolume(), 360);
+    }
+    syncMapAudioReactor();
+    return;
+  }
+
+  const previousIframe = els.backgroundMusicEmbed?.querySelector("iframe");
+  const transitionRunId = ++state.backgroundMusicTransitionRunId;
+  state.backgroundMusicMode = requestedMode;
+  if (els.backgroundMusicStatus) {
+    els.backgroundMusicStatus.textContent = previousIframe && options.transition
+      ? `Transitioning to ${titleCase(requestedMode)} music...`
+      : `${titleCase(requestedMode)} music loaded`;
+  }
+
+  const mountTrack = (fadeIn = false) => {
+    if (transitionRunId !== state.backgroundMusicTransitionRunId) return;
+    state.backgroundMusicLoaded = true;
+    state.backgroundMusicVideoId = id;
+    if (els.backgroundMusicPanel) els.backgroundMusicPanel.hidden = false;
+    if (els.backgroundMusicStatus) els.backgroundMusicStatus.textContent = `${titleCase(requestedMode)} music loaded`;
+    if (!els.backgroundMusicEmbed) return;
+    const src = `https://www.youtube.com/embed/${encodeURIComponent(id)}?autoplay=1&loop=1&playlist=${encodeURIComponent(id)}&controls=1&modestbranding=1&enablejsapi=1`;
+    els.backgroundMusicEmbed.innerHTML = `<iframe title="YouTube background music" src="${src}" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>`;
+    const iframe = els.backgroundMusicEmbed.querySelector("iframe");
+    state.backgroundMusicCurrentVolume = fadeIn ? 0 : backgroundMusicListeningVolume();
+    iframe?.addEventListener("load", () => {
+      if (transitionRunId === state.backgroundMusicTransitionRunId && state.backgroundMusicVideoId === id) {
+        if (fadeIn) {
+          fadeInBackgroundMusic(iframe);
+        } else {
+          sendYouTubePlayerCommand(iframe, "setVolume", [backgroundMusicListeningVolume()]);
+        }
+      }
+    }, { once: true });
+    syncMapAudioReactor();
+    playGameSfx("ui");
+  };
+
+  if (previousIframe && options.transition) {
+    rampBackgroundMusic(previousIframe, state.backgroundMusicCurrentVolume, 0, 900, () => mountTrack(true));
+  } else {
+    mountTrack(Boolean(options.fadeIn));
+  }
+}
+
+function stopBackgroundMusic() {
+  state.backgroundMusicTransitionRunId += 1;
+  window.clearInterval(state.backgroundMusicFadeTimer);
+  state.backgroundMusicFadeTimer = null;
+  if (els.backgroundMusicEmbed) els.backgroundMusicEmbed.innerHTML = "";
+  state.backgroundMusicLoaded = false;
+  state.backgroundMusicVideoId = "";
+  state.backgroundMusicCurrentVolume = 0;
+  state.backgroundMusicFadingOutForBossReady = false;
+  if (els.backgroundMusicStatus) els.backgroundMusicStatus.textContent = state.youtubeMusicUrl || state.youtubeBossMusicUrl ? "Stopped" : "Not loaded";
+  syncMapAudioReactor();
+}
+
+function syncMapAudioReactor() {
+  if (!els.mapPanel) return;
+  els.mapPanel.classList.toggle("audio-reactive", state.sfxPreset !== "off" || state.backgroundMusicLoaded);
+  els.mapPanel.classList.toggle("music-reactive", state.backgroundMusicLoaded);
+}
+
+function pulseMapAudioReactor(eventName = "") {
+  if (!els.mapPanel || state.sfxPreset === "off") return;
+  els.mapPanel.classList.remove("audio-sfx-pulse", "audio-sfx-critical");
+  void els.mapPanel.offsetWidth;
+  const critical = ["damage", "incorrect", "emergency", "boss", "failure", "ending"].includes(eventName);
+  const className = critical ? "audio-sfx-critical" : "audio-sfx-pulse";
+  els.mapPanel.classList.add(className);
+  window.setTimeout(() => els.mapPanel?.classList.remove(className), critical ? 1100 : 850);
+}
+
+function startBossReadyAudio(payload = {}) {
+  const nodeIndex = Number.isInteger(payload.bossNodeIndex) ? payload.bossNodeIndex : state.currentNode;
+  if (state.bossAudioStartedNodes.has(nodeIndex)) return;
+  state.bossAudioStartedNodes.add(nodeIndex);
+  playGameSfx("boss");
+}
+
+function startBossQuestionMusic() {
+  const node = state.nodes[state.currentNode];
+  const bossActive = node?.type === "boss" || Boolean(currentBossProgress());
+  if (!bossActive || state.bossMusicStartedNodes.has(state.currentNode)) return;
+  state.bossMusicStartedNodes.add(state.currentNode);
+  syncBossEyesVisual();
+  if (state.youtubeMusicUrl || state.youtubeBossMusicUrl) {
+    fadeOutGameSfx("boss", 480);
+    loadBackgroundMusic("boss", state.backgroundMusicLoaded ? { transition: true } : { fadeIn: true });
+  }
+}
+
+function syncBossEyesVisual() {
+  const node = state.nodes[state.currentNode];
+  const bossActive = node?.type === "boss" || Boolean(currentBossProgress());
+  const revealActive = bossActive && state.bossMusicStartedNodes.has(state.currentNode);
+  els.mapPanel?.classList.toggle("boss-eyes-active", revealActive);
+}
+
+function desiredBackgroundMusicMode() {
+  const node = state.nodes[state.currentNode];
+  const bossActive = node?.type === "boss" || Boolean(currentBossProgress());
+  if (bossActive && state.bossMusicStartedNodes.has(state.currentNode)) return "boss";
+  return "normal";
+}
+
+function syncBackgroundMusicForEncounter() {
+  if (!state.backgroundMusicLoaded) return;
+  const desiredMode = desiredBackgroundMusicMode();
+  if (desiredMode === state.backgroundMusicMode) return;
+  loadBackgroundMusic(desiredMode, { transition: true });
+}
+
+function titleCase(value) {
+  return String(value || "").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function extractYouTubeId(url) {
+  const text = String(url || "").trim();
+  if (!text) return "";
+  try {
+    const parsed = new URL(text);
+    if (/youtu\.be$/i.test(parsed.hostname)) return parsed.pathname.split("/").filter(Boolean)[0] || "";
+    if (/youtube\.com$/i.test(parsed.hostname) || /youtube-nocookie\.com$/i.test(parsed.hostname)) {
+      if (parsed.searchParams.get("v")) return parsed.searchParams.get("v");
+      const parts = parsed.pathname.split("/").filter(Boolean);
+      const embedIndex = parts.findIndex((part) => ["embed", "shorts", "live"].includes(part));
+      if (embedIndex >= 0) return parts[embedIndex + 1] || "";
+    }
+  } catch {
+    const match = text.match(/(?:v=|youtu\.be\/|embed\/|shorts\/)([A-Za-z0-9_-]{8,})/);
+    return match?.[1] || "";
+  }
+  return "";
+}
+
 function ensureTtsManager() {
   if (!ttsManager && typeof ttsModule.create === "function") {
     ttsManager = ttsModule.create({
@@ -525,7 +1374,9 @@ function ensureTtsManager() {
       escapeHtml,
       escapeAttribute,
       cleanText: cleanSpeechText,
-      getCurrentLogText: currentMissionLogSpeechText
+      getCurrentLogText: currentMissionLogSpeechText,
+      onPlaybackStart: duckBackgroundMusicForTts,
+      onPlaybackEnd: restoreBackgroundMusicAfterTts
     });
   }
   return ttsManager;
@@ -603,6 +1454,8 @@ function currentMissionLogSpeechText() {
 
 function missionLogSpeechText(entry) {
   if (!entry) return "";
+  const speechText = String(entry.dataset.speechText || "").trim();
+  if (speechText) return speechText;
   const clone = entry.cloneNode(true);
   clone.querySelectorAll(".damage-log, .mission-continue-gate, .log-question, .transmission-display, .log-tag").forEach((node) => node.remove());
   clone.querySelectorAll("[data-text]").forEach((node) => {
@@ -613,13 +1466,7 @@ function missionLogSpeechText(entry) {
 
 function currentQuestionSpeechText(info = currentQuestionInfo()) {
   if (!info.question) return "";
-  const parts = [info.question.question];
-  if (info.question.mode === "multiple") {
-    for (const choice of info.question.choices) {
-      parts.push(`${choice.key}. ${choice.text}`);
-    }
-  }
-  return parts.join(". ");
+  return info.question.question;
 }
 
 function cleanSpeechText(text) {
@@ -738,6 +1585,9 @@ function readMissionConfig() {
     generatedMission: generatedMissionForLaunch(),
     emergencyTimerEnabled: els.emergencyTimerEnabled.checked,
     emergencyTimerDuration: Number(els.emergencyTimerDuration.value) || 60,
+    sfxPreset: els.sfxPreset?.value || "subtle",
+    youtubeMusicUrl: els.youtubeMusicUrl?.value.trim() || state.youtubeMusicUrl || "",
+    youtubeBossMusicUrl: els.youtubeBossMusicUrl?.value.trim() || state.youtubeBossMusicUrl || "",
     bossTestMode: Boolean(els.bossTestMode?.checked),
     actionDrivenMode
   };
@@ -887,6 +1737,9 @@ function positionMissionForBossTest() {
 
 function launchMission(players, config) {
   try {
+    clearFinalSubmissionDelay();
+    clearSetupToDeploymentTransition();
+    stopAllGameSfx();
     const cleanPlayers = players.map((name) => sanitizeText(name, { fallback: "Operator", maxLength: 32 })).filter(Boolean);
     if (!cleanPlayers.length || !config?.questions?.length) {
       setLaunchStatus("Mission could not launch: missing players or questions.", true);
@@ -916,6 +1769,8 @@ function launchMission(players, config) {
     state.challengeTypes = buildChallengePlan(config.questions.length);
     state.questions = state.actionDrivenMode ? config.questions : config.localDmMode || !config.chatMode ? prepareQuestions(config.questions, state.challengeTypes) : config.questions;
     state.nodes = buildNodes(state.questions.length);
+    state.mapLayoutSeed = seedFrom(`${state.title}|${cleanPlayers.join(",")}|${config.questions.length}|${Date.now()}|${Math.random()}`);
+    state.mapPositions = generateSprawledRoutePositions(state.nodes.length, state.mapLayoutSeed);
     state.roomNames = {};
     state.bossAreaNames = generatedBossAreaFallbacks(state.missionType, state.environment, state.threat);
     applyGeneratedBossAreas(config.generatedMission?.bossAreas);
@@ -940,6 +1795,9 @@ function launchMission(players, config) {
     state.playerPromptRequiredNames = [];
     state.playerAnswers = [];
     state.playerActions = [];
+    state.resolutionDelayPending = false;
+    state.resolutionDelayPromptId = "";
+    state.resolutionDelayTimer = null;
     state.processedPlayerActionIds = new Set();
     state.readinessLogged = false;
     state.currentBriefing = null;
@@ -947,6 +1805,10 @@ function launchMission(players, config) {
     state.teamReady = false;
     state.bossReadyPending = false;
     state.bossReadyChecks = new Set();
+    state.bossAudioStartedNodes = new Set();
+    state.bossMusicStartedNodes = new Set();
+    window.clearTimeout(state.bossEyesStrikeTimer);
+    state.bossEyesStrikeTimer = null;
     state.answerPending = false;
     state.lastSubmittedAnswer = "";
     state.previousAnswerFlashId = "";
@@ -964,6 +1826,16 @@ function launchMission(players, config) {
     state.previousAnswer = null;
     state.emergencyTimerEnabled = config.emergencyTimerEnabled;
     state.emergencyTimerDuration = config.emergencyTimerDuration;
+    state.sfxPreset = config.sfxPreset || "subtle";
+    state.youtubeMusicUrl = config.youtubeMusicUrl || "";
+    state.youtubeBossMusicUrl = config.youtubeBossMusicUrl || "";
+    window.localStorage.setItem("studyAdventureSfxPreset", state.sfxPreset);
+    window.localStorage.setItem("studyAdventureYoutubeMusicUrl", state.youtubeMusicUrl);
+    window.localStorage.setItem("studyAdventureYoutubeBossMusicUrl", state.youtubeBossMusicUrl);
+    stopMissionFailureAudio();
+    stopBackgroundMusic();
+    setMissionFailureVisual(false);
+    syncBackgroundMusicPanel();
     state.emergencyTimer = null;
     state.transmissionPending = false;
     state.transmissionStartedAt = 0;
@@ -974,6 +1846,7 @@ function launchMission(players, config) {
     state.deploymentCompletionWait = 0;
     state.deploymentReady = false;
     state.questionPresentationReady = false;
+    state.questionRevealRunId = 0;
     state.teamFailurePending = false;
     state.logPresentationPending = false;
     state.logPresentationRunId = 0;
@@ -982,17 +1855,12 @@ function launchMission(players, config) {
 
     if (config.bossTestMode && !state.actionDrivenMode) positionMissionForBossTest();
 
+    if (state.teamReady || !state.chatMode) startNormalBackgroundMusicAfterReady();
+    else startIntroSequenceAudio();
+
     resetStatusUpdates();
-    document.body.classList.add("setup-to-deployment");
-    window.setTimeout(() => {
-      if (state.started) {
-        document.body.classList.add("mission-active");
-        els.setupPanel.style.display = "none";
-        document.body.classList.remove("setup-to-deployment");
-      }
-    }, 620);
     els.joinLobby.hidden = true;
-    startDeploymentSequence();
+    startSetupToDeploymentTransition();
     renderBriefing();
     renderStatus();
     renderMap();
@@ -1014,15 +1882,31 @@ function launchMission(players, config) {
 }
 
 function resetMission() {
+  if (document.body.classList.contains("dashboard-exiting")) return;
+  if (document.body.classList.contains("mission-active")) {
+    startDashboardToSetupTransition();
+    return;
+  }
+  performMissionReset();
+}
+
+function performMissionReset({ preserveTransition = false } = {}) {
+  state.started = false;
+  clearFinalSubmissionDelay();
+  if (!preserveTransition) clearSetupToDeploymentTransition();
   clearTypewriters();
   stopTts();
+  stopAllGameSfx();
+  stopIntroSequenceAudio();
+  stopMissionFailureAudio();
+  stopBackgroundMusic();
   stopEmergencyTimer();
   stopTransmissionFeedback();
   state.deploymentRunId += 1;
+  clearDashboardBootSequence();
   stopDeploymentSequence();
   stopDmFeed();
   stopPlayerSession();
-  state.started = false;
   state.chatMode = false;
   state.localDmMode = false;
   state.deviceMode = selectedDeviceMode();
@@ -1038,6 +1922,8 @@ function resetMission() {
   state.currentNode = 0;
   state.nodes = [];
   state.roomNames = {};
+  state.mapPositions = [];
+  state.mapLayoutSeed = 0;
   state.bossAreaNames = { mid: "", final: "" };
   state.bossPhasePlans = {};
   state.bossPhasePlanRequests = {};
@@ -1062,6 +1948,9 @@ function resetMission() {
   state.playerPromptRequiredNames = [];
   state.playerAnswers = [];
   state.playerActions = [];
+  state.resolutionDelayPending = false;
+  state.resolutionDelayPromptId = "";
+  state.resolutionDelayTimer = null;
   state.processedPlayerActionIds = new Set();
   state.playerParticipants = [];
   state.playerJoinUrl = "";
@@ -1074,6 +1963,10 @@ function resetMission() {
   state.teamReady = false;
   state.bossReadyPending = false;
   state.bossReadyChecks = new Set();
+  state.bossAudioStartedNodes = new Set();
+  state.bossMusicStartedNodes = new Set();
+  window.clearTimeout(state.bossEyesStrikeTimer);
+  state.bossEyesStrikeTimer = null;
   state.answerPending = false;
   state.lastSubmittedAnswer = "";
   state.previousAnswerFlashId = "";
@@ -1097,12 +1990,25 @@ function resetMission() {
   state.deploymentReady = false;
   state.openingWaitStartedAt = 0;
   state.questionPresentationReady = false;
+  state.questionRevealRunId = 0;
   state.teamFailurePending = false;
   state.logPresentationPending = false;
   state.logPresentationRunId = 0;
   state.missionLogHistory = [];
   renderMissionLogHistory();
-  document.body.classList.remove("mission-active", "setup-to-deployment");
+  document.body.classList.remove(
+    "mission-active",
+    "setup-to-deployment",
+    "dashboard-online",
+    "situation-boss",
+    "situation-emergency",
+    "situation-recovery",
+    "situation-party-wounded",
+    "situation-party-critical",
+    "situation-failure"
+  );
+  delete document.body.dataset.missionTheme;
+  setMissionFailureVisual(false);
   stopOpeningWaitCounter();
   els.setupPanel.style.display = "";
   els.joinLobby.hidden = true;
@@ -1403,6 +2309,7 @@ function randomSimulatorNames(count) {
 
 function stopPlayerSession() {
   stopPlayerPolling();
+  cancelSimulatorAutoAnswerTimers();
   if (state.roomCode) publishPlayerSession({ status: "ended", prompt: null, resetAnswers: true });
   state.playerAnswers = [];
   state.playerActions = [];
@@ -1488,7 +2395,7 @@ function buildPlayerPrompt() {
       kind: "recovery",
       lockedPlayer: "",
       allowPlayerActions: false,
-      accepting: state.questionPresentationReady && !state.answerPending && !sideActionBlocksPlayerAnswers() && !state.resolved,
+      accepting: state.questionPresentationReady && !state.answerPending && !state.resolutionDelayPending && !sideActionBlocksPlayerAnswers() && !state.resolved,
       mode: "multiple",
       question: "Choose one recovery option.",
       choices: [
@@ -1517,7 +2424,7 @@ function buildPlayerPrompt() {
     bossPhase: info.type.bossPhase || "",
     lockedPlayer: info.operator?.name || "",
     allowPlayerActions: actionsAllowedThisEncounter(),
-    accepting: state.questionPresentationReady && !state.answerPending && !sideActionBlocksPlayerAnswers() && !state.resolved,
+    accepting: state.questionPresentationReady && !state.answerPending && !state.resolutionDelayPending && !sideActionBlocksPlayerAnswers() && !state.resolved,
     timer: playerTimerPayload(),
     mode: info.question.mode,
     question: info.question.question,
@@ -1531,14 +2438,77 @@ function buildPlayerPrompt() {
 
 function publishCurrentPlayerPrompt(options = {}) {
   if (!state.started || !state.teamReady && state.chatMode) return;
-  state.playerSubmissionLogKey = "";
+  clearFinalSubmissionDelay();
+  cancelSimulatorAutoAnswerTimers();
+  const prompt = buildPlayerPrompt();
+  state.playerSubmissionLogKey = `${prompt?.id || ""}|reset`;
   state.playerAnswers = [];
   state.playerActions = [];
-  const prompt = buildPlayerPrompt();
   snapshotPromptRequiredResponders(prompt);
-  publishPlayerSession({ status: "open", prompt, resetAnswers: true });
-  renderPlayerSessionPanel();
+  const publication = publishPlayerSession({ status: "open", prompt, resetAnswers: true });
+  if (state.deviceMode === "multi" && state.roomCode) {
+    Promise.resolve(publication).then(() => startBossQuestionMusic()).catch(() => {});
+  } else {
+    startBossQuestionMusic();
+  }
+  renderStatus();
   if (options.renderOverlay !== false) renderMapQuestionOverlay();
+}
+
+function clearFinalSubmissionDelay() {
+  if (state.resolutionDelayTimer) window.clearTimeout(state.resolutionDelayTimer);
+  state.resolutionDelayTimer = null;
+  state.resolutionDelayPending = false;
+  state.resolutionDelayPromptId = "";
+  document.body.classList.remove("answer-resolution-queued");
+}
+
+function queueFinalSubmissionResolution(callback, label = "required responses complete") {
+  const promptId = state.playerPromptId || buildPlayerPrompt()?.id || "";
+  if (!promptId || state.resolutionDelayPending || state.answerPending || state.resolved) return false;
+
+  state.resolutionDelayPending = true;
+  state.resolutionDelayPromptId = promptId;
+  stopTts();
+  stopEmergencyTimer();
+  document.body.classList.add("answer-resolution-queued");
+  renderMapQuestionOverlay();
+  if (state.deviceMode === "multi" && state.roomCode) {
+    publishPlayerSession({ status: "open", prompt: buildPlayerPrompt(), resetAnswers: false });
+  }
+  logDebugEvent({
+    kind: "state",
+    label: "Final submission hold",
+    detail: `${promptId} | ${label} | ${FINAL_SUBMISSION_HOLD_MS}ms`
+  });
+
+  state.resolutionDelayTimer = window.setTimeout(() => {
+    state.resolutionDelayTimer = null;
+    const stillCurrent = state.started
+      && state.playerPromptId === promptId
+      && state.resolutionDelayPromptId === promptId
+      && !state.answerPending
+      && !state.resolved;
+    state.resolutionDelayPending = false;
+    state.resolutionDelayPromptId = "";
+    document.body.classList.remove("answer-resolution-queued");
+    if (stillCurrent) callback();
+  }, FINAL_SUBMISSION_HOLD_MS);
+  return true;
+}
+
+function clearPendingPlayerPromptState(options = {}) {
+  clearFinalSubmissionDelay();
+  cancelSimulatorAutoAnswerTimers();
+  state.playerAnswers = [];
+  state.playerActions = [];
+  state.playerSubmissionLogKey = "pending-reset";
+  if (options.publish !== false && state.started && state.roomCode && state.deviceMode === "multi") {
+    publishPlayerSession({ status: options.status || "waiting", prompt: null, resetAnswers: true });
+  }
+  renderStatus();
+  renderMapQuestionOverlay();
+  renderPlayerSessionPanel();
 }
 
 function publishPlayerWaiting(status = "waiting") {
@@ -1577,9 +2547,15 @@ function handlePlayerAnswersPayload(payload, requestedPromptId = "") {
     });
     return;
   }
+  const previousVisibleSubmissions = state.actionDrivenMode ? state.playerActions : state.playerAnswers;
+  const previousSubmissionNames = new Set(previousVisibleSubmissions.map((entry) => normalize(entry.playerName)).filter(Boolean));
   state.playerAnswers = (payload.answers || []).filter((answer) => !currentPromptId || answer.promptId === currentPromptId);
   state.playerActions = (payload.actions || []).filter((action) => !currentPromptId || action.promptId === currentPromptId);
   state.playerParticipants = payload.participants || [];
+  const visibleSubmissions = state.actionDrivenMode ? state.playerActions : state.playerAnswers;
+  const newlySubmittedNames = [...new Set(visibleSubmissions
+    .map((entry) => entry.playerName || state.playerParticipants.find((player) => String(player.id || "") === String(entry.playerId || ""))?.name || "")
+    .filter((name) => name && !previousSubmissionNames.has(normalize(name))))];
   const submissionLogKey = [
     state.playerPromptId,
     ...state.playerAnswers.map((answer) => `a:${answer.playerId || answer.playerName}:${answer.submittedAt || ""}`),
@@ -1587,6 +2563,7 @@ function handlePlayerAnswersPayload(payload, requestedPromptId = "") {
   ].join("|");
   if (submissionLogKey !== state.playerSubmissionLogKey && (state.playerAnswers.length || state.playerActions.length)) {
     state.playerSubmissionLogKey = submissionLogKey;
+    playGameSfx("submitted");
     logDebugEvent({
       kind: "response",
       label: "Player device submissions received",
@@ -1596,6 +2573,8 @@ function handlePlayerAnswersPayload(payload, requestedPromptId = "") {
         state.playerActions.length ? `actions: ${state.playerActions.map((action) => action.playerName || action.playerId || "unknown").join(", ")}` : ""
       ].filter(Boolean).join(" | ")
     });
+    renderStatus();
+    pulsePlayerSubmissionCards(newlySubmittedNames);
   }
   renderPlayerSessionPanel();
   renderMapQuestionOverlay();
@@ -1611,7 +2590,7 @@ function handlePlayerAnswersPayload(payload, requestedPromptId = "") {
       });
     }
     if (everyoneActiveSubmittedAction()) {
-      window.setTimeout(() => resolveActionRoomTurn(), 120);
+      queueFinalSubmissionResolution(() => resolveActionRoomTurn(), "all operator actions received");
     }
   }
   maybeResolvePlayerAction();
@@ -1667,7 +2646,7 @@ function rotateActionTurnOrder(count = 1) {
 }
 
 function everyoneActiveSubmittedAction() {
-  if (!state.actionDrivenMode || state.deviceMode !== "multi" || !state.questionPresentationReady || state.answerPending || state.resolved) return false;
+  if (!state.actionDrivenMode || state.deviceMode !== "multi" || !state.questionPresentationReady || state.answerPending || state.resolutionDelayPending || state.resolved) return false;
   const required = requiredDeviceAnswerNames(currentQuestionInfo());
   if (!required.size) return false;
   const submitted = new Set(currentActionEntries().map((entry) => normalize(entry.playerName)));
@@ -1699,7 +2678,7 @@ function addSingleDeviceAction() {
 }
 
 function resolveActionRoomTurn(options = {}) {
-  if (!state.actionDrivenMode || state.answerPending || state.resolved || !state.questionPresentationReady) return;
+  if (!state.actionDrivenMode || state.answerPending || state.resolutionDelayPending || state.resolved || !state.questionPresentationReady) return;
   if (state.deviceMode === "single" && !options.timeout) addSingleDeviceAction();
   const entries = currentActionEntries();
   const room = state.actionRooms[state.currentQuestion] || actionRoomTypePool[0];
@@ -2456,15 +3435,16 @@ function secondaryEntityStatusLine(entity, applied) {
 function applySearchReward(target, scoredEntry, outcome) {
   const score = Number(scoredEntry.score) || 0;
   if (score < 2 || !isSearchInteraction(target, scoredEntry)) return;
-  const tags = entityTagSet(target);
-  if (tags.has("medical")) {
+  if (isMedicalRewardSource(target)) {
     const roll = state.rng();
     if (roll < 0.15) {
       state.inventory.medkits += 2;
+      playGameSfx("loot");
       outcome.rewardLines.push(`${scoredEntry.playerName}: found 2 Medkits`);
       outcome.rewardFacts.push(`${scoredEntry.playerName} finds two usable medkits in ${target.label}.`);
     } else if (roll < 0.55) {
       state.inventory.medkits += 1;
+      playGameSfx("loot");
       outcome.rewardLines.push(`${scoredEntry.playerName}: found 1 Medkit`);
       outcome.rewardFacts.push(`${scoredEntry.playerName} finds one usable medkit in ${target.label}.`);
     }
@@ -2482,9 +3462,17 @@ function applySearchReward(target, scoredEntry, outcome) {
     };
     player.bonuses = asArray(player.bonuses).filter((item) => item?.kind !== "combat");
     player.bonuses.push(bonus);
+    playGameSfx("loot");
     outcome.rewardLines.push(`${player.name}: found improvised combat gear`);
     outcome.rewardFacts.push(`${player.name} salvages gear from ${target.label} that can strengthen their next attack.`);
   }
+}
+
+function isMedicalRewardSource(target) {
+  const tags = entityTagSet(target);
+  const label = normalize(target?.label);
+  return ["medical", "med", "med-grade", "first-aid", "trauma", "aid"].some((tag) => tags.has(tag))
+    || /\b(med|medical|first aid|trauma|aid station|medkit|med-kit|bandage|field dressing)\b/.test(label);
 }
 
 function entityTagSet(entity) {
@@ -3136,7 +4124,7 @@ function actionRoomContinuationStory(room, nextInfo, resolution) {
 }
 
 function maybeAutoResolveEmergencyAnswer() {
-  if (!state.questionPresentationReady || state.answerPending || state.resolved) return;
+  if (!state.questionPresentationReady || state.answerPending || state.resolutionDelayPending || state.resolved) return;
   const info = currentQuestionInfo();
   const answers = [...state.playerAnswers].sort((a, b) => a.submittedAt - b.submittedAt);
   if (!answers.length) return;
@@ -3147,8 +4135,11 @@ function maybeAutoResolveEmergencyAnswer() {
       label: "Auto-resolving emergency answer",
       detail: `${answers[0].playerName || answers[0].playerId || "unknown"} submitted first for ${state.playerPromptId || "current prompt"}`
     });
-    if (state.localDmMode && state.chatMode) resolveLocalEmergencyDeviceAnswer(answers[0]);
-    else submitDeviceAnswer(answers[0].answer);
+    const timerSnapshot = state.emergencyTimer ? { ...state.emergencyTimer } : null;
+    queueFinalSubmissionResolution(() => {
+      if (state.localDmMode && state.chatMode) resolveLocalEmergencyDeviceAnswer(answers[0], timerSnapshot);
+      else submitDeviceAnswer(answers[0].answer);
+    }, "first emergency response received");
     return;
   }
   if (info.type.locked && info.operator) {
@@ -3160,13 +4151,19 @@ function maybeAutoResolveEmergencyAnswer() {
         label: "Auto-resolving locked operator answer",
         detail: `${operatorAnswer.playerName || operatorAnswer.playerId || "unknown"} submitted for ${state.playerPromptId || "current prompt"}`
       });
-      submitDeviceAnswer(operatorAnswer.answer);
+      queueFinalSubmissionResolution(
+        () => submitDeviceAnswer(operatorAnswer.answer),
+        `${operatorAnswer.playerName || "locked operator"} response received`
+      );
     }
     return;
   }
   if (everyoneActiveSubmitted(answers)) {
     if (usesIndividualTeamDeviceScoring(info)) {
-      resolveLocalDeviceTeamAnswers(answers);
+      queueFinalSubmissionResolution(
+        () => resolveLocalDeviceTeamAnswers(answers),
+        "all required operator responses received"
+      );
       return;
     }
     setDeviceAnswerResults(deviceAnswerEntries(answers, info.question));
@@ -3177,7 +4174,10 @@ function maybeAutoResolveEmergencyAnswer() {
         label: "Auto-resolving team answer",
         detail: `All required operators submitted for ${state.playerPromptId || "current prompt"}`
       });
-      submitDeviceAnswer(popular);
+      queueFinalSubmissionResolution(
+        () => submitDeviceAnswer(popular),
+        "all required operator responses received"
+      );
     }
   }
 }
@@ -3255,7 +4255,7 @@ function requiredDeviceAnswerNames(info = currentQuestionInfo(), options = {}) {
 }
 
 function canUseIndividualPlayerAnswer() {
-  if (!state.questionPresentationReady || state.answerPending || state.resolved) return false;
+  if (!state.questionPresentationReady || state.answerPending || state.resolutionDelayPending || state.resolved) return false;
   const info = currentQuestionInfo();
   if (info.type.kind === "emergency") return true;
   if (info.type.locked) return true;
@@ -3384,9 +4384,25 @@ function participantHasCurrentSubmission(participant) {
   if (!participant) return false;
   const id = String(participant.id || "");
   const name = normalize(participant.name);
+  const promptId = state.playerPromptId || "";
   const submissions = state.actionDrivenMode ? state.playerActions : state.playerAnswers;
   return submissions.some((entry) => {
-    return id && String(entry.playerId || "") === id || name && normalize(entry.playerName) === name;
+    if (promptId && entry.promptId !== promptId) return false;
+    const idMatches = Boolean(id && String(entry.playerId || "") === id);
+    const nameMatches = Boolean(name && normalize(entry.playerName) === name);
+    return idMatches || nameMatches;
+  });
+}
+
+function pulsePlayerSubmissionCards(playerNames = []) {
+  if (!playerNames.length || !els.statusGrid) return;
+  const submittedNames = new Set(playerNames.map(normalize));
+  els.statusGrid.querySelectorAll(".status-card").forEach((card) => {
+    if (!submittedNames.has(normalize(card.dataset.playerName))) return;
+    card.classList.remove("status-card-submitted-new");
+    void card.offsetWidth;
+    card.classList.add("status-card-submitted-new");
+    window.setTimeout(() => card.classList.remove("status-card-submitted-new"), 1500);
   });
 }
 
@@ -3408,9 +4424,14 @@ function renderSimulatorPanel() {
     && !state.bossReadyPending
     && state.nodes[state.currentNode]?.type !== "recovery"
     && Boolean(info.question);
+  const autoAvailable = canSimulate && !state.actionDrivenMode;
   els.simulatorPanel.innerHTML = `
     <strong>Simulator</strong>
     <p>${boss ? `Critical ${boss.step} / ${boss.total}. ` : ""}${canSimulate ? state.actionDrivenMode ? "Submit sim actions." : "Submit sim answers." : "Waiting."}</p>
+    <label class="sim-auto-toggle">
+      <input id="simAutoAnswerToggle" type="checkbox" ${state.simulatorAutoAnswer ? "checked" : ""} ${state.actionDrivenMode ? "disabled" : ""}>
+      <span>Auto-Answer</span>
+    </label>
     <div class="sim-tool-actions">
       <button class="secondary simAnswerBtn" type="button" data-mode="correct" ${canSimulate ? "" : "disabled"}>${state.actionDrivenMode ? "Helpful" : "All Correct"}</button>
       <button class="secondary simAnswerBtn" type="button" data-mode="mixed" ${canSimulate ? "" : "disabled"}>Mixed</button>
@@ -3418,9 +4439,71 @@ function renderSimulatorPanel() {
     </div>
     <div id="simulatorStatus" class="muted-small"></div>
   `;
+  const autoToggle = document.getElementById("simAutoAnswerToggle");
+  autoToggle?.addEventListener("change", () => {
+    state.simulatorAutoAnswer = Boolean(autoToggle.checked);
+    window.localStorage.setItem("studyAdventureSimulatorAutoAnswer", String(state.simulatorAutoAnswer));
+    if (!state.simulatorAutoAnswer) cancelSimulatorAutoAnswerTimers();
+    else scheduleSimulatorAutoAnswers(info);
+  });
   document.querySelectorAll(".simAnswerBtn").forEach((button) => {
     button.addEventListener("click", () => simulateDeviceAnswers(button.dataset.mode || "correct"));
   });
+  if (state.simulatorAutoAnswer && autoAvailable) scheduleSimulatorAutoAnswers(info);
+}
+
+function cancelSimulatorAutoAnswerTimers() {
+  state.simulatorAutoAnswerTimers.forEach((timerId) => window.clearTimeout(timerId));
+  state.simulatorAutoAnswerTimers = [];
+  state.simulatorAutoAnswerPromptId = "";
+}
+
+function scheduleSimulatorAutoAnswers(info = currentQuestionInfo()) {
+  if (!state.simulatorAutoAnswer || state.actionDrivenMode || !info.question || !state.playerPromptId) return;
+  if (!state.started || state.deviceMode !== "multi" || !state.questionPresentationReady || state.answerPending || state.resolutionDelayPending || state.resolved) return;
+  const promptId = state.playerPromptId;
+  if (state.simulatorAutoAnswerPromptId === promptId) return;
+  cancelSimulatorAutoAnswerTimers();
+  state.simulatorAutoAnswerPromptId = promptId;
+  const pendingParticipants = simulatedAnswerParticipants(info)
+    .filter((participant) => !participantHasCurrentSubmission(participant));
+  const status = document.getElementById("simulatorStatus");
+  if (!pendingParticipants.length) {
+    if (status) status.textContent = "Auto-Answer armed. No simulated players need to answer.";
+    return;
+  }
+  const remainingMs = Number(state.emergencyTimer?.remainingMs || 0);
+  const timerSafetyBuffer = state.emergencyTimer?.kind === "emergency" ? 3_000 : 4_500;
+  const maxDelay = remainingMs > 0
+    ? Math.max(650, Math.min(9_000, remainingMs - timerSafetyBuffer))
+    : 9_000;
+  if (status) status.textContent = `Auto-Answer armed for ${pendingParticipants.length} sim player${pendingParticipants.length === 1 ? "" : "s"}.`;
+  pendingParticipants.forEach((participant, index) => {
+    const minimumDelay = Math.min(maxDelay, 450 + index * 160);
+    const spread = Math.max(220, maxDelay - minimumDelay);
+    const delay = Math.min(maxDelay, minimumDelay + Math.floor(Math.random() * spread));
+    const timerId = window.setTimeout(() => {
+      submitSimulatorAutoAnswer(participant, promptId, info);
+    }, delay);
+    state.simulatorAutoAnswerTimers.push(timerId);
+  });
+}
+
+function submitSimulatorAutoAnswer(participant, promptId, info) {
+  if (!state.simulatorAutoAnswer || state.actionDrivenMode) return;
+  if (promptId !== state.playerPromptId || !state.questionPresentationReady || state.answerPending || state.resolutionDelayPending || state.resolved) return;
+  if (participantHasCurrentSubmission(participant)) return;
+  const shouldBeCorrect = Math.random() < 0.5;
+  playerSessionApi.submitAnswer({
+    roomCode: state.roomCode,
+    playerId: participant.id,
+    playerName: participant.name,
+    promptId,
+    answer: simulatedAnswerFor(info.question, shouldBeCorrect)
+  })
+    .then(() => playerSessionApi.fetchAnswers(state.roomCode, promptId))
+    .then((payload) => handlePlayerAnswersPayload(payload, promptId))
+    .catch(() => pollPlayerAnswers());
 }
 
 function simulateDeviceAnswers(mode) {
@@ -3688,7 +4771,7 @@ function renderPlayerJoinQr(joinUrl) {
 }
 
 function submitDeviceAnswer(answer, options = {}) {
-  if (!answer || !state.questionPresentationReady || state.answerPending || state.resolved) return;
+  if (!answer || !state.questionPresentationReady || state.answerPending || state.resolutionDelayPending || state.resolved) return;
   if (state.chatMode) submitPlayerAnswerValue(answer, { source: options.source || "device-auto" });
   else {
     publishPlayerWaiting("resolving");
@@ -5290,6 +6373,19 @@ function missionBriefingLogStory(briefing, intro) {
   return lines.join("\n\n");
 }
 
+function missionBriefingSpeechText(briefing, story) {
+  const situation = extractBriefingStorySection(story, "Situation")
+    || cleanBriefingField(briefing?.situation);
+  return situation.replace(/^Situation:\s*/i, "").trim();
+}
+
+function extractBriefingStorySection(story, label) {
+  const value = String(story || "");
+  const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = value.match(new RegExp(`${escapedLabel}:\\s*([\\s\\S]*?)(?:\\n\\s*\\n\\s*(?:Objective|Route|Rules of Engagement):|$)`, "i"));
+  return cleanBriefingField(match?.[1] || "");
+}
+
 function combineOpeningSituation(situation, intro) {
   const cleanSituation = cleanBriefingField(situation).replace(/^Situation:\s*/i, "");
   const cleanIntro = cleanBriefingField(intro).replace(/^Situation:\s*/i, "");
@@ -5312,7 +6408,98 @@ function releaseBriefingNode() {
   renderChatCheckpoint(node);
 }
 
-function startDeploymentSequence() {
+function clearSetupToDeploymentTransition() {
+  for (const timer of state.setupTransitionTimers) window.clearTimeout(timer);
+  state.setupTransitionTimers = [];
+  document.body.classList.remove(
+    "setup-to-deployment",
+    "setup-blackout-active",
+    "dashboard-exiting",
+    "dashboard-returning"
+  );
+  if (!els.setupTransitionBlackout) return;
+  els.setupTransitionBlackout.classList.remove("visible", "handoff", "dashboard-return");
+  els.setupTransitionBlackout.hidden = true;
+  if (els.setupTransitionLabel) els.setupTransitionLabel.textContent = "MISSION CHANNEL TRANSFER";
+}
+
+function startDashboardToSetupTransition() {
+  if (!els.setupTransitionBlackout || document.body.classList.contains("dashboard-exiting")) {
+    performMissionReset();
+    return;
+  }
+
+  clearSetupToDeploymentTransition();
+  stopTts();
+  playGameSfx("ui");
+  document.body.classList.add("dashboard-exiting", "setup-blackout-active");
+  els.setupTransitionBlackout.hidden = false;
+  els.setupTransitionBlackout.classList.add("dashboard-return");
+  if (els.setupTransitionLabel) els.setupTransitionLabel.textContent = "RETURNING TO MISSION PREP";
+
+  window.requestAnimationFrame(() => {
+    if (document.body.classList.contains("dashboard-exiting")) {
+      els.setupTransitionBlackout.classList.add("visible");
+    }
+  });
+
+  const resetTimer = window.setTimeout(() => {
+    state.setupTransitionTimers = state.setupTransitionTimers.filter((timer) => timer !== resetTimer);
+    performMissionReset({ preserveTransition: true });
+    document.body.classList.remove("dashboard-exiting");
+    document.body.classList.add("dashboard-returning");
+    els.setupTransitionBlackout.classList.add("handoff");
+
+    const revealTimer = window.setTimeout(() => {
+      state.setupTransitionTimers = state.setupTransitionTimers.filter((timer) => timer !== revealTimer);
+      clearSetupToDeploymentTransition();
+    }, 900);
+    state.setupTransitionTimers.push(revealTimer);
+  }, 920);
+  state.setupTransitionTimers.push(resetTimer);
+}
+
+function startSetupToDeploymentTransition() {
+  clearSetupToDeploymentTransition();
+  if (els.setupTransitionLabel) els.setupTransitionLabel.textContent = "MISSION CHANNEL TRANSFER";
+  startDeploymentSequence({ deferReveal: true });
+  document.body.classList.add("setup-to-deployment", "setup-blackout-active");
+  if (els.setupTransitionBlackout) {
+    els.setupTransitionBlackout.hidden = false;
+    window.requestAnimationFrame(() => {
+      if (state.started) els.setupTransitionBlackout.classList.add("visible");
+    });
+  }
+
+  const schedule = (delay, callback) => {
+    const timer = window.setTimeout(() => {
+      state.setupTransitionTimers = state.setupTransitionTimers.filter((entry) => entry !== timer);
+      if (!state.started) return;
+      callback();
+    }, delay);
+    state.setupTransitionTimers.push(timer);
+  };
+
+  schedule(900, () => {
+    document.body.classList.add("mission-active");
+    els.setupPanel.style.display = "none";
+  });
+  schedule(1220, () => {
+    els.deploymentOverlay.classList.add("deployment-visible");
+    playDashboardPanelCue();
+    startDeploymentRosterAudio(state.deploymentRunId);
+    els.setupTransitionBlackout?.classList.add("handoff");
+  });
+  schedule(2020, () => {
+    if (els.setupTransitionBlackout) {
+      els.setupTransitionBlackout.classList.remove("visible", "handoff");
+      els.setupTransitionBlackout.hidden = true;
+    }
+    document.body.classList.remove("setup-to-deployment", "setup-blackout-active");
+  });
+}
+
+function startDeploymentSequence(options = {}) {
   stopDeploymentSequence();
   state.deploymentRunId += 1;
   state.deploymentStartedAt = Date.now();
@@ -5320,13 +6507,15 @@ function startDeploymentSequence() {
   state.deploymentCompletionWait = 0;
   state.deploymentReady = false;
   const runId = state.deploymentRunId;
-  document.body.classList.add("session-entering");
+  document.body.classList.add("session-entering", "dashboard-concealed");
   document.body.classList.remove("session-revealing");
   els.deploymentOverlay.hidden = false;
   els.deploymentOverlay.className = `deployment-overlay theme-${deploymentThemeClass()}`;
   window.requestAnimationFrame(() => {
-    if (state.deploymentRunId === runId && state.started) {
+    if (!options.deferReveal && state.deploymentRunId === runId && state.started) {
       els.deploymentOverlay.classList.add("deployment-visible");
+      playDashboardPanelCue();
+      startDeploymentRosterAudio(runId);
     }
   });
   els.deploymentTheme.textContent = deploymentThemeLabel();
@@ -5367,7 +6556,10 @@ function completeDeploymentSequence() {
       els.deploymentFragment.textContent = "All operators report ready status. Mission channel opening.";
       if (els.deploymentReadyMessage) {
         els.deploymentReadyMessage.hidden = false;
-        window.requestAnimationFrame(() => els.deploymentReadyMessage.classList.add("visible"));
+        window.requestAnimationFrame(() => {
+          els.deploymentReadyMessage.classList.add("visible");
+          startDeploymentReadyBlinkAudio(runId);
+        });
       }
       els.deploymentTitle.hidden = false;
       const titleStatus = els.deploymentTitle.querySelector("span");
@@ -5379,30 +6571,237 @@ function completeDeploymentSequence() {
           resolve(false);
           return;
         }
-        els.deploymentOverlay.classList.remove("deployment-visible");
-        els.deploymentOverlay.classList.add("deployment-fading");
-        document.body.classList.add("session-revealing");
+        stopDeploymentReadyBlinkAudio();
+        els.deploymentOverlay.classList.add("deployment-blackout");
         window.setTimeout(() => {
           if (runId !== state.deploymentRunId || !state.started) {
             resolve(false);
             return;
           }
-          stopDeploymentSequence();
-          resolve(true);
-        }, 780);
+          els.deploymentOverlay.classList.remove("deployment-visible");
+          els.deploymentOverlay.classList.add("deployment-fading");
+          window.setTimeout(() => {
+            if (runId !== state.deploymentRunId || !state.started) {
+              resolve(false);
+              return;
+            }
+            stopDeploymentSequence({ preserveDashboardBoot: true });
+            runDashboardBootSequence(runId).then(resolve);
+          }, 720);
+        }, 620);
       }, 2600);
     }, wait);
   });
 }
 
-function stopDeploymentSequence() {
+function startDeploymentReadyBlinkAudio(runId) {
+  stopDeploymentReadyBlinkAudio();
+  const ping = () => {
+    if (runId !== state.deploymentRunId || !state.started || !els.deploymentReadyMessage?.classList.contains("visible")) {
+      stopDeploymentReadyBlinkAudio();
+      return;
+    }
+    playGameSfx("loot");
+  };
+  ping();
+  state.deploymentReadySfxTimer = window.setInterval(ping, 700);
+}
+
+function stopDeploymentReadyBlinkAudio() {
+  if (state.deploymentReadySfxTimer) window.clearInterval(state.deploymentReadySfxTimer);
+  state.deploymentReadySfxTimer = null;
+}
+
+function startDeploymentRosterAudio(runId) {
+  stopDeploymentRosterAudio();
+  state.players.forEach((player, index) => {
+    const timer = window.setTimeout(() => {
+      state.deploymentRosterSfxTimers = state.deploymentRosterSfxTimers.filter((entry) => entry !== timer);
+      if (runId !== state.deploymentRunId || !state.started || !els.deploymentOverlay.classList.contains("deployment-visible")) return;
+      playDeploymentOperatorCue();
+    }, DEPLOYMENT_ROSTER_REVEAL_DELAY_MS + index * DEPLOYMENT_ROSTER_STAGGER_MS);
+    state.deploymentRosterSfxTimers.push(timer);
+  });
+}
+
+function playDeploymentOperatorCue() {
+  if (state.sfxPreset === "off") return;
+  try {
+    const audio = new Audio("audio-effects/ui-effect.mp3");
+    const cleanup = () => {
+      state.deploymentRosterAudio = state.deploymentRosterAudio.filter((entry) => entry !== audio);
+    };
+    audio.preload = "auto";
+    audio.volume = state.sfxPreset === "cinematic" ? 0.9 : 0.52;
+    audio.addEventListener("ended", cleanup, { once: true });
+    audio.addEventListener("error", cleanup, { once: true });
+    state.deploymentRosterAudio.push(audio);
+    audio.play().catch(cleanup);
+  } catch {
+    // Intro cues should never interrupt the deployment sequence.
+  }
+}
+
+function stopDeploymentRosterAudio() {
+  for (const timer of state.deploymentRosterSfxTimers) window.clearTimeout(timer);
+  state.deploymentRosterSfxTimers = [];
+  state.deploymentRosterAudio.forEach((audio) => {
+    try {
+      audio.pause();
+      audio.currentTime = 0;
+    } catch {
+      // Intro cues should never interrupt mission cleanup.
+    }
+  });
+  state.deploymentRosterAudio = [];
+}
+
+function clearDashboardBootSequence() {
+  for (const timer of state.dashboardBootTimers) window.clearTimeout(timer);
+  state.dashboardBootTimers = [];
+  stopDashboardOperatorAudio();
+  document.body.classList.remove(
+    "dashboard-concealed",
+    "dashboard-booting",
+    "dashboard-stage-shell",
+    "dashboard-stage-map",
+    "dashboard-map-boot",
+    "dashboard-stage-map-lock",
+    "dashboard-stage-telemetry",
+    "dashboard-stage-log",
+    "dashboard-stage-encounter",
+    "dashboard-stage-status",
+    "dashboard-stage-operators",
+    "dashboard-stage-supplies",
+    "dashboard-stage-tools"
+  );
+}
+
+function runDashboardBootSequence(runId) {
+  clearDashboardBootSequence();
+  document.body.classList.add("dashboard-booting", "dashboard-stage-shell");
+  const schedule = (delay, callback) => {
+    const timer = window.setTimeout(() => {
+      state.dashboardBootTimers = state.dashboardBootTimers.filter((entry) => entry !== timer);
+      if (runId !== state.deploymentRunId || !state.started) return;
+      callback();
+    }, delay);
+    state.dashboardBootTimers.push(timer);
+  };
+
+  return new Promise((resolve) => {
+    const operatorStageStart = 5450;
+    const operatorStaggerMs = 280;
+    const operatorCount = Math.max(1, state.players.length);
+    const operatorStageEnd = operatorStageStart + ((operatorCount - 1) * operatorStaggerMs) + 900;
+    const toolsStageStart = operatorStageEnd + 720;
+    const onlineStageStart = toolsStageStart + 1250;
+
+    schedule(520, () => {
+      document.body.classList.add("dashboard-stage-map", "dashboard-map-boot");
+      playGameSfx("submitted");
+    });
+    schedule(1880, () => {
+      document.body.classList.remove("dashboard-map-boot");
+      document.body.classList.add("dashboard-stage-map-lock");
+    });
+    schedule(2780, () => {
+      document.body.classList.add("dashboard-stage-telemetry");
+      playDashboardPanelCue();
+    });
+    schedule(3660, () => {
+      document.body.classList.add("dashboard-stage-log");
+      playDashboardPanelCue();
+    });
+    schedule(4380, () => {
+      document.body.classList.add("dashboard-stage-encounter");
+      playDashboardPanelCue();
+    });
+    schedule(4980, () => {
+      document.body.classList.add("dashboard-stage-status");
+      playDashboardPanelCue();
+    });
+    schedule(operatorStageStart, () => document.body.classList.add("dashboard-stage-operators"));
+    state.players.forEach((player, index) => {
+      schedule(operatorStageStart + index * operatorStaggerMs, playDashboardOperatorCue);
+    });
+    schedule(operatorStageEnd, () => {
+      document.body.classList.add("dashboard-stage-supplies");
+      playDashboardPanelCue();
+    });
+    schedule(toolsStageStart, () => {
+      document.body.classList.add("dashboard-stage-tools");
+      playDashboardPanelCue();
+    });
+    schedule(onlineStageStart, () => {
+      clearDashboardBootSequence();
+      document.body.classList.add("dashboard-online");
+      const onlineTimer = window.setTimeout(() => document.body.classList.remove("dashboard-online"), 1600);
+      state.dashboardBootTimers.push(onlineTimer);
+      resolve(true);
+    });
+  });
+}
+
+function playDashboardOperatorCue() {
+  if (state.sfxPreset === "off") return;
+  try {
+    const audio = new Audio("audio-effects/ui-effect.mp3");
+    const cleanup = () => {
+      state.dashboardBootAudio = state.dashboardBootAudio.filter((entry) => entry !== audio);
+    };
+    audio.preload = "auto";
+    audio.volume = state.sfxPreset === "cinematic" ? 0.88 : 0.5;
+    audio.addEventListener("ended", cleanup, { once: true });
+    audio.addEventListener("error", cleanup, { once: true });
+    state.dashboardBootAudio.push(audio);
+    audio.play().catch(cleanup);
+  } catch {
+    // Dashboard cues should never interrupt the boot sequence.
+  }
+}
+
+function playDashboardPanelCue() {
+  if (state.sfxPreset === "off") return;
+  try {
+    const audio = new Audio("audio-effects/ui-effect-small.mp3");
+    const cleanup = () => {
+      state.dashboardBootAudio = state.dashboardBootAudio.filter((entry) => entry !== audio);
+    };
+    audio.preload = "auto";
+    audio.volume = state.sfxPreset === "cinematic" ? 0.72 : 0.38;
+    audio.addEventListener("ended", cleanup, { once: true });
+    audio.addEventListener("error", cleanup, { once: true });
+    state.dashboardBootAudio.push(audio);
+    audio.play().catch(cleanup);
+  } catch {
+    // Panel cues should never interrupt deployment or dashboard startup.
+  }
+}
+
+function stopDashboardOperatorAudio() {
+  state.dashboardBootAudio.forEach((audio) => {
+    try {
+      audio.pause();
+      audio.currentTime = 0;
+    } catch {
+      // Dashboard cues should never interrupt mission cleanup.
+    }
+  });
+  state.dashboardBootAudio = [];
+}
+
+function stopDeploymentSequence(options = {}) {
   if (state.deploymentTimer) window.clearInterval(state.deploymentTimer);
   state.deploymentTimer = null;
+  stopDeploymentReadyBlinkAudio();
+  stopDeploymentRosterAudio();
   state.deploymentCompletionStartedAt = 0;
   state.deploymentCompletionWait = 0;
   els.deploymentOverlay.hidden = true;
-  els.deploymentOverlay.classList.remove("deployment-visible", "deployment-fading");
+  els.deploymentOverlay.classList.remove("deployment-visible", "deployment-fading", "deployment-blackout");
   document.body.classList.remove("session-entering", "session-revealing", "setup-to-deployment");
+  if (!options.preserveDashboardBoot) clearDashboardBootSequence();
 }
 
 function startOpeningWaitCounter() {
@@ -5521,6 +6920,31 @@ function deploymentThemeClass() {
   return "military";
 }
 
+function applyDashboardAtmosphere() {
+  if (!document.body) return;
+  const node = state.nodes[state.currentNode];
+  const actionPressure = Boolean(state.actionDrivenMode && currentQuestionInfo()?.actionRoom?.pressureSpotlight);
+  const roster = state.players.filter(Boolean);
+  const partySize = roster.length;
+  const lowCount = roster.filter((player) => player.incapacitated || Number(player.hp) <= 2).length;
+  const woundedCount = roster.filter((player) => player.incapacitated || Number(player.hp) <= 3).length;
+  const averageHp = partySize
+    ? roster.reduce((total, player) => total + Math.max(0, Number(player.hp) || 0), 0) / partySize
+    : 5;
+  const partyCritical = partySize > 0 && (lowCount >= Math.ceil(partySize / 2) || averageHp <= 2.25);
+  const partyWounded = partySize > 0 && !partyCritical && (
+    roster.some((player) => player.incapacitated)
+    || woundedCount >= Math.ceil(partySize / 2)
+    || averageHp <= 3.5
+  );
+  document.body.dataset.missionTheme = deploymentThemeClass();
+  document.body.classList.toggle("situation-boss", Boolean(state.bossReadyPending || node?.type === "boss" || currentBossProgress()));
+  document.body.classList.toggle("situation-recovery", node?.type === "recovery");
+  document.body.classList.toggle("situation-emergency", Boolean(state.emergencyTimer?.kind === "emergency" || actionPressure));
+  document.body.classList.toggle("situation-party-wounded", partyWounded);
+  document.body.classList.toggle("situation-party-critical", partyCritical);
+}
+
 function deploymentThemeLabel() {
   const labels = {
     horror: "EMERGENCY SIGNAL RECOVERY",
@@ -5559,10 +6983,12 @@ function collapseMissionBriefing() {
 
 function renderStatus() {
   const playerCards = state.players.map((player, index) => `
-    <div class="status-card ${playerStatusClasses(player)}" style="--player-color:${playerColor(player.name)}; --turn-rank:${actionTurnRank(player)}" data-player-index="${index}" data-player-name="${escapeAttribute(player.name)}">
+    <div class="status-card ${playerStatusClasses(player)} ${playerPromptStatusClasses(player)}" style="--player-color:${playerColor(player.name)}; --turn-rank:${actionTurnRank(player)}; --operator-boot-index:${index}" data-player-index="${index}" data-player-name="${escapeAttribute(player.name)}">
       <div class="status-card-heading">
         <strong title="${escapeAttribute(player.name)}"><span class="player-colored-name">${escapeHtml(displayPlayerName(player.name))}</span></strong>
         ${actionTurnBadge(player)}
+        ${lockedOperatorBadge(player)}
+        ${answerSubmissionBadge(player)}
         ${answerResultBadge(player)}
       </div>
       <div class="status-vitals">
@@ -5576,6 +7002,7 @@ function renderStatus() {
   els.statusGrid.innerHTML = `
     ${playerCards}
   `;
+  syncEmsFieldVisual();
 
   const roomTotal = state.nodes.filter((node) => node.type !== "recovery").length;
   const roomResolved = state.nodes
@@ -5613,6 +7040,30 @@ function actionTurnBadge(player) {
   const rank = actionTurnRank(player);
   if (!rank || player.incapacitated) return "";
   return `<span class="action-turn-badge" title="Action turn order">${rank}</span>`;
+}
+
+function playerPromptStatusClasses(player) {
+  const classes = [];
+  if (!state.started || !state.questionPresentationReady || state.answerPending || state.resolved) return "";
+  const info = currentQuestionInfo();
+  if (!state.actionDrivenMode && info?.type?.locked && info.operator) {
+    classes.push(sameName(player.name, info.operator.name) ? "status-card-locked-operator" : "status-card-locked-out");
+  }
+  if (state.deviceMode === "multi" && participantHasCurrentSubmission({ name: player.name })) classes.push("status-card-submitted");
+  return classes.join(" ");
+}
+
+function lockedOperatorBadge(player) {
+  if (!state.started || !state.questionPresentationReady || state.answerPending || state.resolved || state.actionDrivenMode) return "";
+  const info = currentQuestionInfo();
+  if (!info?.type?.locked || !info.operator || !sameName(player.name, info.operator.name)) return "";
+  return `<span class="locked-operator-badge" title="Locked operator" aria-label="Locked operator">LOCKED</span>`;
+}
+
+function answerSubmissionBadge(player) {
+  if (!state.started || state.deviceMode !== "multi" || !state.questionPresentationReady || state.answerPending || state.resolved) return "";
+  if (!participantHasCurrentSubmission({ name: player.name })) return "";
+  return `<span class="answer-submit-badge" title="Submitted" aria-label="Submitted">Submitted</span>`;
 }
 
 function statusCodeText(player) {
@@ -5692,12 +7143,25 @@ function renderRouteTelemetry() {
 
 function renderMapEmergencyTimer() {
   const timer = state.emergencyTimer;
-  els.mapEmergencyTimer.hidden = !timer;
-  if (!timer) return;
+  els.mapEmergencyTimer.hidden = false;
+  els.mapEmergencyTimer.classList.toggle("inactive", !timer);
+  if (!timer) {
+    if (els.mapEmergencyTimerLabel) els.mapEmergencyTimerLabel.textContent = "Challenge Window";
+    els.mapEmergencyTimerValue.textContent = "--";
+    if (els.mapEmergencyPauseBtn) {
+      els.mapEmergencyPauseBtn.textContent = "Timer Standby";
+      els.mapEmergencyPauseBtn.disabled = true;
+    }
+    els.mapEmergencyTimer.classList.remove("critical", "final-seconds", "paused");
+    return;
+  }
   const seconds = Math.max(0, timer.remainingMs / 1000);
   if (els.mapEmergencyTimerLabel) els.mapEmergencyTimerLabel.textContent = timer.starting ? "Prompt opening..." : timer.label || "Challenge Window";
   els.mapEmergencyTimerValue.textContent = seconds.toFixed(1);
-  if (els.mapEmergencyPauseBtn) els.mapEmergencyPauseBtn.textContent = timer.starting ? "Starting..." : timer.paused ? "Resume Timer" : "Pause Timer";
+  if (els.mapEmergencyPauseBtn) {
+    els.mapEmergencyPauseBtn.textContent = timer.starting ? "Starting..." : timer.paused ? "Resume Timer" : "Pause Timer";
+    els.mapEmergencyPauseBtn.disabled = Boolean(timer.starting);
+  }
   els.mapEmergencyTimer.classList.toggle("critical", seconds <= 5);
   els.mapEmergencyTimer.classList.toggle("final-seconds", seconds <= 3);
   els.mapEmergencyTimer.classList.toggle("paused", timer.paused);
@@ -5718,6 +7182,7 @@ function renderInventoryActions() {
       <span>${state.inventory.medkits} Medkits</span>
       <span>${state.inventory.ems} EMS Devices</span>
       ${state.sideActionGuard ? "<span>Defensive preparation active</span>" : ""}
+      ${state.selectedEMS ? '<span class="ems-field-status">EMS FIELD ACTIVE</span>' : ""}
     </div>
     <div class="inventory-action-row">
       <select id="inventoryMedkitTarget" aria-label="Medkit target" ${medkitDisabled ? "disabled" : ""}>
@@ -5729,6 +7194,7 @@ function renderInventoryActions() {
       </button>
     </div>
   `;
+  els.inventoryActions.classList.toggle("ems-field-active", Boolean(state.selectedEMS));
 
   document.getElementById("inventoryUseMedkitBtn")?.addEventListener("click", () => {
     const target = Number(document.getElementById("inventoryMedkitTarget")?.value);
@@ -5739,6 +7205,13 @@ function renderInventoryActions() {
     if (state.chatMode) activateLocalEMS();
     else activateEMS();
   });
+}
+
+function syncEmsFieldVisual() {
+  const active = Boolean(state.selectedEMS);
+  els.statusGrid?.classList.toggle("ems-field-active", active);
+  els.mapPanel?.classList.toggle("ems-field-active", active);
+  els.inventoryActions?.classList.toggle("ems-field-active", active);
 }
 
 function suppliesAreLocked() {
@@ -5762,7 +7235,16 @@ function playerStatusClasses(player) {
   return classes.join(" ");
 }
 
+function setMissionFailureVisual(active) {
+  const failed = Boolean(active);
+  els.mapPanel?.classList.toggle("mission-failed", failed);
+  document.body.classList.toggle("situation-failure", failed);
+  if (els.mapFailureOverlay) els.mapFailureOverlay.hidden = !failed;
+}
+
 function renderMap() {
+  applyDashboardAtmosphere();
+  syncEmsFieldVisual();
   els.mapTitle.textContent = state.title || "Awaiting Mission";
   els.missionMap.innerHTML = "";
   if (!state.nodes.length) {
@@ -5825,6 +7307,7 @@ function renderMap() {
   els.mapPanel.classList.toggle("transmission-incorrect", Boolean(state.transmissionPending && state.routeTransition && !state.routeTransition.correct));
   els.mapPanel.classList.toggle("transmission-boss", Boolean(state.transmissionPending && state.routeTransition?.boss));
   els.mapPanel.classList.toggle("boss-encounter", state.nodes[state.currentNode]?.type === "boss");
+  syncBossEyesVisual();
   renderRouteTelemetry();
   renderMapQuestionOverlay();
 }
@@ -6047,24 +7530,97 @@ function fadeMapQuestionOverlay(callback) {
 }
 
 function routePositions(count) {
-  const points = [];
-  const cols = 5;
-  const xGap = 164;
-  const yGap = 108;
-  const startX = 92;
-  const startY = 68;
+  if (state.mapPositions.length !== count) {
+    state.mapLayoutSeed ||= seedFrom(`${state.title}|${state.environment}|${Date.now()}|${Math.random()}`);
+    state.mapPositions = generateSprawledRoutePositions(count, state.mapLayoutSeed);
+  }
+  return state.mapPositions;
+}
 
-  for (let i = 0; i < count; i++) {
-    const row = Math.floor(i / cols);
-    const colRaw = i % cols;
-    const col = row % 2 === 0 ? colRaw : cols - 1 - colRaw;
-    points.push({
-      x: startX + col * xGap,
-      y: startY + row * yGap
-    });
+function generateSprawledRoutePositions(count, seed) {
+  if (count <= 0) return [];
+  const rng = mulberry32(seed || 1);
+  const cols = 6;
+  const rows = Math.max(3, Math.ceil(count / 5));
+  const corners = [
+    { col: 0, row: 0 },
+    { col: cols - 1, row: 0 },
+    { col: 0, row: rows - 1 },
+    { col: cols - 1, row: rows - 1 }
+  ];
+  const keyFor = (cell) => `${cell.col}:${cell.row}`;
+  const neighborCells = (cell) => [
+    { col: cell.col + 1, row: cell.row },
+    { col: cell.col - 1, row: cell.row },
+    { col: cell.col, row: cell.row + 1 },
+    { col: cell.col, row: cell.row - 1 }
+  ].filter((next) => next.col >= 0 && next.col < cols && next.row >= 0 && next.row < rows);
+
+  let route = null;
+  for (let attempt = 0; attempt < 24 && !route; attempt++) {
+    const start = corners[Math.floor(rng() * corners.length)];
+    const path = [{ ...start }];
+    const used = new Set([keyFor(start)]);
+    let budget = 24000;
+    const walk = () => {
+      if (path.length >= count) return true;
+      if (budget-- <= 0) return false;
+      const current = path[path.length - 1];
+      const candidates = neighborCells(current)
+        .filter((cell) => !used.has(keyFor(cell)))
+        .map((cell) => ({
+          ...cell,
+          onward: neighborCells(cell).filter((next) => !used.has(keyFor(next))).length,
+          edge: Math.min(cell.col, cols - 1 - cell.col) + Math.min(cell.row, rows - 1 - cell.row),
+          noise: rng()
+        }))
+        .sort((a, b) => (a.onward + a.edge * 0.18 + a.noise * 1.4) - (b.onward + b.edge * 0.18 + b.noise * 1.4));
+      for (const candidate of candidates) {
+        const next = { col: candidate.col, row: candidate.row };
+        path.push(next);
+        used.add(keyFor(next));
+        if (walk()) return true;
+        used.delete(keyFor(next));
+        path.pop();
+      }
+      return false;
+    };
+    if (!walk()) continue;
+    const colSpan = Math.max(...path.map((cell) => cell.col)) - Math.min(...path.map((cell) => cell.col));
+    const rowSpan = Math.max(...path.map((cell) => cell.row)) - Math.min(...path.map((cell) => cell.row));
+    if (count < 5 || (colSpan >= Math.min(3, cols - 1) && rowSpan >= Math.min(2, rows - 1))) route = path;
   }
 
-  return points;
+  if (!route) route = spiralRouteCells(rows, cols).slice(0, count);
+  const xGap = 744 / Math.max(1, cols - 1);
+  const yGap = Math.max(104, Math.min(122, 520 / Math.max(1, rows - 1)));
+  return route.map((cell, index) => ({
+    x: 78 + cell.col * xGap + (rng() - 0.5) * 28,
+    y: 68 + cell.row * yGap + (rng() - 0.5) * 18 + (index % 2 ? 3 : -3)
+  }));
+}
+
+function spiralRouteCells(rows, cols) {
+  const cells = [];
+  let top = 0;
+  let bottom = rows - 1;
+  let left = 0;
+  let right = cols - 1;
+  while (top <= bottom && left <= right) {
+    for (let col = left; col <= right; col++) cells.push({ col, row: top });
+    top += 1;
+    for (let row = top; row <= bottom; row++) cells.push({ col: right, row });
+    right -= 1;
+    if (top <= bottom) {
+      for (let col = right; col >= left; col--) cells.push({ col, row: bottom });
+      bottom -= 1;
+    }
+    if (left <= right) {
+      for (let row = bottom; row >= top; row--) cells.push({ col: left, row });
+      left += 1;
+    }
+  }
+  return cells;
 }
 
 function roomName(node, index) {
@@ -6169,7 +7725,7 @@ function renderChallenge(node) {
     if (questionBlock) questionBlock.classList.remove("pending-content");
     finishLogPresentation(presentationRunId);
     queueMapQuestionReveal(() => {
-      startEmergencyTimerForCurrentEncounter(type);
+      startEmergencyTimerForCurrentEncounter(type, { publish: false });
       publishCurrentPlayerPrompt({ renderOverlay: false });
       renderAnswerControls(q);
     });
@@ -6195,11 +7751,14 @@ function renderChatCheckpoint(node) {
 
   if (state.currentQuestion === 0 && !state.readinessLogged) {
     state.readinessLogged = true;
+    const briefing = state.currentBriefing || fallbackBriefing();
+    const openingStory = state.openingLogStory || missionBriefingLogStory(briefing, fallbackOpeningIntro(briefing));
     appendTranscript({
       tag: "Mission Briefing",
       hideLogTag: true,
       suppressRoomNameUpdate: true,
-      story: state.openingLogStory || missionBriefingLogStory(state.currentBriefing || fallbackBriefing(), fallbackOpeningIntro(state.currentBriefing || fallbackBriefing())),
+      story: openingStory,
+      speechText: missionBriefingSpeechText(briefing, openingStory),
       teamReadyGate: true
     });
     return;
@@ -6704,6 +8263,8 @@ function renderChatControls() {
 
 function confirmTeamReady() {
   state.teamReady = true;
+  startNormalBackgroundMusicAfterReady();
+  playGameSfx("ui");
   state.questionPresentationReady = false;
   state.answerPending = false;
   state.lastSubmittedAnswer = "";
@@ -6795,7 +8356,7 @@ function submitPlayerAnswer(event) {
   event.preventDefault();
   const input = document.getElementById("playerAnswerInput");
   const answer = sanitizeText(input?.value, { maxLength: 180 });
-  if (!answer || state.answerPending || state.sideActionPending || !state.questionPresentationReady) return;
+  if (!answer || state.answerPending || state.resolutionDelayPending || state.sideActionPending || !state.questionPresentationReady) return;
   submitPlayerAnswerValue(answer, { source: "teacher-form" });
 }
 
@@ -6807,7 +8368,7 @@ function submitManualFallbackAnswer(event) {
 
 function submitManualFallbackAnswerValue(answer) {
   const cleanAnswer = sanitizeText(answer, { maxLength: 180 });
-  if (!cleanAnswer || state.answerPending || state.sideActionPending || !state.questionPresentationReady) return;
+  if (!cleanAnswer || state.answerPending || state.resolutionDelayPending || state.sideActionPending || !state.questionPresentationReady) return;
   submitPlayerAnswerValue(cleanAnswer, { source: "manual-fallback" });
 }
 
@@ -6816,7 +8377,7 @@ function submitPlayerAnswerValue(answer, options = {}) {
   const input = document.getElementById("playerAnswerInput");
   const status = document.getElementById("answerSubmitState");
   const button = document.getElementById("submitPlayerAnswerBtn");
-  if (!cleanAnswer || state.answerPending || state.sideActionPending || (!state.questionPresentationReady && !options.timeout)) return;
+  if (!cleanAnswer || state.answerPending || state.resolutionDelayPending || state.sideActionPending || (!state.questionPresentationReady && !options.timeout)) return;
   const promptId = state.playerPromptId || currentTimerPromptId();
   const source = options.source || (options.timeout ? "timer" : "unknown");
   if (state.deviceMode === "multi" && !options.timeout && source === "unknown") {
@@ -6908,7 +8469,7 @@ function bindEmergencyTimerControls() {
   });
 }
 
-function startEmergencyTimerForCurrentEncounter(type = challengeType(state.currentQuestion, state.questions.length)) {
+function startEmergencyTimerForCurrentEncounter(type = challengeType(state.currentQuestion, state.questions.length), options = {}) {
   const node = state.nodes[state.currentNode];
   if (node?.type === "recovery" || type.isRecovery) return;
   if ((!state.emergencyTimerEnabled && !state.actionDrivenMode && type.kind !== "action") || state.resolved || !state.teamReady && state.chatMode) return;
@@ -6918,7 +8479,7 @@ function startEmergencyTimerForCurrentEncounter(type = challengeType(state.curre
     state.emergencyTimer.questionIndex = state.currentQuestion;
     resumeChallengeTimer();
     renderTimerSurfaces();
-    publishPlayerSession({ status: "open", prompt: buildPlayerPrompt(), resetAnswers: false });
+    if (options.publish !== false) publishPlayerSession({ status: "open", prompt: buildPlayerPrompt(), resetAnswers: false });
     return;
   }
 
@@ -6939,9 +8500,12 @@ function startEmergencyTimerForCurrentEncounter(type = challengeType(state.curre
     starting: deliveryGraceMs > 0,
     nodeIndex: state.currentNode,
     questionIndex: state.currentQuestion,
-    promptId
+    promptId,
+    warningPlayed: false
   };
+  if (type.kind === "emergency" || actionPressure) playGameSfx("emergency");
   state.emergencyTimer.interval = window.setInterval(tickEmergencyTimer, 100);
+  applyDashboardAtmosphere();
   if (deliveryGraceMs > 0) {
     const nodeIndex = state.currentNode;
     const questionIndex = state.currentQuestion;
@@ -6956,13 +8520,18 @@ function startEmergencyTimerForCurrentEncounter(type = challengeType(state.curre
     }, deliveryGraceMs);
   }
   renderTimerSurfaces();
-  publishPlayerSession({ status: "open", prompt: buildPlayerPrompt(), resetAnswers: false });
+  if (options.publish !== false) publishPlayerSession({ status: "open", prompt: buildPlayerPrompt(), resetAnswers: false });
 }
 
 function tickEmergencyTimer() {
   const timer = state.emergencyTimer;
   if (!timer || timer.paused) return;
+  const previousRemainingMs = timer.remainingMs;
   timer.remainingMs = Math.max(0, timer.deadline - Date.now());
+  if (!timer.warningPlayed && timer.remainingMs <= 10_000) {
+    timer.warningPlayed = true;
+    playGameSfx("timer");
+  }
   renderTimerSurfaces();
   if (timer.remainingMs <= 0) handleEmergencyTimeout();
 }
@@ -6981,6 +8550,7 @@ function toggleEmergencyTimerPause() {
   } else {
     timer.remainingMs = Math.max(0, timer.deadline - Date.now());
     timer.paused = true;
+    stopGameSfx("timer");
   }
   renderTimerSurfaces();
   publishTimerStateToPlayers();
@@ -6996,6 +8566,7 @@ function pauseChallengeTimer() {
   timer.starting = false;
   timer.remainingMs = Math.max(0, timer.deadline - Date.now());
   timer.paused = true;
+  stopGameSfx("timer");
   renderTimerSurfaces();
   publishTimerStateToPlayers();
 }
@@ -7023,8 +8594,11 @@ function stopEmergencyTimer() {
   const timer = state.emergencyTimer;
   if (timer?.interval) window.clearInterval(timer.interval);
   if (timer?.startGraceTimer) window.clearTimeout(timer.startGraceTimer);
+  stopGameSfx("timer");
+  stopGameSfx("emergency");
   state.emergencyTimer = null;
   renderMapEmergencyTimer();
+  applyDashboardAtmosphere();
 }
 
 function renderTimerSurfaces() {
@@ -7498,7 +9072,7 @@ function rollSideActionOutcome(context, actor, target, classification) {
     sideActionOutcomeWeights(classification.category),
     classification.modifiers || []
   );
-  const kind = chooseWeightedSideActionOutcome(weights);
+  const kind = preferredSideActionOutcome(context, classification) || chooseWeightedSideActionOutcome(weights);
   const outcome = buildSideActionOutcome(kind, context, actor, target, classification);
   outcome.modifiers = classification.modifiers || [];
   return outcome;
@@ -7506,24 +9080,45 @@ function rollSideActionOutcome(context, actor, target, classification) {
 
 function sideActionOutcomeWeights(category) {
   const tables = {
-    search: { loot: 34, narrow: 18, flavor: 38, hazard: 9, terminal: 1 },
-    inspect: { narrow: 52, flavor: 38, hazard: 8, bypass: 1, terminal: 1 },
-    repair: { narrow: 35, flavor: 29, hazard: 30, bypass: 4, terminal: 2 },
-    explore: { loot: 14, narrow: 10, flavor: 50, hazard: 23, terminal: 3 },
+    search: { loot: 46, narrow: 24, flavor: 22, hazard: 7, terminal: 1 },
+    inspect: { narrow: 68, flavor: 23, hazard: 7, bypass: 1, terminal: 1 },
+    repair: { narrow: 42, flavor: 26, hazard: 24, bypass: 6, terminal: 2 },
+    explore: { loot: 20, narrow: 16, flavor: 42, hazard: 19, terminal: 3 },
     protect: { guard: 72, flavor: 27, hazard: 1 },
     medical: { stabilize: 68, flavor: 27, hazard: 5 },
     assist: { guard: 36, stabilize: 18, flavor: 42, hazard: 4 },
-    salvage: { loot: 35, narrow: 12, flavor: 23, guard: 8, hazard: 19, terminal: 3 },
-    hack: { narrow: 39, flavor: 24, hazard: 23, bypass: 10, terminal: 4 },
-    communicate: { narrow: 16, flavor: 67, guard: 10, hazard: 7 },
+    salvage: { loot: 44, narrow: 16, flavor: 19, guard: 8, hazard: 11, terminal: 2 },
+    hack: { narrow: 54, flavor: 20, hazard: 15, bypass: 9, terminal: 2 },
+    communicate: { narrow: 24, flavor: 57, guard: 12, hazard: 7 },
     distract: { guard: 48, flavor: 37, hazard: 13, terminal: 2 },
     craft: { guard: 40, narrow: 23, flavor: 22, hazard: 13, bypass: 1, terminal: 1 },
     perform: { flavor: 95, hazard: 4, terminal: 1 },
-    attack: { flavor: 24, guard: 12, hazard: 54, terminal: 10 },
+    attack: { flavor: 20, guard: 18, hazard: 52, terminal: 10 },
     reckless: { reckless: 100 },
     implausible: { reject: 100 }
   };
   return tables[category] || tables.inspect;
+}
+
+function preferredSideActionOutcome(context, classification = {}) {
+  const category = classification.category || "";
+  const action = normalize(classification.originalAction || "");
+  const modifiers = classification.modifiers || [];
+  if (!category || category === "reckless" || category === "implausible") return "";
+  if (modifiers.includes("reckless") || modifiers.includes("violent")) return "";
+  if (/\b(medkit|medical|medic|first aid|trauma|supply|supplies|cache|locker|crate|cabinet|kit|bag|pack)\b/.test(action)
+      && ["search", "salvage", "medical", "explore"].includes(category)) {
+    return "loot";
+  }
+  if (category === "medical") return "stabilize";
+  if (["protect", "assist", "distract"].includes(category)) return "guard";
+  if (["inspect", "hack", "communicate"].includes(category)
+      || /\b(scan|read|inspect|study|diagnos|analyz|trace|decode|listen|monitor|schematic|manual|label|record)\b/.test(action)) {
+    return context?.question ? "narrow" : "";
+  }
+  if (category === "repair" && modifiers.includes("technical")) return "narrow";
+  if (category === "attack" && modifiers.includes("threat-targeted") && !modifiers.includes("reckless")) return "guard";
+  return "";
 }
 
 function adjustedSideActionOutcomeWeights(base, modifiers) {
@@ -7621,11 +9216,14 @@ function buildSideActionOutcome(kind, context, actor, target, classification) {
   }
   if (kind === "narrow") {
     const removed = narrowCurrentChoices(context.question);
+    const hint = removed.length ? "" : questionHintStatus(context.question);
     return {
       kind: "narrow",
       category,
-      facts: `${category} action uncovers a relevant clue; rule out these incorrect possibilities: ${removed.map((choice) => `${choice.key}. ${choice.text}`).join("; ") || "none"}`,
-      statusLog: removed.length ? `Diagnostic clue: rule out ${removed.map((choice) => choice.key).join(" and ")}.` : "The active prompt is already narrowed as far as it can go.",
+      facts: removed.length
+        ? `${category} action uncovers a relevant clue; rule out these incorrect possibilities: ${removed.map((choice) => `${choice.key}. ${choice.text}`).join("; ")}`
+        : `${category} action uncovers a relevant clue; ${hint || "no additional clue is available"}`,
+      statusLog: removed.length ? `Diagnostic clue: rule out ${removed.map((choice) => choice.key).join(" and ")}.` : (hint || "The active prompt is already narrowed as far as it can go."),
       eventNotes
     };
   }
@@ -7709,6 +9307,31 @@ function narrowCurrentChoices(question) {
   const removed = available.slice(0, count);
   state.narrowedChoices[state.currentQuestion] = [...existing, ...removed.map((choice) => choice.key)];
   return removed;
+}
+
+function questionHintStatus(question) {
+  if (!question) return "";
+  if (question.mode === "fill") {
+    const answer = question.answerText || question.answerKey || "";
+    const pattern = fillAnswerPattern(answer);
+    return pattern ? `Diagnostic clue: answer pattern ${pattern}.` : "";
+  }
+  if (question.mode === "truefalse") {
+    return "Diagnostic clue: the active statement resolves to either True or False; watch for absolute wording.";
+  }
+  return "";
+}
+
+function fillAnswerPattern(answer) {
+  const text = String(answer || "").trim();
+  if (!text) return "";
+  let letterIndex = 0;
+  return text.split("").map((char, index) => {
+    if (!/[a-z0-9]/i.test(char)) return char;
+    const reveal = index === 0 || index === text.length - 1 || letterIndex % 3 === 0;
+    letterIndex += 1;
+    return reveal ? char : "_";
+  }).join("").replace(/_/g, "_ ");
 }
 
 function finishLocalSideAction(outcome, playerEvents, story) {
@@ -7830,6 +9453,7 @@ function activateLocalEMS() {
   if (suppliesAreLocked() || !state.questionPresentationReady || state.selectedEMS || state.inventory.ems <= 0 || state.resolved) return;
   state.selectedEMS = true;
   state.inventory.ems -= 1;
+  playGameSfx("recovery");
   renderStatus();
   flashEmsShield();
   appendTranscript({
@@ -7843,6 +9467,7 @@ function useLocalMedkit(playerIndex) {
   const before = snapshotPlayers();
   const player = state.players[playerIndex];
   if (suppliesAreLocked() || !player || state.inventory.medkits <= 0) return;
+  playGameSfx("recovery");
   state.inventory.medkits -= 1;
   if (player.incapacitated) {
     player.incapacitated = false;
@@ -7951,7 +9576,7 @@ function startTransmissionFeedback({ correct, context, playerEvents = [] }) {
   updateCurrentNodeResult(Boolean(correct));
   renderStatus();
   flashStatusEffects(playerEvents.map((event) => ({ player: findPlayer(event), kind: event.effect, amount: event.amount })).filter((event) => event.player));
-  flashAnswerFeedback(correct);
+  flashAnswerFeedback(correct, { boss: Boolean(context.type?.boss || bossProgress) });
   renderTransmissionWaiting(correct, playerEvents, context.type);
   if (state.transmissionUiTimer) window.clearInterval(state.transmissionUiTimer);
   state.transmissionUiTimer = window.setInterval(updateTransmissionWaiting, 250);
@@ -7987,6 +9612,10 @@ function beginDeferredRouteTransition(payload) {
   state.transmissionStartedAt = Date.now();
   state.routeTransition = { ...transition };
   state.routeTransition.moving = transition.to !== transition.from;
+  if (state.routeTransition.moving && !state.routeTransition.soundPlayed) {
+    state.routeTransition.soundPlayed = true;
+    playGameSfx("transition");
+  }
   renderMap();
   renderRouteTelemetry();
   return state.transmissionStartedAt;
@@ -8006,7 +9635,21 @@ function stopTransmissionFeedback(render = false) {
   }
 }
 
-function flashAnswerFeedback(correct) {
+function pulseBossEyesOnFailure() {
+  if (!els.mapPanel?.classList.contains("boss-eyes-active")) return;
+  window.clearTimeout(state.bossEyesStrikeTimer);
+  els.mapPanel.classList.remove("boss-eyes-strike");
+  void els.mapPanel.offsetWidth;
+  els.mapPanel.classList.add("boss-eyes-strike");
+  state.bossEyesStrikeTimer = window.setTimeout(() => {
+    els.mapPanel?.classList.remove("boss-eyes-strike");
+    state.bossEyesStrikeTimer = null;
+  }, 1150);
+}
+
+function flashAnswerFeedback(correct, { boss = false } = {}) {
+  playGameSfx(correct ? "correct" : "incorrect");
+  if (!correct && boss) pulseBossEyesOnFailure();
   els.mapPanel.classList.remove("answer-correct-flash", "answer-incorrect-flash");
   void els.mapPanel.offsetWidth;
   els.mapPanel.classList.add(correct ? "answer-correct-flash" : "answer-incorrect-flash");
@@ -8186,9 +9829,9 @@ function resolveLocalSubmittedAnswer(answer, options = {}) {
     });
 }
 
-function resolveLocalEmergencyDeviceAnswer(submitted) {
-  if (!submitted?.answer || !state.emergencyTimer) return;
-  const timer = state.emergencyTimer;
+function resolveLocalEmergencyDeviceAnswer(submitted, timerSnapshot = null) {
+  const timer = timerSnapshot || state.emergencyTimer;
+  if (!submitted?.answer || !timer) return;
   const player = state.players.find((entry) => sameName(entry.name, submitted.playerName));
   const elapsed = Math.max(0, Number(submitted.submittedAt || Date.now()) - (timer.deadline - timer.durationMs));
   const slow = elapsed > timer.durationMs / 2;
@@ -8338,16 +9981,23 @@ function teamFullyIncapacitated() {
 
 function beginLocalTeamFailure({ context, result, currentArea, playerEvents }) {
   if (state.teamFailurePending) return;
+  const missionRunId = state.deploymentRunId;
   state.teamFailurePending = true;
   state.resolved = true;
   state.questionPresentationReady = false;
+  setMissionFailureVisual(true);
+  playMissionFailureAudio();
   startTeamFailureTransmissionFeedback({ context, playerEvents });
   setAnswerPendingText("Receiving final transmission...");
 
   const fallback = localTeamFailureFallback(result, currentArea);
+  const renderIfCurrent = (story) => {
+    if (!state.started || missionRunId !== state.deploymentRunId || !state.teamFailurePending) return;
+    renderTeamFailureCard(story);
+  };
   requestOllama(makeLocalTeamFailurePrompt({ context, result, currentArea, playerEvents }), { temperature: 0.86 })
-    .then((text) => renderTeamFailureCard(cleanLocalNarration(text) || fallback))
-    .catch(() => renderTeamFailureCard(fallback));
+    .then((text) => renderIfCurrent(cleanLocalNarration(text) || fallback))
+    .catch(() => renderIfCurrent(fallback));
 }
 
 function startTeamFailureTransmissionFeedback({ context, playerEvents = [] }) {
@@ -8358,7 +10008,7 @@ function startTeamFailureTransmissionFeedback({ context, playerEvents = [] }) {
   renderStatus();
   renderMap();
   flashStatusEffects(playerEvents.map((event) => ({ player: findPlayer(event), kind: event.effect, amount: event.amount })).filter((event) => event.player));
-  flashAnswerFeedback(false);
+  flashAnswerFeedback(false, { boss: true });
   renderTransmissionWaiting(false, playerEvents, { ...context.type, boss: true });
   state.transmissionUiTimer = window.setInterval(updateTransmissionWaiting, 250);
 }
@@ -8392,11 +10042,16 @@ function renderTeamFailureCard(story) {
   stopEmergencyTimer();
   stopTransmissionFeedback(true);
   clearTypewriters();
+  state.resolved = true;
   state.answerPending = false;
   state.lastSubmittedAnswer = "";
+  state.mapQuestionAlertActive = false;
+  state.questionSurfaceVisible = false;
   state.questionPresentationReady = false;
   state.endingPending = true;
   state.teamFailurePending = false;
+  setMissionFailureVisual(true);
+  if (!state.failureAudio) playMissionFailureAudio();
   const summaryText = `Mission progress halted at ${state.currentQuestion} / ${state.questions.length}. Survivors: 0 / ${state.players.length}. Remaining Supplies: ${state.inventory.medkits} Medkits, ${state.inventory.ems} EMS Devices.`;
   els.encounterCard.innerHTML = `
     <section class="mission-failure-scene">
@@ -9492,21 +11147,21 @@ function makeLocalResolutionPrompt({ correct, context, result, currentArea, next
     ? `transition: 1-2 sentences; stay in ${currentArea} and shift the same fight into the next exchange without changing rooms.`
     : "transition: 1-2 sentences; physically move the team toward the next area without adding a new hazard.";
   const arrivalRule = nextInfo.readyCheck
-    ? `arrival: ${narrationSentenceRange("3-5", "2-3")} sentences; stage the threshold before a major confrontation and end needing readiness confirmation.`
+    ? `arrival: ${narrationSentenceRange("2-4", "2-3")} sentences; stage the threshold before a major confrontation and end needing readiness confirmation.`
     : nextInfo.isRecovery && nextInfo.afterBoss
-    ? `arrival: ${narrationSentenceRange("4-6", "2-3")} sentences; show aftermath, a forced recovery window, and the next route. Keep it earned and temporary.`
+    ? `arrival: ${narrationSentenceRange("3-4", "2-3")} sentences; show aftermath, a forced recovery window, and the next route. Keep it earned and temporary.`
     : nextInfo.isRecovery
-    ? `arrival: ${narrationSentenceRange("3-5", "2-3")} sentences; stage a dangerous temporary recovery window, then point toward the route.`
+    ? `arrival: ${narrationSentenceRange("2-4", "2-3")} sentences; stage a dangerous temporary recovery window, then point toward the route.`
     : nextInfo.type?.boss
-    ? `arrival: ${narrationSentenceRange("3-5", "2-3")} sentences; introduce or escalate the hostile manifestation and battlefield.`
-    : `arrival: ${narrationSentenceRange("3-5", "2-3")} sentences; stage the next area and the specific obstacle blocking it. Avoid making every obstacle a terminal.`;
+    ? `arrival: ${narrationSentenceRange("2-4", "2-3")} sentences; introduce or escalate the hostile manifestation and battlefield.`
+    : `arrival: ${narrationSentenceRange("2-4", "2-3")} sentences; stage the next area and the specific obstacle blocking it. Avoid making every obstacle a terminal.`;
   return [
     "Fast survival-study DM. Return one JSON object only, no markdown, no commentary.",
     "Use exactly these string fields: impact, transition, arrival.",
     "Narration must be player-facing survival fiction, not quiz/interface text.",
     "Never say: answer, question, option, choice, selected, submitted, correct, incorrect, quiz, multiple-choice, HP, hit points, dice, odds, hidden rules.",
     "Translate private study values into physical field actions, procedures, repairs, diagnostics, calls, combat moves, or survival decisions.",
-    `impact: ${narrationSentenceRange("3-5", "2-3")} sentences; show the performed action, reveal the required concept naturally, show success/failure consequence, and close the current obstacle.`,
+    `impact: ${narrationSentenceRange("2-4", "2-3")} sentences; show the performed action, reveal the required concept naturally, show success/failure consequence, and close the current obstacle.`,
     transitionRule,
     arrivalRule,
     bossRule,
@@ -10045,12 +11700,16 @@ function appendTranscript(feed) {
     && !bossProgressBeforeAdvance.finalStep;
   if (payload.readyCheck) {
     state.bossReadyPending = true;
+    startBossReadyAudio(payload);
+    if (state.backgroundMusicMode === "normal") fadeOutBackgroundMusicForBossReady();
+    applyDashboardAtmosphere();
     publishPlayerSession({ status: "briefing", prompt: null, resetAnswers: true });
   }
   if (payload.question) {
     if (!keepBossTimer) stopEmergencyTimer();
     state.questionSurfaceVisible = false;
     state.questionPresentationReady = false;
+    clearPendingPlayerPromptState({ status: "waiting" });
   }
   captureDeferredRouteTransition(payload, hasContinuationGate);
   if (payload.advanceRoom && state.transmissionPending) stopTransmissionFeedback();
@@ -10061,6 +11720,7 @@ function appendTranscript(feed) {
 
   const entry = document.createElement("section");
   entry.className = "transcript-entry";
+  if (payload.speechText) entry.dataset.speechText = payload.speechText;
 
   if (payload.tag && !payload.hideLogTag) {
     const tag = document.createElement("div");
@@ -10107,7 +11767,11 @@ function appendTranscript(feed) {
   if (effects.length && !payload.suppressEffectFlash) flashStatusEffects(effects);
   renderInventoryActions();
   const autoRead = maybeAutoReadMissionLog(entry);
-  const typing = delayPresentation(autoRead.visualDelay).then(() => typeQueuedText(entry));
+  const readyCheckAudioLeadMs = payload.readyCheck ? 500 : 0;
+  const typing = delayPresentation(autoRead.visualDelay + readyCheckAudioLeadMs).then(() => {
+    if (payload.question) startBossQuestionMusic();
+    return typeQueuedText(entry);
+  });
   typing.then(() => {
     return waitForTtsPlayback(autoRead.playback);
   }).then(() => {
@@ -10160,7 +11824,7 @@ function finishTranscriptQuestionFlow(payload) {
       : Promise.resolve();
     waitForRoom.then(() => {
       queueMapQuestionReveal(() => {
-        startEmergencyTimerForCurrentEncounter(currentQuestionInfo().type);
+        startEmergencyTimerForCurrentEncounter(currentQuestionInfo().type, { publish: false });
         publishCurrentPlayerPrompt({ renderOverlay: false });
         if (state.chatMode) renderChatControls();
       });
@@ -10362,13 +12026,18 @@ function clearMissionContinueGateTimer() {
 }
 
 function queueMapQuestionReveal(onReady) {
+  const revealRunId = ++state.questionRevealRunId;
   const alertDelay = window.setTimeout(() => {
+    if (revealRunId !== state.questionRevealRunId || state.resolved) return;
     state.questionSurfaceVisible = false;
     state.questionPresentationReady = false;
     state.mapQuestionAlertActive = true;
     state.mapQuestionOverlayKey = "";
+    const alertInfo = currentQuestionInfo();
+    if (!state.actionDrivenMode && alertInfo?.type?.kind !== "action") playGameSfx("question");
     renderMapQuestionOverlay();
     const revealDelay = window.setTimeout(() => {
+      if (revealRunId !== state.questionRevealRunId || state.resolved) return;
       state.mapQuestionAlertActive = false;
       state.questionSurfaceVisible = true;
       state.questionPresentationReady = false;
@@ -10376,13 +12045,16 @@ function queueMapQuestionReveal(onReady) {
       state.mapQuestionOverlayKey = "";
       renderMapQuestionOverlay();
       const autoRead = maybeAutoReadQuestion({ allowBeforeReady: true });
-      waitForTtsPlayback(autoRead.playback).then(() => {
+      Promise.resolve(autoRead.playback).catch(() => {});
+      const unlockDelay = Math.min(1200, Math.max(250, Number(autoRead.visualDelay) || 0));
+      const unlockTimer = window.setTimeout(() => {
+        if (revealRunId !== state.questionRevealRunId || state.resolved) return;
         state.questionSurfaceVisible = false;
         state.questionPresentationReady = true;
-        state.mapQuestionOverlayKey = "";
         renderMapQuestionOverlay();
         if (typeof onReady === "function") onReady();
-      });
+      }, unlockDelay);
+      state.typeTimers.push(unlockTimer);
     }, questionRevealDelayMs());
     state.typeTimers.push(revealDelay);
   }, questionAlertDelayMs());
@@ -10708,6 +12380,8 @@ function addStatusToPlayer(player, status) {
 }
 
 function flashStatusEffects(effects) {
+  if (effects.some((effect) => effect.kind === "hit" || effect.amount > 0 && effect.kind !== "heal")) playGameSfx("damage");
+  else if (effects.some((effect) => effect.kind === "heal")) playGameSfx("recovery");
   window.requestAnimationFrame(() => {
     window.requestAnimationFrame(() => {
       for (const { player, kind, amount } of effects) {
@@ -10761,6 +12435,7 @@ function advanceChatProgress(correct) {
   }
   state.challengeHistory.push({ correct, type: "Live Mission" });
   if (state.localDmMode && state.currentQuestion < state.questions.length) state.resolved = false;
+  syncBackgroundMusicForEncounter();
   renderStatus();
   renderMap();
   updateChatRoomTitle();
@@ -10859,6 +12534,7 @@ function activateEMS() {
   if (suppliesAreLocked() || !state.questionPresentationReady || state.selectedEMS || state.inventory.ems <= 0 || state.resolved) return;
   state.selectedEMS = true;
   state.inventory.ems -= 1;
+  playGameSfx("recovery");
   renderStatus();
   flashEmsShield();
   const notice = document.createElement("p");
@@ -10884,10 +12560,11 @@ function resolveChallenge(answer, options = {}) {
   rememberPreviousAnswer(answer, question, correct);
 
   const result = applyEncounter(correct, type, operator);
+  const bossAnswer = Boolean(type.boss || currentBossProgress());
   state.resolved = true;
   updateCurrentNodeResult(Boolean(correct));
   if (teamFullyIncapacitated()) {
-    flashAnswerFeedback(correct);
+    flashAnswerFeedback(correct, { boss: bossAnswer });
     renderTeamFailureCard(localTeamFailureFallback(result, roomName(state.nodes[state.currentNode] || { type: "challenge" }, state.currentNode)));
     return;
   }
@@ -10898,8 +12575,9 @@ function resolveChallenge(answer, options = {}) {
     if (bossProgress) stopEmergencyTimer();
     state.currentNode += 1;
   }
+  syncBackgroundMusicForEncounter();
   state.challengeHistory.push({ correct, type: type.label });
-  flashAnswerFeedback(correct);
+  flashAnswerFeedback(correct, { boss: bossAnswer });
 
   const correctness = correct ? `<p class="success">Correct. The answer is ${escapeHtml(answerRevealText(question))}.</p>` : `<p class="critical">Incorrect. The correct answer is ${escapeHtml(answerRevealText(question))}.</p>`;
 
@@ -10952,6 +12630,10 @@ function typeText(element, text) {
         return;
       }
       renderRichText(element, text.slice(0, index));
+      const typedCharacter = index > 0 ? text[index - 1] : "";
+      if (typedCharacter && /\S/.test(typedCharacter) && index % 3 === 0) {
+        playGameSfx("typewriter", { minInterval: 55, volumeScale: 0.13, pulse: false });
+      }
       keepMissionLogTypingInView(element);
       index += 1;
       if (index <= text.length) {
@@ -11022,6 +12704,7 @@ function participantColorIndex(name) {
 
 function clearTypewriters() {
   clearMissionContinueGateTimer();
+  stopGameSfx("typewriter");
   for (const timer of state.typeTimers) {
     window.clearTimeout(timer);
   }
@@ -11031,6 +12714,7 @@ function clearTypewriters() {
   }
   state.autoScrollTimers = [];
   state.mapQuestionAlertActive = false;
+  state.questionRevealRunId += 1;
 }
 
 function escapeAttribute(value) {
@@ -11044,6 +12728,7 @@ function escapeAttribute(value) {
 function useMedkit(playerIndex) {
   const player = state.players[playerIndex];
   if (suppliesAreLocked() || !player || state.inventory.medkits <= 0) return;
+  playGameSfx("recovery");
   state.inventory.medkits -= 1;
   if (player.incapacitated) {
     player.incapacitated = false;
@@ -11752,6 +13437,7 @@ function failureNarration(targets, terminal) {
 }
 
 function grantLoot() {
+  playGameSfx("loot");
   const find = state.rng();
   if (find < 0.45) {
     state.inventory.medkits += 1;
@@ -11779,6 +13465,7 @@ function grantLoot() {
 }
 
 function renderRecovery(node) {
+  playGameSfx("recovery");
   clearTypewriters();
   resetStatusUpdates();
   const presentationRunId = beginLogPresentation();
@@ -11828,6 +13515,7 @@ function renderRecoveryChoiceGate(entry, tier, amounts) {
 }
 
 function applyRecovery(kind, tier, entry = null, gate = null) {
+  playGameSfx(kind === "hp" ? "recovery" : "loot");
   const recoveryNode = state.nodes[state.currentNode] || { type: "recovery", tier };
   const hp = tier === 1 ? 2 : 4;
   const medkits = tier === 1 ? 2 : 3;
@@ -11979,6 +13667,8 @@ function appendRecoveryTransitionToNextEncounter(summary, playerEvents = [], rec
 }
 
 function renderEnding() {
+  if (state.endingPending) return;
+  state.endingPending = true;
   clearTypewriters();
   const survivors = state.players.filter((player) => !player.incapacitated);
   const correct = state.challengeHistory.filter((entry) => entry.correct).length;
@@ -11989,13 +13679,20 @@ function renderEnding() {
   else if (survivors.length > 0 && ratio >= 0.5) ending = "Costly Victory";
   else if (survivors.length > 0) ending = "Last Transmission";
 
+  if (ending === "Mission Failure") {
+    setMissionFailureVisual(true);
+    playMissionFailureAudio();
+  } else {
+    setMissionFailureVisual(false);
+    stopMissionFailureAudio();
+    playGameSfx("ending");
+  }
+
   const endingText = `The final lock burns open and ${state.threat} collapses into a storm of fading signal. ${survivors.length ? `${survivors.map((player) => player.name).join(", ")} make it to the extraction marker while the facility shudders behind them.` : "No one reaches the extraction marker."}`;
   const summaryText = `Correct Answers: ${correct} / ${state.questions.length}. Survivors: ${survivors.length} / ${state.players.length}. Remaining Supplies: ${state.inventory.medkits} Medkits, ${state.inventory.ems} EMS Devices.`;
   const details = { ending, endingText, summaryText, survivors, correct, ratio };
 
   if (state.localDmMode) {
-    if (state.endingPending) return;
-    state.endingPending = true;
     els.encounterCard.innerHTML = `
       <h3 class="mission-room-heading">Mission Log</h3>
       <div id="chatTranscript" class="chat-transcript">

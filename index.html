@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Study Adventure Mission Console</title>
-    <link rel="stylesheet" href="styles.css?v=parse-issue-highlight-1">
+    <link rel="stylesheet" href="styles.css?v=retro-operations-19">
   </head>
   <body>
     <div class="app-shell">
@@ -307,6 +307,39 @@ Generate [NUMBER] questions.</textarea>
                   </select>
                   <span class="field-note">Adjusts teacher-screen readability for monitors and projectors.</span>
                 </label>
+                <label>
+                  Game sound effects
+                  <select id="sfxPreset">
+                    <option value="off">Off</option>
+                    <option value="subtle" selected>Subtle</option>
+                    <option value="cinematic">Cinematic</option>
+                  </select>
+                  <span class="field-note">Uses custom audio files listed in audio-effects.json for answers, damage, loot, timers, room movement, and mission events.</span>
+                </label>
+                <div class="sfx-mapping-grid" id="sfxMappingGrid"></div>
+                <label>
+                  YouTube normal music URL
+                  <input id="youtubeMusicUrl" type="url" placeholder="https://www.youtube.com/watch?v=...">
+                  <span class="field-note">Optional. Starts muted/paused by browser rules until you press Play in Mission Audio.</span>
+                </label>
+                <label>
+                  YouTube boss fight music URL
+                  <input id="youtubeBossMusicUrl" type="url" placeholder="https://www.youtube.com/watch?v=...">
+                  <span class="field-note">Optional. Automatically swaps in during boss encounters, then returns to normal music afterward.</span>
+                </label>
+                <section class="saved-question-sets saved-music-presets" id="savedMusicPresetsPanel">
+                  <div class="saved-question-header">
+                    <div>
+                      <h4>Saved Music Presets</h4>
+                      <p id="savedMusicPresetsNote">No saved presets yet.</p>
+                    </div>
+                    <div class="saved-question-save">
+                      <input id="musicPresetNameInput" type="text" maxlength="70" placeholder="Preset name">
+                      <button id="saveMusicPresetBtn" class="secondary" type="button">Save Links</button>
+                    </div>
+                  </div>
+                  <div id="savedMusicPresetsList" class="saved-question-list"></div>
+                </section>
                 <label id="emergencyTimerDurationGroup">
                   Challenge countdown
                   <select id="emergencyTimerDuration">
@@ -388,6 +421,7 @@ Generate [NUMBER] questions.</textarea>
         </section>
 
         <section class="map-panel" id="mapPanel" aria-label="Mission map">
+          <div class="map-main">
           <div class="panel-header compact">
             <div>
               <p class="eyebrow">Visual Dungeon Map</p>
@@ -397,9 +431,16 @@ Generate [NUMBER] questions.</textarea>
           </div>
           <div class="map-wrap">
             <svg id="missionMap" viewBox="0 0 900 560" role="img" aria-label="Mission route map"></svg>
+            <div class="map-hud-corners" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
             <div class="map-question-overlay" id="mapQuestionOverlay" hidden></div>
             <div class="map-radar-sweep" aria-hidden="true"></div>
             <div class="map-static-overlay" aria-hidden="true"></div>
+            <div class="map-boss-eyes" aria-hidden="true"></div>
+            <div class="map-failure-overlay" id="mapFailureOverlay" hidden aria-label="Mission failed">
+              <span class="map-failure-short" aria-hidden="true"></span>
+              <span class="map-failure-skull" aria-hidden="true">&#9760;</span>
+              <strong>MISSION FAILED</strong>
+            </div>
           </div>
           <div class="map-control-dock" id="mapControlDock" aria-label="Single-device answer controls"></div>
           <div class="route-telemetry" id="routeTelemetry">
@@ -411,10 +452,10 @@ Generate [NUMBER] questions.</textarea>
               <div class="route-progress-fill" id="routeProgressFill"></div>
             </div>
           </div>
-          <div class="map-emergency-timer" id="mapEmergencyTimer" hidden>
+          <div class="map-emergency-timer inactive" id="mapEmergencyTimer">
             <span id="mapEmergencyTimerLabel">Challenge Window</span>
-            <strong id="mapEmergencyTimerValue">12.0</strong>
-            <button id="mapEmergencyPauseBtn" class="secondary" type="button">Pause Timer</button>
+            <strong id="mapEmergencyTimerValue">--</strong>
+            <button id="mapEmergencyPauseBtn" class="secondary" type="button" disabled>Timer Standby</button>
           </div>
           <div class="legend">
             <div class="map-legend-dots">
@@ -426,6 +467,8 @@ Generate [NUMBER] questions.</textarea>
             </div>
             <div id="simulatorPanel" class="sim-tool-panel sim-legend-panel" hidden></div>
           </div>
+          </div>
+          <div class="map-sidebar">
           <div class="mission-progress" id="missionProgress">
             <span>Mission Progress</span>
             <strong id="progressSummary">0 / 0 questions resolved</strong>
@@ -464,6 +507,7 @@ Generate [NUMBER] questions.</textarea>
               <div id="playerAnswerBoard" class="player-answer-board"></div>
             </div>
           </section>
+          </div>
         </section>
 
         <section class="play-panel" id="playPanel" aria-label="Mission play area">
@@ -573,6 +617,17 @@ Generate [NUMBER] questions.</textarea>
                 <label><input id="ttsAutoLog" type="checkbox"> Auto-read log</label>
                 <label><input id="ttsAutoQuestion" type="checkbox"> Auto-read questions</label>
               </div>
+              <div class="mission-audio-background" id="backgroundMusicPanel" hidden>
+                <div class="mission-audio-heading">
+                  <span>Background Music</span>
+                  <strong id="backgroundMusicStatus">Not loaded</strong>
+                </div>
+                <div class="mission-audio-controls">
+                  <button id="backgroundMusicLoadBtn" class="secondary" type="button">Load Current Music</button>
+                  <button id="backgroundMusicStopBtn" class="secondary" type="button">Stop Music</button>
+                </div>
+                <div id="backgroundMusicEmbed" class="background-music-embed"></div>
+              </div>
             </section>
             </div>
           </section>
@@ -580,7 +635,18 @@ Generate [NUMBER] questions.</textarea>
       </main>
     </div>
 
+    <div class="setup-transition-blackout" id="setupTransitionBlackout" aria-hidden="true" hidden>
+      <div class="setup-transition-shutter setup-transition-shutter-top"></div>
+      <div class="setup-transition-shutter setup-transition-shutter-bottom"></div>
+      <div class="setup-transition-lock">
+        <span></span><span></span><span></span>
+        <strong id="setupTransitionLabel">MISSION CHANNEL TRANSFER</strong>
+      </div>
+    </div>
+
     <section class="deployment-overlay" id="deploymentOverlay" aria-live="polite" hidden>
+      <div class="deployment-noise" aria-hidden="true"></div>
+      <div class="deployment-frame-corners" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
       <div class="deployment-scanline" aria-hidden="true"></div>
       <div class="deployment-shell">
         <div class="deployment-header">
@@ -594,12 +660,15 @@ Generate [NUMBER] questions.</textarea>
             <div class="deployment-threat-pings" id="deploymentThreatPings" aria-hidden="true"></div>
             <div class="deployment-sweep" aria-hidden="true"></div>
             <div class="deployment-signal-spike" aria-hidden="true"></div>
+            <div class="deployment-target-lock" aria-hidden="true"><i></i><span></span></div>
+            <div class="deployment-coordinate-stream" aria-hidden="true">GRID 04 // LINK 77 // VECTOR LOCK</div>
           </section>
           <section class="deployment-console">
             <div class="deployment-status">
               <span id="deploymentPhase">ESTABLISHING SQUAD UPLINK</span>
               <strong id="deploymentElapsed">00:00</strong>
             </div>
+            <div class="deployment-system-lights" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
             <div class="deployment-progress-track">
               <div class="deployment-progress-fill" id="deploymentProgressFill"></div>
             </div>
@@ -627,7 +696,7 @@ Generate [NUMBER] questions.</textarea>
   <script src="local-dm-prompts.js?v=cleanup-2"></script>
   <script src="player-session.js?v=cleanup-1"></script>
   <script src="action-rooms.js?v=cleanup-1"></script>
-  <script src="tts-manager.js?v=cleanup-1"></script>
-  <script src="app.js?v=cleanup-4"></script>
+  <script src="tts-manager.js?v=music-duck-1"></script>
+  <script src="app.js?v=retro-operations-19"></script>
 </body>
 </html>

@@ -1,0 +1,36 @@
+{
+  "effects": [
+    { "id": "ui", "label": "UI Click", "src": "audio-effects/ui.wav" },
+    { "id": "typewriter", "label": "Typewriter Tick", "src": "audio-effects/ui-effect-small.mp3" },
+    { "id": "question", "label": "Query Incoming", "src": "audio-effects/question.wav" },
+    { "id": "submitted", "label": "Submission Confirmed", "src": "audio-effects/submitted.mp3" },
+    { "id": "correct", "label": "Correct Answer", "src": "audio-effects/correct.wav" },
+    { "id": "incorrect", "label": "Incorrect Answer", "src": "audio-effects/incorrect.wav" },
+    { "id": "damage", "label": "Damage Impact", "src": "audio-effects/damage.mp3" },
+    { "id": "loot", "label": "Item Found", "src": "audio-effects/loot.wav" },
+    { "id": "timer", "label": "Timer Tick", "src": "audio-effects/timer.flac" },
+    { "id": "emergency", "label": "Emergency Alert", "src": "audio-effects/emergency.mp3" },
+    { "id": "transition", "label": "Room Transition", "src": "audio-effects/transition.wav" },
+    { "id": "recovery", "label": "Recovery Room", "src": "audio-effects/loot.wav" },
+    { "id": "boss", "label": "Boss Encounter", "src": "audio-effects/boss.wav" },
+    { "id": "failure", "label": "Mission Failure", "src": "audio-effects/failure.wav" },
+    { "id": "ending", "label": "Mission Ending", "src": "audio-effects/ending.mp3" }
+  ],
+  "defaults": {
+    "ui": "ui",
+    "typewriter": "typewriter",
+    "question": "question",
+    "submitted": "submitted",
+    "correct": "correct",
+    "incorrect": "incorrect",
+    "damage": "damage",
+    "loot": "loot",
+    "timer": "timer",
+    "emergency": "emergency",
+    "transition": "transition",
+    "recovery": "recovery",
+    "boss": "boss",
+    "failure": "failure",
+    "ending": "ending"
+  }
+}

@@ -10,6 +10,7 @@ const port = Number(process.env.PORT || 4174);
 const feedPath = path.join(root, "dm-feed.json");
 const answerPath = path.join(root, "dm-answer.json");
 const questionSetsPath = path.join(root, "question-sets.json");
+const musicPresetsPath = path.join(root, "music-presets.json");
 const ollamaHost = process.env.OLLAMA_HOST || "http://localhost:11434";
 const lmStudioHost = process.env.LM_STUDIO_HOST || "http://127.0.0.1:1234";
 const DEFAULT_PLAYER_ACTION_COOLDOWN_MS = 120_000;
@@ -31,12 +32,18 @@ const contentTypes = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
-  ".wav": "audio/wav"
+  ".wav": "audio/wav",
+  ".mp3": "audio/mpeg",
+  ".ogg": "audio/ogg",
+  ".m4a": "audio/mp4",
+  ".aac": "audio/aac",
+  ".flac": "audio/flac"
 };
 
 let currentFeed = readFeed();
 let currentAnswer = readAnswer();
 let questionSetStore = readQuestionSetStore();
+let musicPresetStore = readMusicPresetStore();
 let playerSession = {
   roomCode: "",
   status: "setup",
@@ -88,6 +95,25 @@ function writeQuestionSetStore(store = questionSetStore) {
   };
   fs.writeFileSync(questionSetsPath, JSON.stringify(questionSetStore, null, 2) + "\n");
   return questionSetStore;
+}
+
+function readMusicPresetStore() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(musicPresetsPath, "utf8"));
+    return {
+      presets: Array.isArray(parsed.presets) ? parsed.presets.filter((preset) => preset && preset.id && preset.name) : []
+    };
+  } catch {
+    return { presets: [] };
+  }
+}
+
+function writeMusicPresetStore(store = musicPresetStore) {
+  musicPresetStore = {
+    presets: Array.isArray(store.presets) ? store.presets.filter((preset) => preset && preset.id && preset.name) : []
+  };
+  fs.writeFileSync(musicPresetsPath, JSON.stringify(musicPresetStore, null, 2) + "\n");
+  return musicPresetStore;
 }
 
 function sendJson(res, status, payload) {
@@ -409,7 +435,7 @@ function generatePiperSpeech(text, options = {}) {
         return;
       }
       try {
-        const audio = fs.readFileSync(outputPath);
+        const audio = prependWavSilence(fs.readFileSync(outputPath), 320);
         fs.unlink(outputPath, () => {});
         resolve(audio);
       } catch (error) {
@@ -418,6 +444,51 @@ function generatePiperSpeech(text, options = {}) {
     });
     child.stdin.end(`${text.trim()}\n`);
   });
+}
+
+function prependWavSilence(buffer, silenceMs = 250) {
+  try {
+    if (!Buffer.isBuffer(buffer) || buffer.length < 44) return buffer;
+    if (buffer.toString("ascii", 0, 4) !== "RIFF" || buffer.toString("ascii", 8, 12) !== "WAVE") return buffer;
+
+    let offset = 12;
+    let fmtOffset = -1;
+    let dataOffset = -1;
+    let dataSizeOffset = -1;
+    let dataSize = 0;
+
+    while (offset + 8 <= buffer.length) {
+      const chunkId = buffer.toString("ascii", offset, offset + 4);
+      const chunkSize = buffer.readUInt32LE(offset + 4);
+      const chunkDataOffset = offset + 8;
+      if (chunkId === "fmt ") fmtOffset = chunkDataOffset;
+      if (chunkId === "data") {
+        dataOffset = chunkDataOffset;
+        dataSizeOffset = offset + 4;
+        dataSize = chunkSize;
+        break;
+      }
+      offset = chunkDataOffset + chunkSize + (chunkSize % 2);
+    }
+
+    if (fmtOffset < 0 || dataOffset < 0 || dataSizeOffset < 0) return buffer;
+    const byteRate = buffer.readUInt32LE(fmtOffset + 8);
+    const blockAlign = buffer.readUInt16LE(fmtOffset + 12);
+    if (!byteRate || !blockAlign) return buffer;
+
+    const silenceBytes = Math.max(blockAlign, Math.floor(byteRate * (Number(silenceMs) || 0) / 1000 / blockAlign) * blockAlign);
+    const output = Buffer.concat([
+      buffer.subarray(0, dataOffset),
+      Buffer.alloc(silenceBytes),
+      buffer.subarray(dataOffset, dataOffset + dataSize),
+      buffer.subarray(dataOffset + dataSize)
+    ]);
+    output.writeUInt32LE(output.length - 8, 4);
+    output.writeUInt32LE(dataSize + silenceBytes, dataSizeOffset);
+    return output;
+  } catch {
+    return buffer;
+  }
 }
 
 const server = http.createServer(async (req, res) => {
@@ -484,6 +555,28 @@ const server = http.createServer(async (req, res) => {
         }));
       const selected = selectedIds.map(String).filter((id) => cleanSets.some((set) => set.id === id));
       const store = writeQuestionSetStore({ sets: cleanSets, selectedIds: selected });
+      return sendJson(res, 200, { ok: true, ...store });
+    }
+
+    if (url.pathname === "/api/music-presets" && req.method === "GET") {
+      return sendJson(res, 200, { ok: true, ...musicPresetStore });
+    }
+
+    if (url.pathname === "/api/music-presets" && req.method === "POST") {
+      const body = await readBody(req);
+      const parsed = body ? JSON.parse(body) : {};
+      const presets = Array.isArray(parsed.presets) ? parsed.presets : [];
+      const cleanPresets = presets
+        .filter((preset) => preset && preset.id && preset.name)
+        .map((preset) => ({
+          id: sanitizeText(preset.id, { maxLength: 80 }),
+          name: sanitizeText(preset.name, { maxLength: 70 }),
+          normalUrl: sanitizeText(preset.normalUrl, { maxLength: 500 }),
+          bossUrl: sanitizeText(preset.bossUrl, { maxLength: 500 }),
+          createdAt: sanitizeText(preset.createdAt, { maxLength: 40 }),
+          updatedAt: sanitizeText(preset.updatedAt, { maxLength: 40 })
+        }));
+      const store = writeMusicPresetStore({ presets: cleanPresets });
       return sendJson(res, 200, { ok: true, ...store });
     }
 
