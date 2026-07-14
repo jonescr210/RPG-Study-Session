@@ -12,6 +12,8 @@ music-presets.json
 # Local speech engine downloads/cache
 .tts-cache/
 tts/
+__pycache__/
+*.pyc
 
 # Local manual checkpoints/backups
 checkpoints/

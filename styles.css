@@ -4,6 +4,479 @@
   initial-value: 90;
 }
 
+/* Live mission signal effects */
+.map-signal-field,
+.map-threat-frame {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.map-signal-field {
+  opacity: 0;
+  transition: opacity 0.8s ease, filter 0.8s ease;
+}
+
+body.mission-active .map-signal-field {
+  opacity: 0.62;
+}
+
+.map-signal-field::before,
+.map-signal-field::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+  pointer-events: none;
+}
+
+.map-signal-field::before {
+  opacity: 0.42;
+  background:
+    radial-gradient(circle at 18% 72%, rgba(var(--atmo-primary), 0.2), transparent 18%),
+    radial-gradient(circle at 78% 22%, rgba(var(--atmo-secondary), 0.16), transparent 16%);
+  animation: missionSignalBreath 7s ease-in-out infinite;
+}
+
+.map-signal-field::after {
+  opacity: 0;
+  border: 1px solid transparent;
+  border-radius: 50%;
+}
+
+.map-signal-field i {
+  --signal-x: 12%;
+  --signal-y: 80%;
+  --signal-delay: 0s;
+  --signal-duration: 8s;
+  position: absolute;
+  left: var(--signal-x);
+  top: var(--signal-y);
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  opacity: 0;
+  background: rgb(var(--atmo-primary));
+  box-shadow: 0 0 7px rgba(var(--atmo-primary), 0.9), 0 0 16px rgba(var(--atmo-primary), 0.35);
+  animation: mapSignalMote var(--signal-duration) var(--signal-delay) linear infinite;
+}
+
+.map-signal-field i:nth-child(1) { --signal-x: 8%; --signal-y: 86%; --signal-delay: -1.2s; --signal-duration: 8.5s; }
+.map-signal-field i:nth-child(2) { --signal-x: 17%; --signal-y: 48%; --signal-delay: -5.4s; --signal-duration: 10.5s; }
+.map-signal-field i:nth-child(3) { --signal-x: 29%; --signal-y: 92%; --signal-delay: -3.1s; --signal-duration: 7.8s; }
+.map-signal-field i:nth-child(4) { --signal-x: 41%; --signal-y: 66%; --signal-delay: -6.7s; --signal-duration: 11s; }
+.map-signal-field i:nth-child(5) { --signal-x: 52%; --signal-y: 88%; --signal-delay: -2.4s; --signal-duration: 9.2s; }
+.map-signal-field i:nth-child(6) { --signal-x: 61%; --signal-y: 38%; --signal-delay: -7.2s; --signal-duration: 10.8s; }
+.map-signal-field i:nth-child(7) { --signal-x: 72%; --signal-y: 78%; --signal-delay: -4.8s; --signal-duration: 8.2s; }
+.map-signal-field i:nth-child(8) { --signal-x: 81%; --signal-y: 55%; --signal-delay: -1.8s; --signal-duration: 11.6s; }
+.map-signal-field i:nth-child(9) { --signal-x: 91%; --signal-y: 90%; --signal-delay: -6.1s; --signal-duration: 9.6s; }
+.map-signal-field i:nth-child(10) { --signal-x: 24%; --signal-y: 29%; --signal-delay: -8.3s; --signal-duration: 12s; }
+.map-signal-field i:nth-child(11) { --signal-x: 67%; --signal-y: 96%; --signal-delay: -0.7s; --signal-duration: 7.5s; }
+.map-signal-field i:nth-child(12) { --signal-x: 88%; --signal-y: 34%; --signal-delay: -4.1s; --signal-duration: 9.8s; }
+
+.map-threat-frame {
+  z-index: 3;
+  opacity: 0.35;
+  transition: opacity 0.7s ease;
+}
+
+.map-threat-frame::before,
+.map-threat-frame::after {
+  position: absolute;
+  content: "";
+  pointer-events: none;
+}
+
+.map-threat-frame::before {
+  top: 13%;
+  right: 8px;
+  bottom: 13%;
+  width: 2px;
+  background: linear-gradient(transparent, rgba(var(--atmo-primary), 0.64) 24% 76%, transparent);
+  box-shadow: 0 0 12px rgba(var(--atmo-primary), 0.38);
+  animation: missionEdgeTelemetry 4.8s ease-in-out infinite;
+}
+
+.map-threat-frame::after {
+  right: 8px;
+  bottom: 11%;
+  width: 44px;
+  height: 1px;
+  background: rgba(var(--atmo-secondary), 0.58);
+  box-shadow: 0 -8px rgba(var(--atmo-primary), 0.28), 0 -16px rgba(var(--atmo-primary), 0.14);
+}
+
+.map-threat-frame i {
+  position: absolute;
+  bottom: 8px;
+  width: 14%;
+  height: 2px;
+  opacity: 0.38;
+  background: linear-gradient(90deg, transparent, rgb(var(--atmo-primary)), transparent);
+  animation: missionBottomTrace 6s linear infinite;
+}
+
+.map-threat-frame i:nth-child(1) { left: 8%; animation-delay: -1s; }
+.map-threat-frame i:nth-child(2) { left: 43%; animation-delay: -3.2s; }
+.map-threat-frame i:nth-child(3) { left: 76%; animation-delay: -5.1s; }
+
+.map-panel.question-open .map-signal-field {
+  opacity: 0.22;
+}
+
+.map-panel.answer-correct-flash .map-signal-field::after {
+  animation: missionCorrectRipple 1.15s ease-out both;
+}
+
+.map-panel.answer-incorrect-flash .map-threat-frame {
+  animation: missionThreatGlitch 0.72s steps(2) both;
+}
+
+body.situation-boss .map-signal-field i,
+.map-panel.boss-eyes-active .map-signal-field i {
+  width: 2px;
+  height: 11px;
+  border-radius: 2px;
+  background: rgb(var(--atmo-secondary));
+  box-shadow: 0 0 8px rgba(var(--atmo-primary), 0.95);
+  animation-name: mapBossEmber;
+  animation-duration: calc(var(--signal-duration) * 0.58);
+}
+
+body.situation-boss .map-threat-frame {
+  opacity: 0.82;
+  filter: saturate(1.35);
+}
+
+body.situation-recovery .map-signal-field {
+  opacity: 0.42;
+  filter: blur(0.25px);
+}
+
+body.mission-log-streaming .encounter::before {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 5;
+  height: 2px;
+  content: "";
+  pointer-events: none;
+  opacity: 0.82;
+  background: linear-gradient(90deg, transparent, rgba(var(--atmo-primary), 0.96), rgba(var(--atmo-secondary), 0.8), transparent);
+  box-shadow: 0 0 14px rgba(var(--atmo-primary), 0.5);
+  animation: missionLogAcquisition 2.8s ease-in-out infinite;
+}
+
+body.mission-log-streaming .mission-log-heading .heading-waveform i {
+  animation-duration: 0.48s;
+  filter: brightness(1.5);
+}
+
+body.situation-party-critical:not(.situation-failure) .play-panel {
+  animation: criticalPanelBreath 2.4s ease-in-out infinite;
+}
+
+/* Player-device atmosphere and feedback */
+.player-signal-field,
+.player-impact-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+.player-signal-field {
+  z-index: 0;
+  overflow: hidden;
+  opacity: 0.55;
+}
+
+.player-signal-field::before,
+.player-signal-field::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+}
+
+.player-signal-field::before {
+  background:
+    linear-gradient(90deg, transparent 49.6%, rgba(90, 167, 164, 0.08) 50%, transparent 50.4%),
+    repeating-linear-gradient(0deg, transparent 0 5px, rgba(205, 235, 230, 0.025) 5px 6px);
+  animation: playerSignalScan 8s linear infinite;
+}
+
+.player-signal-field::after {
+  opacity: 0.5;
+  background: radial-gradient(circle at 50% 45%, transparent 20%, rgba(0, 0, 0, 0.72) 100%);
+}
+
+.player-signal-field i {
+  --player-x: 10%;
+  --player-delay: 0s;
+  position: absolute;
+  left: var(--player-x);
+  bottom: -18px;
+  width: 2px;
+  height: 12px;
+  border-radius: 2px;
+  opacity: 0;
+  background: rgba(90, 167, 164, 0.82);
+  box-shadow: 0 0 8px rgba(90, 167, 164, 0.5);
+  animation: playerSignalRise 7.5s var(--player-delay) linear infinite;
+}
+
+.player-signal-field i:nth-child(1) { --player-x: 7%; --player-delay: -1s; }
+.player-signal-field i:nth-child(2) { --player-x: 19%; --player-delay: -5.2s; }
+.player-signal-field i:nth-child(3) { --player-x: 34%; --player-delay: -3.4s; }
+.player-signal-field i:nth-child(4) { --player-x: 48%; --player-delay: -6.8s; }
+.player-signal-field i:nth-child(5) { --player-x: 62%; --player-delay: -2.2s; }
+.player-signal-field i:nth-child(6) { --player-x: 75%; --player-delay: -4.6s; }
+.player-signal-field i:nth-child(7) { --player-x: 87%; --player-delay: -0.4s; }
+.player-signal-field i:nth-child(8) { --player-x: 94%; --player-delay: -6.1s; }
+
+.player-impact-overlay {
+  z-index: 40;
+  opacity: 0;
+  background:
+    linear-gradient(128deg, transparent 47.8%, rgba(255, 218, 210, 0.62) 48.1% 48.35%, transparent 48.7%) 70% 12% / 46% 52% no-repeat,
+    linear-gradient(42deg, transparent 49%, rgba(255, 218, 210, 0.42) 49.2% 49.5%, transparent 49.8%) 75% 24% / 38% 47% no-repeat,
+    radial-gradient(circle at 50% 50%, transparent 22%, rgba(177, 31, 40, 0.36) 72%, rgba(92, 7, 12, 0.75));
+}
+
+.player-card {
+  position: relative;
+  isolation: isolate;
+}
+
+.player-card::before {
+  position: absolute;
+  top: 0;
+  left: -45%;
+  z-index: 2;
+  width: 38%;
+  height: 2px;
+  content: "";
+  opacity: 0.55;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgba(90, 167, 164, 0.9), transparent);
+  animation: playerCardTelemetry 7s ease-in-out infinite;
+}
+
+.player-shell {
+  position: relative;
+  z-index: 1;
+}
+
+.player-body.player-boss-active {
+  background:
+    radial-gradient(circle at 50% 8%, rgba(182, 41, 55, 0.28), transparent 38%),
+    linear-gradient(145deg, #100507 0%, #0d0a10 58%, #17070f 100%);
+}
+
+.player-body.player-boss-active .player-card {
+  border-color: rgba(197, 60, 72, 0.68);
+  box-shadow: 0 0 0 1px rgba(166, 82, 158, 0.18), 0 20px 58px rgba(0, 0, 0, 0.58), inset 0 0 38px rgba(151, 30, 49, 0.08);
+}
+
+.player-body.player-boss-active .player-signal-field i {
+  height: 18px;
+  background: rgba(226, 72, 80, 0.9);
+  box-shadow: 0 0 11px rgba(226, 72, 80, 0.68);
+  animation-duration: 4.8s;
+}
+
+.player-body.player-emergency-active:not(.player-boss-active) .player-card {
+  border-color: rgba(221, 140, 66, 0.68);
+  box-shadow: 0 0 26px rgba(205, 85, 48, 0.16), var(--shadow);
+}
+
+.player-body.player-query-arrival .player-prompt {
+  animation: playerPromptAcquired 0.88s cubic-bezier(0.16, 0.78, 0.24, 1) both;
+}
+
+.player-body.player-query-arrival .player-prompt::after {
+  position: absolute;
+  inset: 0;
+  border: 1px solid rgba(210, 168, 79, 0.9);
+  border-radius: inherit;
+  content: "";
+  pointer-events: none;
+  animation: playerPromptLockRing 0.88s ease-out both;
+}
+
+.player-waiting.submitted-waiting::before {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border: 1px solid rgba(89, 194, 132, 0.72);
+  border-radius: 50%;
+  content: "\2713";
+  color: #a7ecc2;
+  background: rgba(30, 95, 59, 0.3);
+  box-shadow: 0 0 20px rgba(74, 202, 125, 0.22);
+  font-size: 1.35rem;
+  font-weight: 900;
+}
+
+.player-body.player-answer-confirmed .player-card {
+  animation: playerAnswerCabinetFlash 1.2s ease-out both;
+}
+
+.player-body.player-answer-confirmed .submitted-waiting::before {
+  animation: playerAnswerSeal 1.1s cubic-bezier(0.16, 0.82, 0.24, 1.16) both;
+}
+
+.player-body.player-time-critical .player-card {
+  box-shadow: 0 0 0 1px rgba(207, 69, 62, 0.36), 0 0 30px rgba(182, 47, 42, 0.16), inset 0 0 34px rgba(156, 28, 34, 0.06);
+}
+
+.player-body.player-time-final .player-card {
+  animation: playerFinalSeconds 0.72s ease-in-out infinite;
+}
+
+.player-body.player-damage-shake .player-impact-overlay {
+  animation: playerImpactFlash 0.76s steps(2) both;
+}
+
+.player-body.player-resolving .player-waiting {
+  border-color: rgba(90, 167, 164, 0.42);
+  box-shadow: inset 3px 0 rgba(90, 167, 164, 0.35), 0 0 18px rgba(90, 167, 164, 0.08);
+}
+
+@keyframes missionSignalBreath {
+  0%, 100% { opacity: 0.24; transform: scale(0.98); }
+  50% { opacity: 0.62; transform: scale(1.03); }
+}
+
+@keyframes mapSignalMote {
+  0% { opacity: 0; transform: translate3d(0, 16px, 0) scale(0.65); }
+  14% { opacity: 0.78; }
+  72% { opacity: 0.42; }
+  100% { opacity: 0; transform: translate3d(18px, -150px, 0) scale(1.2); }
+}
+
+@keyframes mapBossEmber {
+  0% { opacity: 0; transform: translate3d(0, 22px, 0) rotate(18deg); }
+  18% { opacity: 0.9; }
+  100% { opacity: 0; transform: translate3d(34px, -190px, 0) rotate(32deg); }
+}
+
+@keyframes missionEdgeTelemetry {
+  0%, 100% { opacity: 0.25; transform: scaleY(0.55); }
+  50% { opacity: 0.82; transform: scaleY(1); }
+}
+
+@keyframes missionBottomTrace {
+  0% { opacity: 0; transform: translateX(-40px) scaleX(0.3); }
+  28%, 64% { opacity: 0.62; }
+  100% { opacity: 0; transform: translateX(90px) scaleX(1.4); }
+}
+
+@keyframes missionCorrectRipple {
+  0% { inset: 48%; opacity: 0.92; border-color: rgba(91, 190, 113, 0.95); }
+  100% { inset: -18%; opacity: 0; border-color: rgba(91, 190, 113, 0); }
+}
+
+@keyframes missionThreatGlitch {
+  0%, 100% { opacity: 0.35; transform: translate(0); filter: none; }
+  20% { opacity: 1; transform: translate(-7px, 2px); filter: brightness(2.2) hue-rotate(-18deg); }
+  48% { opacity: 0.42; transform: translate(6px, -1px); }
+  72% { opacity: 0.92; transform: translate(-3px, 1px); filter: brightness(1.7); }
+}
+
+@keyframes missionLogAcquisition {
+  0%, 100% { transform: translateX(-78%); opacity: 0; }
+  42%, 58% { opacity: 0.85; }
+  100% { transform: translateX(78%); }
+}
+
+@keyframes criticalPanelBreath {
+  0%, 100% { box-shadow: 0 18px 48px rgba(0, 0, 0, 0.46), inset 0 0 34px rgba(var(--atmo-primary), 0.04); }
+  50% { box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5), inset 0 0 44px rgba(var(--atmo-primary), 0.13), 0 0 18px rgba(var(--atmo-primary), 0.1); }
+}
+
+@keyframes playerSignalScan {
+  0% { transform: translateY(-8%); }
+  50% { transform: translateY(8%); }
+  100% { transform: translateY(-8%); }
+}
+
+@keyframes playerSignalRise {
+  0% { opacity: 0; transform: translateY(0); }
+  18% { opacity: 0.56; }
+  100% { opacity: 0; transform: translateY(-105vh); }
+}
+
+@keyframes playerCardTelemetry {
+  0%, 100% { transform: translateX(0); opacity: 0; }
+  45%, 55% { opacity: 0.7; }
+  50% { transform: translateX(380%); }
+}
+
+@keyframes playerPromptAcquired {
+  0% { opacity: 0; filter: blur(5px) brightness(1.8); transform: translateY(10px) scale(0.98); }
+  45% { opacity: 1; filter: blur(0) brightness(1.35); }
+  100% { opacity: 1; filter: none; transform: none; }
+}
+
+@keyframes playerPromptLockRing {
+  0% { opacity: 0; transform: scale(1.08); box-shadow: 0 0 32px rgba(210, 168, 79, 0.5); }
+  38% { opacity: 1; }
+  100% { opacity: 0; transform: scale(1); box-shadow: none; }
+}
+
+@keyframes playerAnswerCabinetFlash {
+  0%, 100% { filter: brightness(1); }
+  20% { filter: brightness(1.55) saturate(1.25); box-shadow: 0 0 38px rgba(75, 207, 130, 0.38); }
+  48% { filter: brightness(0.9); }
+  70% { filter: brightness(1.2); }
+}
+
+@keyframes playerAnswerSeal {
+  0% { opacity: 0; transform: scale(1.7) rotate(-16deg); }
+  42% { opacity: 1; transform: scale(0.88) rotate(3deg); }
+  68% { transform: scale(1.08) rotate(0); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes playerFinalSeconds {
+  0%, 100% { border-color: rgba(188, 81, 72, 0.58); }
+  50% { border-color: rgba(255, 105, 89, 0.98); box-shadow: 0 0 40px rgba(216, 52, 48, 0.28), inset 0 0 38px rgba(177, 24, 31, 0.1); }
+}
+
+@keyframes playerImpactFlash {
+  0% { opacity: 0; filter: brightness(1); }
+  12% { opacity: 1; filter: brightness(2); }
+  30% { opacity: 0.42; transform: translateX(-3px); }
+  52% { opacity: 0.75; transform: translateX(3px); }
+  100% { opacity: 0; filter: brightness(0.8); transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .map-signal-field,
+  .map-signal-field::before,
+  .map-signal-field::after,
+  .map-signal-field i,
+  .map-threat-frame,
+  .map-threat-frame::before,
+  .map-threat-frame i,
+  body.mission-log-streaming .encounter::before,
+  body.situation-party-critical:not(.situation-failure) .play-panel,
+  .player-signal-field::before,
+  .player-signal-field i,
+  .player-card::before,
+  .player-body.player-query-arrival .player-prompt,
+  .player-body.player-query-arrival .player-prompt::after,
+  .player-body.player-answer-confirmed .player-card,
+  .player-body.player-answer-confirmed .submitted-waiting::before,
+  .player-body.player-time-final .player-card,
+  .player-body.player-damage-shake .player-impact-overlay {
+    animation: none !important;
+  }
+}
+
 @property --atmo-g {
   syntax: "<number>";
   inherits: true;
@@ -519,6 +992,35 @@ body.mission-active.situation-failure {
 
 .player-vitals span {
   text-align: right;
+}
+
+.player-vitals-points {
+  padding: 1px 4px;
+  border: 1px solid rgba(210, 168, 79, 0.42);
+  border-radius: 999px;
+  color: var(--accent);
+  background: rgba(55, 42, 15, 0.5);
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 0.6rem;
+  white-space: nowrap;
+}
+
+.player-queued-action-panel {
+  padding: 10px 12px;
+  border: 1px solid rgba(90, 167, 164, 0.3);
+  border-radius: 8px;
+  background: rgba(8, 15, 17, 0.82);
+  box-shadow: inset 3px 0 0 rgba(90, 167, 164, 0.52);
+}
+
+.player-queued-action-panel[hidden] {
+  display: none;
+}
+
+.player-queued-action-form {
+  margin: 0;
+  padding: 0;
+  border: 0;
 }
 
 .player-vitals.low {
@@ -1348,11 +1850,22 @@ body.dashboard-returning .setup-panel {
   font-weight: 950;
   text-align: center;
   text-shadow: 0 0 14px rgba(143, 227, 156, 0.7);
-  opacity: 0;
+  opacity: 0.24;
+  filter: grayscale(0.7) brightness(0.62);
+  transition: opacity 240ms ease, filter 240ms ease, border-color 240ms ease, box-shadow 240ms ease;
+}
+
+.operators-deployed-message.standby {
+  border-color: rgba(143, 227, 156, 0.18);
+  box-shadow: inset 0 0 16px rgba(0, 0, 0, 0.34);
+  text-shadow: none;
 }
 
 .operators-deployed-message.visible {
   opacity: 1;
+  filter: none;
+  border-color: rgba(143, 227, 156, 0.72);
+  box-shadow: 0 0 20px rgba(143, 227, 156, 0.22), inset 0 0 14px rgba(143, 227, 156, 0.08);
   animation: operatorsDeployedBlink 0.7s step-end infinite;
 }
 
@@ -1791,6 +2304,17 @@ body.mission-active .app-shell {
   padding: 3px 0 6px;
   position: relative;
   z-index: 1;
+  margin-inline: auto;
+}
+
+body.mission-active .map-wrap {
+  display: grid;
+  place-items: center;
+}
+
+body.mission-active #missionMap {
+  place-self: center;
+  margin-inline: auto;
 }
 
 body.mission-active.situation-boss::before,
@@ -2341,12 +2865,6 @@ body.mission-active .eyebrow {
   font-size: 0.78rem;
 }
 
-.difficulty-question-banks {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-
 .question-count-note {
   margin: 12px 0 0;
   padding: 10px 12px;
@@ -2400,6 +2918,33 @@ body.mission-active .eyebrow {
 .saved-question-header h4,
 .saved-question-header p {
   margin: 0;
+}
+
+.question-set-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  width: fit-content;
+  margin-top: 8px;
+  color: #9fd7d0;
+  font-size: 0.76rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.question-set-select-all input {
+  width: 16px;
+  height: 16px;
+  accent-color: #64c6bb;
+}
+
+.question-set-select-all.is-disabled {
+  opacity: 0.42;
+}
+
+.field-note.input-warning {
+  color: #f1a191;
+  font-weight: 700;
 }
 
 .saved-question-header h4 {
@@ -2861,6 +3406,18 @@ summary {
   line-height: 1.4;
 }
 
+.narrator-setup-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (max-width: 720px) {
+  .narrator-setup-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .map-wrap {
   position: relative;
   overflow: hidden;
@@ -2952,6 +3509,68 @@ summary {
   pointer-events: none;
 }
 
+.map-impact-cracks {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.42s ease, filter 0.42s ease;
+  background:
+    radial-gradient(circle at 76% 27%, rgba(225, 247, 242, 0.78) 0 1px, transparent 2px 100%),
+    linear-gradient(137deg, transparent 48.8%, rgba(205, 234, 228, 0.58) 49.2% 49.7%, transparent 50.1%) 72% 17% / 37% 42% no-repeat,
+    linear-gradient(43deg, transparent 49%, rgba(205, 234, 228, 0.5) 49.35% 49.75%, transparent 50.1%) 77% 23% / 29% 39% no-repeat,
+    linear-gradient(168deg, transparent 49%, rgba(205, 234, 228, 0.46) 49.35% 49.75%, transparent 50.1%) 73% 28% / 43% 24% no-repeat;
+  filter: drop-shadow(0 0 2px rgba(var(--atmo-r), var(--atmo-g), var(--atmo-b), 0.38));
+}
+
+.map-impact-cracks::before,
+.map-impact-cracks::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+  opacity: 0;
+  transition: opacity 0.42s ease;
+}
+
+.map-impact-cracks::before {
+  background:
+    radial-gradient(circle at 24% 65%, rgba(225, 247, 242, 0.7) 0 1px, transparent 2px 100%),
+    linear-gradient(34deg, transparent 49%, rgba(205, 234, 228, 0.48) 49.35% 49.8%, transparent 50.15%) 18% 56% / 39% 36% no-repeat,
+    linear-gradient(152deg, transparent 49%, rgba(205, 234, 228, 0.42) 49.35% 49.75%, transparent 50.1%) 21% 62% / 31% 46% no-repeat,
+    linear-gradient(76deg, transparent 49%, rgba(205, 234, 228, 0.38) 49.35% 49.7%, transparent 50.05%) 28% 63% / 24% 29% no-repeat;
+}
+
+.map-impact-cracks::after {
+  background:
+    radial-gradient(circle at 51% 42%, rgba(225, 247, 242, 0.62) 0 1px, transparent 2px 100%),
+    linear-gradient(117deg, transparent 49%, rgba(205, 234, 228, 0.42) 49.3% 49.7%, transparent 50%) 43% 30% / 28% 48% no-repeat,
+    linear-gradient(12deg, transparent 49%, rgba(205, 234, 228, 0.36) 49.3% 49.7%, transparent 50%) 49% 37% / 38% 25% no-repeat,
+    linear-gradient(159deg, transparent 49%, rgba(205, 234, 228, 0.4) 49.3% 49.7%, transparent 50%) 54% 45% / 35% 31% no-repeat;
+}
+
+.map-panel.boss-crack-level-1 .map-impact-cracks {
+  opacity: 0.42;
+}
+
+.map-panel.boss-crack-level-2 .map-impact-cracks {
+  opacity: 0.62;
+}
+
+.map-panel.boss-crack-level-2 .map-impact-cracks::before,
+.map-panel.boss-crack-level-3 .map-impact-cracks::before {
+  opacity: 0.72;
+}
+
+.map-panel.boss-crack-level-3 .map-impact-cracks {
+  opacity: 0.82;
+  filter: drop-shadow(0 0 3px rgba(var(--atmo-r), var(--atmo-g), var(--atmo-b), 0.54));
+}
+
+.map-panel.boss-crack-level-3 .map-impact-cracks::after {
+  opacity: 0.82;
+}
+
 .map-boss-eyes::before {
   opacity: 0;
   background:
@@ -2987,25 +3606,16 @@ summary {
     bossEyesAtmosphere 5.4s 1.65s ease-in-out infinite;
 }
 
-.map-panel.boss-eyes-strike .map-boss-eyes {
-  z-index: 7;
-  opacity: 1;
-  background: transparent;
-  box-shadow: none;
-  animation: none;
+.map-panel.boss-eyes-active.boss-eyes-exiting .map-boss-eyes {
+  animation: bossEyesBackdropExit 1.35s ease-in both;
+}
+
+.map-panel.boss-eyes-active.boss-eyes-exiting .map-boss-eyes::before {
+  animation: bossEyesVisualExit 1.35s ease-in both;
 }
 
 .map-panel.boss-eyes-strike .map-boss-eyes::before {
   animation: bossEyesStrike 1.15s cubic-bezier(0.18, 0.76, 0.24, 1) both;
-}
-
-.map-panel.boss-eyes-strike .map-boss-eyes::after {
-  opacity: 0;
-  animation: none;
-}
-
-.map-panel.boss-eyes-strike #missionMap {
-  animation: bossMapFadeBack 1.15s cubic-bezier(0.2, 0.72, 0.24, 1) both;
 }
 
 .map-panel.mission-failed .map-boss-eyes {
@@ -3278,7 +3888,7 @@ body.mission-active #missionMap {
   color: #fff4c7;
   background: radial-gradient(circle at center, rgba(210, 168, 79, 0.34), rgba(188, 81, 72, 0.18) 48%, rgba(8, 9, 10, 0.92) 74%);
   box-shadow: 0 0 0 1px rgba(255, 235, 176, 0.18), 0 0 38px rgba(210, 168, 79, 0.34), 0 0 70px rgba(188, 81, 72, 0.24);
-  animation: queryIncomingBlob 1.55s ease-in-out forwards;
+  animation: queryIncomingBlob var(--query-alert-duration, 3.2s) ease-in-out forwards;
 }
 
 .map-query-alert span {
@@ -3386,9 +3996,10 @@ body.mission-active.single-device-mode .map-question-fill {
   line-height: 1.24;
 }
 
-body.mission-active.single-device-mode .map-control-dock:not(:empty) {
+body.mission-active.single-device-mode .map-control-dock {
   display: block;
   min-width: 0;
+  min-height: 108px;
 }
 
 body.mission-active.single-device-mode .map-control-dock .control-row {
@@ -3396,12 +4007,30 @@ body.mission-active.single-device-mode .map-control-dock .control-row {
 }
 
 body.mission-active.single-device-mode .map-control-dock .dm-console {
-  grid-template-columns: minmax(0, 1fr) minmax(240px, 0.74fr) auto;
-  align-items: end;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
   gap: 6px;
   padding: 6px;
   border-color: rgba(210, 168, 79, 0.34);
   background: rgba(9, 18, 19, 0.93);
+}
+
+.single-device-submission-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 6px;
+}
+
+.single-device-submission-grid > * {
+  min-width: 0;
+}
+
+@media (max-width: 920px) {
+  body.mission-active.single-device-mode .map-control-dock .dm-console,
+  .single-device-submission-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 body.mission-active.single-device-mode .map-control-dock .player-answer-form,
@@ -3411,8 +4040,15 @@ body.mission-active.single-device-mode .map-control-dock .side-action-form {
 
 body.mission-active.single-device-mode .map-control-dock .side-action-form {
   margin-top: 0;
-  padding-top: 0;
-  border-top: 0;
+  padding: 7px;
+  border: 1px solid rgba(77, 183, 168, 0.34);
+  border-radius: 6px;
+  background: rgba(13, 26, 24, 0.88);
+}
+
+body.mission-active.single-device-mode .map-control-dock .dm-console > :only-child,
+.single-device-submission-grid > :only-child {
+  grid-column: 1 / -1;
 }
 
 body.mission-active.single-device-mode .map-control-dock .dm-actions {
@@ -3429,6 +4065,15 @@ body.mission-active.single-device-mode .map-control-dock .quick-answer-row {
 
 body.mission-active.single-device-mode .map-control-dock .quick-answer-row button {
   min-width: 40px;
+}
+
+body.mission-active.single-device-mode .map-control-dock:empty {
+  visibility: hidden;
+}
+
+.classic-answer-form {
+  display: grid;
+  gap: 7px;
 }
 
 .map-panel.transmission-active .map-radar-sweep {
@@ -3737,22 +4382,39 @@ body.mission-active .briefing {
   text-transform: uppercase;
 }
 
-.mission-log-heading::after,
-.status-update-heading::after {
-  content: "";
-  width: 54px;
-  height: 6px;
+.heading-waveform {
+  display: inline-flex;
+  width: 58px;
+  height: 14px;
   margin-left: auto;
-  border-radius: 999px;
-  background: repeating-linear-gradient(90deg, rgba(var(--atmo-primary), 0.85) 0 5px, transparent 5px 8px);
+  gap: 3px;
+  align-items: center;
+  justify-content: flex-end;
   filter: drop-shadow(0 0 4px rgba(var(--atmo-primary), 0.48));
-  animation: headerSignalActivity 1.8s steps(4) infinite;
 }
 
-.status-update-heading::after {
-  width: 38px;
+.heading-waveform i {
+  display: block;
+  width: 3px;
+  height: 30%;
+  border-radius: 1px;
+  background: rgba(var(--atmo-primary), 0.88);
+  transform-origin: center;
+  animation: headingWaveformPulse 1.2s ease-in-out infinite alternate;
+}
+
+.heading-waveform i:nth-child(2n) { animation-delay: -0.48s; }
+.heading-waveform i:nth-child(3n) { animation-delay: -0.84s; }
+.heading-waveform i:nth-child(4n) { animation-delay: -0.18s; }
+.heading-waveform i:nth-child(5n) { animation-delay: -0.66s; }
+
+.status-update-heading .heading-waveform {
+  width: 42px;
   opacity: 0.58;
-  animation-duration: 2.6s;
+}
+
+.status-update-heading .heading-waveform i {
+  animation-duration: 1.8s;
 }
 
 .mission-audio-panel {
@@ -3881,6 +4543,13 @@ body.mission-active .mission-audio-panel {
   min-height: 150px;
   aspect-ratio: 16 / 9;
   border: 0;
+}
+
+.background-music-embed audio {
+  display: block;
+  width: 100%;
+  min-height: 42px;
+  accent-color: rgb(var(--atmo-r), var(--atmo-g), var(--atmo-b));
 }
 
 .mission-audio-panel.tts-disabled {
@@ -4199,6 +4868,49 @@ body.mission-active .question-text {
   animation: emsStatusPulse 1.8s ease-in-out infinite;
 }
 
+.ems-player-badge,
+.second-wind-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.25rem;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 0.62rem;
+  font-weight: 950;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.ems-player-badge {
+  border: 1px solid rgba(111, 243, 235, 0.86);
+  color: #a8fff9;
+  background: rgba(19, 92, 94, 0.56);
+  box-shadow: 0 0 13px rgba(65, 213, 208, 0.48), inset 0 0 8px rgba(111, 243, 235, 0.12);
+  animation: emsFieldHold 2.2s ease-in-out infinite;
+}
+
+.second-wind-badge {
+  border: 1px solid rgba(153, 230, 143, 0.7);
+  color: #baf4b3;
+  background: rgba(39, 82, 42, 0.62);
+  box-shadow: 0 0 10px rgba(118, 211, 111, 0.24);
+}
+
+.second-wind-badge.pending {
+  border-color: rgba(255, 202, 87, 0.82);
+  color: #ffe19a;
+  background: rgba(100, 67, 18, 0.7);
+  box-shadow: 0 0 14px rgba(255, 196, 69, 0.34);
+  animation: secondWindPendingPulse 1.05s ease-in-out infinite;
+}
+
+body.mission-active .status-card.ems-protected:not(.incapacitated) {
+  outline: 1px solid rgba(111, 243, 235, 0.58);
+  outline-offset: -3px;
+  box-shadow: inset 0 0 20px rgba(65, 213, 208, 0.1), 0 0 16px rgba(65, 213, 208, 0.2);
+}
+
 .map-panel .status-grid {
   margin-top: 14px;
 }
@@ -4301,6 +5013,15 @@ body.mission-active .status-card-heading {
   color: #ffe08a;
   border-color: rgba(255, 224, 138, 0.44);
   background: rgba(62, 48, 14, 0.5);
+}
+
+.status-vitals .player-points {
+  min-width: 0;
+  padding: 1px 4px;
+  color: #f0c96a;
+  border-color: rgba(240, 201, 106, 0.4);
+  background: rgba(56, 43, 13, 0.55);
+  font-size: 0.54rem;
 }
 
 .mission-progress {
@@ -4570,22 +5291,6 @@ body.mission-active .answer-result-badge {
   outline-offset: 2px;
   background: linear-gradient(180deg, rgba(73, 61, 30, 0.94), rgba(25, 29, 29, 0.98));
   box-shadow: 0 0 0 1px rgba(255, 204, 87, 0.26), 0 0 28px rgba(255, 204, 87, 0.28);
-}
-
-.locked-operator-badge {
-  display: inline-flex;
-  min-height: 19px;
-  align-items: center;
-  padding: 0 7px;
-  border: 1px solid rgba(255, 204, 87, 0.76);
-  border-radius: 999px;
-  color: #fff1bf;
-  background: rgba(112, 80, 18, 0.7);
-  box-shadow: 0 0 14px rgba(255, 204, 87, 0.3);
-  font-size: 0.54rem;
-  font-weight: 950;
-  letter-spacing: 0.06em;
-  animation: lockedOperatorBadgePulse 1.4s ease-in-out infinite;
 }
 
 .status-card,
@@ -5327,15 +6032,15 @@ body.mission-active .player-answer-row {
     filter: blur(3px);
   }
 
-  18%,
-  54% {
+  21%,
+  64% {
     opacity: 1;
     transform: scale(1.05);
     filter: blur(0);
   }
 
-  36%,
-  72% {
+  42%,
+  82% {
     opacity: 0.48;
     transform: scale(0.94);
   }
@@ -5535,9 +6240,10 @@ body.mission-active .player-answer-row {
   to { opacity: 0.72; }
 }
 
-@keyframes lockedOperatorBadgePulse {
-  0%, 100% { filter: brightness(0.92); transform: scale(0.97); }
-  50% { filter: brightness(1.22); transform: scale(1.04); }
+@keyframes headingWaveformPulse {
+  0% { height: 20%; opacity: 0.45; }
+  45% { height: 92%; opacity: 1; }
+  100% { height: 42%; opacity: 0.72; }
 }
 
 @keyframes submittedRosterSweep {
@@ -5614,6 +6320,18 @@ body.mission-active .player-answer-row {
   50% {
     opacity: 0.82;
     transform: scale(1.008);
+  }
+}
+
+@keyframes secondWindPendingPulse {
+  0%, 100% {
+    opacity: 0.66;
+    filter: brightness(0.86);
+  }
+
+  50% {
+    opacity: 1;
+    filter: brightness(1.25);
   }
 }
 
@@ -5699,56 +6417,84 @@ body.mission-active .player-answer-row {
   }
 }
 
-@keyframes bossEyesStrike {
+@keyframes bossEyesBackdropExit {
   0% {
-    opacity: 0.48;
-    filter: brightness(0.9) contrast(1.16) drop-shadow(0 0 18px rgba(var(--atmo-r), var(--atmo-g), var(--atmo-b), 0.55));
+    opacity: 0.92;
+    background-color: #010202;
+  }
+  58% {
+    opacity: 0.52;
+  }
+  100% {
+    opacity: 0;
+    background-color: #000;
+  }
+}
+
+@keyframes bossEyesVisualExit {
+  0% {
+    opacity: 0.58;
+    filter: brightness(1) contrast(1.12);
     transform: scale(1);
   }
-  13% {
-    opacity: 1;
-    filter: brightness(3.8) contrast(1.62) saturate(1.7) drop-shadow(0 0 48px rgba(var(--atmo-r), var(--atmo-g), var(--atmo-b), 1));
-    transform: scale(1.12);
-  }
-  25% {
+  55% {
     opacity: 0.22;
-    filter: brightness(1.1) contrast(1.4);
-    transform: translateX(-8px) scale(1.035);
+    filter: blur(2px) brightness(0.72) contrast(1.18);
+    transform: scale(1.025);
   }
-  42% {
+  100% {
+    opacity: 0;
+    filter: blur(8px) brightness(0.3) contrast(1.3);
+    transform: scale(1.08);
+  }
+}
+
+@keyframes bossEyesStrike {
+  0% {
+    opacity: 0.58;
+    filter: brightness(1) contrast(1.12) drop-shadow(0 0 24px rgba(var(--atmo-r), var(--atmo-g), var(--atmo-b), 0.48));
+  }
+  20% {
     opacity: 1;
-    filter: brightness(4.4) contrast(1.72) saturate(1.85) drop-shadow(0 0 58px rgba(var(--atmo-r), var(--atmo-g), var(--atmo-b), 1));
-    transform: translateX(4px) scale(1.09);
+    filter: brightness(3.7) contrast(1.62) saturate(1.7) drop-shadow(0 0 52px rgba(var(--atmo-r), var(--atmo-g), var(--atmo-b), 1));
+  }
+  43% {
+    opacity: 0.72;
+    filter: brightness(1.35) contrast(1.24) drop-shadow(0 0 30px rgba(var(--atmo-r), var(--atmo-g), var(--atmo-b), 0.68));
   }
   62% {
-    opacity: 0.78;
-    filter: brightness(1.8) contrast(1.34) drop-shadow(0 0 32px rgba(var(--atmo-r), var(--atmo-g), var(--atmo-b), 0.82));
-    transform: scale(1.035);
+    opacity: 1;
+    filter: brightness(4.2) contrast(1.7) saturate(1.85) drop-shadow(0 0 60px rgba(var(--atmo-r), var(--atmo-g), var(--atmo-b), 1));
   }
   100% {
     opacity: 0.58;
     filter: brightness(1) contrast(1.12) drop-shadow(0 0 24px rgba(var(--atmo-r), var(--atmo-g), var(--atmo-b), 0.48));
-    transform: scale(1);
   }
 }
 
-@keyframes bossMapFadeBack {
-  0%, 28% {
-    opacity: 0.08;
-    filter: saturate(0.35) contrast(1.34) brightness(0.28);
-  }
-  52% {
-    opacity: 0.3;
-    filter: saturate(0.52) contrast(1.26) brightness(0.48);
-  }
-  76% {
-    opacity: 0.7;
-    filter: saturate(0.72) contrast(1.17) brightness(0.78);
-  }
-  100% {
-    opacity: 1;
-    filter: saturate(0.82) contrast(1.11) brightness(0.96) drop-shadow(0 0 3px rgba(var(--atmo-r), var(--atmo-g), var(--atmo-b), 0.24));
-  }
+@keyframes bossDamageCabinetImpact {
+  0%, 100% { transform: translate3d(0, 0, 0) rotate(0); }
+  12% { transform: translate3d(-8px, 3px, 0) rotate(-0.18deg); }
+  24% { transform: translate3d(7px, -4px, 0) rotate(0.16deg); }
+  38% { transform: translate3d(-5px, -2px, 0) rotate(-0.1deg); }
+  54% { transform: translate3d(4px, 2px, 0) rotate(0.08deg); }
+  72% { transform: translate3d(-2px, 1px, 0) rotate(-0.04deg); }
+}
+
+@keyframes bossDamageScreenImpact {
+  0% { filter: brightness(1); }
+  12% { filter: brightness(2.15) contrast(1.35); }
+  28% { filter: brightness(0.64) contrast(1.42); }
+  48% { filter: brightness(1.3) contrast(1.18); }
+  100% { filter: brightness(1); }
+}
+
+body.boss-damage-impact .app-shell {
+  animation: bossDamageCabinetImpact 0.76s cubic-bezier(0.22, 0.68, 0.28, 1) both;
+}
+
+.map-panel.boss-damage-impact .map-wrap {
+  animation: bossDamageScreenImpact 0.76s steps(2) both;
 }
 
 @keyframes bossTransmissionStrobe {
@@ -6440,6 +7186,31 @@ body.mission-active .mission-action-overlay {
   transform: translateY(-4px);
 }
 
+.tts-generation-transmission {
+  width: 100%;
+  opacity: 1;
+  transition: opacity 240ms ease, transform 240ms ease, filter 240ms ease;
+}
+
+.tts-generation-transmission.fading {
+  opacity: 0;
+  filter: blur(2px) brightness(1.35);
+  transform: translateY(-4px) scale(0.99);
+}
+
+.transcript-entry.tts-generation-pending > .typewriter,
+.transcript-entry.tts-generation-pending > .briefing-section,
+.transcript-entry.tts-generation-pending > .log-question {
+  opacity: 0;
+}
+
+.transcript-entry.tts-generation-ready > .typewriter,
+.transcript-entry.tts-generation-ready > .briefing-section,
+.transcript-entry.tts-generation-ready > .log-question {
+  opacity: 1;
+  transition: opacity 260ms ease;
+}
+
 body.mission-active .transmission-display {
   gap: 6px;
 }
@@ -7015,6 +7786,10 @@ body.mission-active .player-dm-controls {
   stroke: #7f8b79;
 }
 
+.route-line.discovering {
+  animation: routeLineDiscovery 0.72s ease-out both;
+}
+
 .route-trail {
   stroke: var(--accent-2);
   stroke-width: 7;
@@ -7064,6 +7839,12 @@ body.mission-active .player-dm-controls {
 .map-node {
   stroke: #d8e2d3;
   stroke-width: 2;
+}
+
+.map-location.newly-discovered {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: mapLocationDiscovery 0.7s cubic-bezier(0.2, 0.9, 0.24, 1.2) both;
 }
 
 .map-node.base {
@@ -7130,6 +7911,35 @@ body.mission-active .player-dm-controls {
   to {
     stroke-width: 9;
     opacity: 0.72;
+  }
+}
+
+@keyframes routeLineDiscovery {
+  from {
+    opacity: 0;
+    stroke-dasharray: 2 22;
+  }
+  to {
+    opacity: 1;
+    stroke-dasharray: 0;
+  }
+}
+
+@keyframes mapLocationDiscovery {
+  0% {
+    opacity: 0;
+    transform: scale(0.2);
+    filter: brightness(2.4) blur(4px);
+  }
+  65% {
+    opacity: 1;
+    transform: scale(1.16);
+    filter: brightness(1.8) blur(0);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+    filter: brightness(1) blur(0);
   }
 }
 
@@ -7277,7 +8087,6 @@ body.mission-active .player-dm-controls {
 
   .setup-inline-grid,
   .engine-grid,
-  .difficulty-question-banks,
   .sfx-mapping-grid,
   .device-mode-toggle,
   .setup-command-strip,
@@ -7344,10 +8153,10 @@ body.mission-active .player-dm-controls {
   .status-grid.ems-field-active::after,
   .map-panel.ems-field-active .map-hud-corners i,
   .ems-field-status,
+  .second-wind-badge.pending,
   .map-question-card::before,
   .map-question-choices span,
-  .mission-log-heading::after,
-  .status-update-heading::after,
+  .heading-waveform i,
   body.dashboard-booting.dashboard-stage-shell .map-panel,
   body.dashboard-booting.dashboard-stage-shell .play-panel,
   body.dashboard-booting .map-main > *,
@@ -7366,6 +8175,8 @@ body.mission-active .player-dm-controls {
   .map-panel.mission-failed .map-failure-overlay::after,
   .map-panel.mission-failed .map-failure-skull,
   .map-panel.mission-failed .map-failure-short,
+  body.boss-damage-impact .app-shell,
+  .map-panel.boss-damage-impact .map-wrap,
   .setup-transition-lock span,
   body.dashboard-exiting .app-shell,
   body.dashboard-returning .setup-panel,
@@ -7376,7 +8187,6 @@ body.mission-active .player-dm-controls {
   .deployment-target-lock::before,
   .deployment-coordinate-stream,
   .deployment-system-lights i,
-  .locked-operator-badge,
   .status-card-locked-out > *,
   .status-card-locked-out::after {
     animation: none !important;

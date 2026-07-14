@@ -26,6 +26,11 @@ const playerSessionApi = {
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload)
   }).then((response) => response.json()).catch(() => null),
+  consumeQueuedAction: (payload) => fetch("/api/player-action-consume", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload)
+  }).then((response) => response.json()).catch(() => null),
   ...(window.StudyAdventurePlayerSession || {})
 };
 
@@ -78,6 +83,7 @@ const state = {
   roomNames: {},
   mapPositions: [],
   mapLayoutSeed: 0,
+  mapRevealedNodes: new Set(),
   bossAreaNames: { mid: "", final: "" },
   bossPhasePlans: {},
   bossPhasePlanRequests: {},
@@ -98,6 +104,10 @@ const state = {
   recoveryUsed: new Set(),
   rng: mulberry32(8128),
   selectedEMS: false,
+  secondWindEnabled: false,
+  secondWindUsed: false,
+  secondWindPlayerName: "",
+  secondWindPendingPlayerName: "",
   challengeHistory: [],
   typeTimers: [],
   autoScrollTimers: [],
@@ -115,11 +125,18 @@ const state = {
   playerPromptRequiredNames: [],
   playerAnswers: [],
   playerActions: [],
+  queuedPlayerActions: [],
   playerSubmissionLogKey: "",
   resolutionDelayPending: false,
   resolutionDelayPromptId: "",
   resolutionDelayTimer: null,
   processedPlayerActionIds: new Set(),
+  processedQueuedActionIds: new Set(),
+  scoredPromptIds: new Set(),
+  questionOpenedAt: 0,
+  questionDurationMs: 60_000,
+  questionPauseStartedAt: 0,
+  questionPausedTotalMs: 0,
   simulatorAutoAnswer: window.localStorage.getItem("studyAdventureSimulatorAutoAnswer") === "true",
   simulatorAutoAnswerPromptId: "",
   simulatorAutoAnswerTimers: [],
@@ -139,6 +156,10 @@ const state = {
   bossAudioStartedNodes: new Set(),
   bossMusicStartedNodes: new Set(),
   bossEyesStrikeTimer: null,
+  bossEyesExitTimer: null,
+  bossDamageImpactTimer: null,
+  bossScreenCrackLevel: 0,
+  bossScreenCrackNode: -1,
   answerPending: false,
   lastSubmittedAnswer: "",
   previousAnswerFlashId: "",
@@ -159,6 +180,9 @@ const state = {
   sfxPreset: window.localStorage.getItem("studyAdventureSfxPreset") || "subtle",
   youtubeMusicUrl: window.localStorage.getItem("studyAdventureYoutubeMusicUrl") || "",
   youtubeBossMusicUrl: window.localStorage.getItem("studyAdventureYoutubeBossMusicUrl") || "",
+  useYoutubeMusic: window.localStorage.getItem("studyAdventureUseYoutubeMusic") === "true",
+  useYoutubeBossMusic: window.localStorage.getItem("studyAdventureUseYoutubeBossMusic") === "true",
+  youtubeMusicRandomStart: window.localStorage.getItem("studyAdventureYoutubeMusicRandomStart") === "true",
   backgroundMusicLoaded: false,
   backgroundMusicMode: "normal",
   backgroundMusicVideoId: "",
@@ -166,6 +190,9 @@ const state = {
   backgroundMusicTransitionRunId: 0,
   backgroundMusicCurrentVolume: 72,
   backgroundMusicFadingOutForBossReady: false,
+  backgroundMusicRandomStartTimer: null,
+  backgroundMusicRandomStartPollTimer: null,
+  backgroundMusicRandomStartPending: null,
   ttsPlaybackActive: false,
   audioEffects: [],
   audioEffectDefaults: {},
@@ -232,12 +259,19 @@ const state = {
   ttsPiperAvailable: false,
   ttsPiperVoiceName: "",
   ttsPiperError: "",
+  ttsKokoroAvailable: false,
+  ttsKokoroVoiceName: "",
+  ttsKokoroVoices: [],
+  ttsKokoroError: "",
   ttsAudio: null,
   ttsAudioUrl: "",
   ttsVoiceURI: "",
   ttsRate: 1,
   ttsTextDelayMs: 1000,
+  ttsTextDelayMode: "auto",
+  ttsMeasuredStartupMs: 0,
   ttsLastPlaybackPromise: Promise.resolve(),
+  ttsLastPlaybackStartPromise: Promise.resolve({ played: false, delayMs: 0, leadMs: 0 }),
   ttsPlaybackResolve: null,
   ttsPlaybackToken: 0
 };
@@ -256,7 +290,12 @@ const ACTION_DIALOGUE_HOLD_MS = 12000;
 const PLAYER_PROMPT_DELIVERY_GRACE_MS = 3000;
 const GENERATED_ENVIRONMENT_NOTE = "Let the local DM create a custom mission location and persistent enemy.";
 const BACKGROUND_MUSIC_VOLUME = 72;
-const BACKGROUND_MUSIC_DUCK_VOLUME = 38;
+const BACKGROUND_MUSIC_DUCK_VOLUME = 24;
+const TTS_SFX_DUCK_GAIN = 0.22;
+const LOCAL_NORMAL_MUSIC_SRC = "audio-effects/normal_music.mp3";
+const LOCAL_BOSS_MUSIC_SRC = "audio-effects/boss_music.mp3";
+let narrationAudioContext = null;
+const narrationAudioNodes = new WeakMap();
 
 function isFastMode() {
   return Boolean(state.fastMode);
@@ -271,7 +310,18 @@ function questionAlertDelayMs() {
 }
 
 function questionRevealDelayMs() {
-  return isFastMode() ? 700 : 1750;
+  return 1800;
+}
+
+function queryAlertDurationMs() {
+  return questionRevealDelayMs();
+}
+
+function waitForQueryAlert() {
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(resolve, questionRevealDelayMs());
+    state.typeTimers.push(timer);
+  });
 }
 
 function continueCountdownSeconds() {
@@ -308,14 +358,8 @@ const els = {
   deviceModeMulti: document.getElementById("deviceModeMulti"),
   dmEngine: document.getElementById("dmEngine"),
   questionSource: document.getElementById("questionSource"),
-  difficultyPools: document.getElementById("difficultyPools"),
   bossTestMode: document.getElementById("bossTestMode"),
   actionDrivenMode: document.getElementById("actionDrivenMode"),
-  difficultyPoolsGroup: document.getElementById("difficultyPoolsGroup"),
-  difficultyQuestionBanks: document.getElementById("difficultyQuestionBanks"),
-  easyQuestionsInput: document.getElementById("easyQuestionsInput"),
-  mediumQuestionsInput: document.getElementById("mediumQuestionsInput"),
-  hardQuestionsInput: document.getElementById("hardQuestionsInput"),
   playerCountNote: document.getElementById("playerCountNote"),
   questionCountNote: document.getElementById("questionCountNote"),
   questionParseIssues: document.getElementById("questionParseIssues"),
@@ -336,6 +380,7 @@ const els = {
   advancedSettings: document.getElementById("advancedSettings"),
   emergencyTimerEnabled: document.getElementById("emergencyTimerEnabled"),
   fastModeEnabled: document.getElementById("fastModeEnabled"),
+  secondWindEnabled: document.getElementById("secondWindEnabled"),
   emergencyTimerDuration: document.getElementById("emergencyTimerDuration"),
   emergencyTimerDurationGroup: document.getElementById("emergencyTimerDurationGroup"),
   teacherTextSize: document.getElementById("teacherTextSize"),
@@ -344,12 +389,19 @@ const els = {
   sfxMappingGrid: document.getElementById("sfxMappingGrid"),
   youtubeMusicUrl: document.getElementById("youtubeMusicUrl"),
   youtubeBossMusicUrl: document.getElementById("youtubeBossMusicUrl"),
+  youtubeMusicUrlGroup: document.getElementById("youtubeMusicUrlGroup"),
+  youtubeBossMusicUrlGroup: document.getElementById("youtubeBossMusicUrlGroup"),
+  youtubeMusicRandomStartGroup: document.getElementById("youtubeMusicRandomStartGroup"),
+  useYoutubeMusic: document.getElementById("useYoutubeMusic"),
+  useYoutubeBossMusic: document.getElementById("useYoutubeBossMusic"),
+  youtubeMusicRandomStart: document.getElementById("youtubeMusicRandomStart"),
   savedMusicPresetsPanel: document.getElementById("savedMusicPresetsPanel"),
   savedMusicPresetsNote: document.getElementById("savedMusicPresetsNote"),
   savedMusicPresetsList: document.getElementById("savedMusicPresetsList"),
   musicPresetNameInput: document.getElementById("musicPresetNameInput"),
   saveMusicPresetBtn: document.getElementById("saveMusicPresetBtn"),
   missionLength: document.getElementById("missionLength"),
+  missionLengthNote: document.getElementById("missionLengthNote"),
   questionBankGroup: document.getElementById("questionBankGroup"),
   questionTips: document.getElementById("questionTips"),
   questionsInput: document.getElementById("questionsInput"),
@@ -358,6 +410,9 @@ const els = {
   savedQuestionSetsPanel: document.getElementById("savedQuestionSetsPanel"),
   savedQuestionSetsNote: document.getElementById("savedQuestionSetsNote"),
   savedQuestionSetsList: document.getElementById("savedQuestionSetsList"),
+  questionSetsSelectAllControl: document.getElementById("questionSetsSelectAllControl"),
+  questionSetsSelectAll: document.getElementById("questionSetsSelectAll"),
+  questionSetsSelectAllLabel: document.getElementById("questionSetsSelectAllLabel"),
   questionSetNameInput: document.getElementById("questionSetNameInput"),
   saveQuestionSetBtn: document.getElementById("saveQuestionSetBtn"),
   loadSampleBtn: document.getElementById("loadSampleBtn"),
@@ -383,6 +438,8 @@ const els = {
   ttsReplayBtn: document.getElementById("ttsReplayBtn"),
   ttsProvider: document.getElementById("ttsProvider"),
   ttsVoiceSelect: document.getElementById("ttsVoiceSelect"),
+  setupTtsProvider: document.getElementById("setupTtsProvider"),
+  setupTtsVoiceSelect: document.getElementById("setupTtsVoiceSelect"),
   ttsRate: document.getElementById("ttsRate"),
   ttsTextDelay: document.getElementById("ttsTextDelay"),
   ttsAutoLog: document.getElementById("ttsAutoLog"),
@@ -477,6 +534,15 @@ els.loadSampleBtn.addEventListener("click", () => {
 });
 els.copyNotebookPromptBtn.addEventListener("click", copyNotebookPrompt);
 els.saveQuestionSetBtn?.addEventListener("click", saveCurrentQuestionSet);
+els.questionSetsSelectAll?.addEventListener("change", () => {
+  const sets = readSavedQuestionSets();
+  const next = els.questionSetsSelectAll.checked
+    ? new Set(sets.map((set) => String(set.id)))
+    : new Set();
+  writeSelectedQuestionSetIds(next);
+  renderSavedQuestionSets();
+  updateSetupSummary();
+});
 
 els.startBtn.addEventListener("click", startMission);
 els.generateEnvironmentBtn?.addEventListener("click", generateCustomMissionEnvironment);
@@ -491,7 +557,7 @@ els.resetBtn.addEventListener("click", resetMission);
 els.copyScriptBtn.addEventListener("click", copyDmScript);
 els.recheckSystemsBtn?.addEventListener("click", checkMissionSystems);
 els.sfxPreset?.addEventListener("change", () => {
-  state.sfxPreset = els.sfxPreset.value || "subtle";
+  state.sfxPreset = normalizeSfxPreset(els.sfxPreset.value);
   window.localStorage.setItem("studyAdventureSfxPreset", state.sfxPreset);
   syncMapAudioReactor();
   playGameSfx("ui");
@@ -515,6 +581,22 @@ els.youtubeBossMusicUrl?.addEventListener("input", () => {
   window.localStorage.setItem("studyAdventureYoutubeBossMusicUrl", state.youtubeBossMusicUrl);
   syncBackgroundMusicPanel();
 });
+els.useYoutubeMusic?.addEventListener("change", () => {
+  state.useYoutubeMusic = Boolean(els.useYoutubeMusic.checked);
+  window.localStorage.setItem("studyAdventureUseYoutubeMusic", String(state.useYoutubeMusic));
+  syncMusicSourceControls();
+  syncBackgroundMusicPanel();
+});
+els.useYoutubeBossMusic?.addEventListener("change", () => {
+  state.useYoutubeBossMusic = Boolean(els.useYoutubeBossMusic.checked);
+  window.localStorage.setItem("studyAdventureUseYoutubeBossMusic", String(state.useYoutubeBossMusic));
+  syncMusicSourceControls();
+  syncBackgroundMusicPanel();
+});
+els.youtubeMusicRandomStart?.addEventListener("change", () => {
+  state.youtubeMusicRandomStart = Boolean(els.youtubeMusicRandomStart.checked);
+  window.localStorage.setItem("studyAdventureYoutubeMusicRandomStart", String(state.youtubeMusicRandomStart));
+});
 els.saveMusicPresetBtn?.addEventListener("click", saveCurrentMusicPreset);
 els.backgroundMusicLoadBtn?.addEventListener("click", () => loadBackgroundMusic());
 els.backgroundMusicStopBtn?.addEventListener("click", () => stopBackgroundMusic());
@@ -535,7 +617,6 @@ els.questionSource.addEventListener("change", () => {
   delete els.missionLength.dataset.manual;
   syncSetupMode();
 });
-els.difficultyPools.addEventListener("change", syncSetupMode);
 els.bossTestMode?.addEventListener("change", updateSetupSummary);
 els.actionDrivenMode?.addEventListener("change", () => {
   delete els.missionLength.dataset.manual;
@@ -545,20 +626,8 @@ els.deviceModeSingle.addEventListener("change", syncSetupMode);
 els.deviceModeMulti.addEventListener("change", syncSetupMode);
 els.playersInput.addEventListener("input", updateSetupSummary);
 els.questionsInput.addEventListener("input", updateSetupSummary);
-els.easyQuestionsInput.addEventListener("input", updateSetupSummary);
-els.mediumQuestionsInput.addEventListener("input", updateSetupSummary);
-els.hardQuestionsInput.addEventListener("input", updateSetupSummary);
 els.missionLength.addEventListener("input", () => {
-  if (els.missionLength.value) els.missionLength.dataset.manual = "true";
-  else delete els.missionLength.dataset.manual;
-  updateSetupSummary();
-});
-els.missionLength.addEventListener("change", () => {
-  clampMissionLengthInput();
-  updateSetupSummary();
-});
-els.missionLength.addEventListener("blur", () => {
-  clampMissionLengthInput();
+  els.missionLength.dataset.manual = "true";
   updateSetupSummary();
 });
 if (els.localDmProvider) {
@@ -626,10 +695,7 @@ function loadSampleSetup() {
   if (els.generatedEnvironmentNote) els.generatedEnvironmentNote.textContent = GENERATED_ENVIRONMENT_NOTE;
   els.questionsInput.value = sampleQuestions;
   els.questionSource.value = "demo";
-  els.difficultyPools.checked = false;
   delete els.missionLength.dataset.manual;
-  els.missionLength.value = "10";
-  els.missionLength.dataset.manual = "true";
   syncSetupMode();
 }
 
@@ -643,10 +709,28 @@ function copyNotebookPrompt() {
 }
 
 function initGameAudioControls() {
+  state.sfxPreset = normalizeSfxPreset(state.sfxPreset);
+  autoLoadDefaultMusicPreset();
   if (els.sfxPreset) els.sfxPreset.value = state.sfxPreset;
   if (els.youtubeMusicUrl) els.youtubeMusicUrl.value = state.youtubeMusicUrl;
   if (els.youtubeBossMusicUrl) els.youtubeBossMusicUrl.value = state.youtubeBossMusicUrl;
+  if (els.useYoutubeMusic) els.useYoutubeMusic.checked = state.useYoutubeMusic;
+  if (els.useYoutubeBossMusic) els.useYoutubeBossMusic.checked = state.useYoutubeBossMusic;
+  if (els.youtubeMusicRandomStart) els.youtubeMusicRandomStart.checked = state.youtubeMusicRandomStart;
+  syncMusicSourceControls();
   loadAudioEffectManifest();
+}
+
+function syncMusicSourceControls() {
+  if (els.youtubeMusicUrl) els.youtubeMusicUrl.disabled = !state.useYoutubeMusic;
+  if (els.youtubeBossMusicUrl) els.youtubeBossMusicUrl.disabled = !state.useYoutubeBossMusic;
+  if (els.youtubeMusicUrlGroup) els.youtubeMusicUrlGroup.hidden = !state.useYoutubeMusic;
+  if (els.youtubeBossMusicUrlGroup) els.youtubeBossMusicUrlGroup.hidden = !state.useYoutubeBossMusic;
+  if (els.youtubeMusicRandomStartGroup) els.youtubeMusicRandomStartGroup.hidden = !state.useYoutubeMusic;
+}
+
+function normalizeSfxPreset(value) {
+  return ["off", "subtle", "cinematic"].includes(value) ? value : "subtle";
 }
 
 function readLocalSavedMusicPresets() {
@@ -704,6 +788,7 @@ function loadSavedMusicPresetsFromServer() {
         state.savedMusicPresetsCache = [];
       }
       state.musicPresetsServerReady = true;
+      autoLoadDefaultMusicPreset();
       renderSavedMusicPresets();
     })
     .catch(() => {
@@ -809,15 +894,41 @@ function renderSavedMusicPresets() {
 function loadMusicPreset(id) {
   const preset = readSavedMusicPresets().find((entry) => entry.id === id);
   if (!preset) return;
+  applyMusicPreset(preset, { announce: true });
+}
+
+function applyMusicPreset(preset, { announce = false } = {}) {
+  if (!preset) return false;
   state.youtubeMusicUrl = preset.normalUrl || "";
   state.youtubeBossMusicUrl = preset.bossUrl || "";
+  state.useYoutubeMusic = Boolean(state.youtubeMusicUrl);
+  state.useYoutubeBossMusic = Boolean(state.youtubeBossMusicUrl);
   if (els.youtubeMusicUrl) els.youtubeMusicUrl.value = state.youtubeMusicUrl;
   if (els.youtubeBossMusicUrl) els.youtubeBossMusicUrl.value = state.youtubeBossMusicUrl;
+  if (els.useYoutubeMusic) els.useYoutubeMusic.checked = state.useYoutubeMusic;
+  if (els.useYoutubeBossMusic) els.useYoutubeBossMusic.checked = state.useYoutubeBossMusic;
   if (els.musicPresetNameInput) els.musicPresetNameInput.value = preset.name;
   window.localStorage.setItem("studyAdventureYoutubeMusicUrl", state.youtubeMusicUrl);
   window.localStorage.setItem("studyAdventureYoutubeBossMusicUrl", state.youtubeBossMusicUrl);
+  window.localStorage.setItem("studyAdventureUseYoutubeMusic", String(state.useYoutubeMusic));
+  window.localStorage.setItem("studyAdventureUseYoutubeBossMusic", String(state.useYoutubeBossMusic));
+  syncMusicSourceControls();
   syncBackgroundMusicPanel();
-  setLaunchStatus(`Loaded music preset "${preset.name}".`);
+  if (announce) setLaunchStatus(`Loaded music preset "${preset.name}".`);
+  return true;
+}
+
+function autoLoadDefaultMusicPreset() {
+  if (!state.useYoutubeMusic && !state.useYoutubeBossMusic) return null;
+  const normalUrl = els.youtubeMusicUrl?.value.trim() || state.youtubeMusicUrl || "";
+  const bossUrl = els.youtubeBossMusicUrl?.value.trim() || state.youtubeBossMusicUrl || "";
+  const needsNormal = state.useYoutubeMusic && !normalUrl;
+  const needsBoss = state.useYoutubeBossMusic && !bossUrl;
+  if (!needsNormal && !needsBoss) return null;
+  const preset = readSavedMusicPresets().find((entry) => needsNormal && entry.normalUrl || needsBoss && entry.bossUrl);
+  if (!preset) return null;
+  applyMusicPreset(preset);
+  return preset;
 }
 
 function renameMusicPreset(id) {
@@ -919,29 +1030,105 @@ function audioEffectForEvent(eventName) {
 }
 
 function playGameSfx(eventName, options = {}) {
-  if (state.sfxPreset === "off") return;
+  if (state.sfxPreset === "off") return null;
   if (eventName === "ending") stopBackgroundMusic();
   const nowMs = Date.now();
   const minInterval = Number.isFinite(options.minInterval) ? Math.max(0, options.minInterval) : 90;
-  if (nowMs - (state.lastSfxAt[eventName] || 0) < minInterval) return;
+  if (nowMs - (state.lastSfxAt[eventName] || 0) < minInterval) return null;
   const effect = audioEffectForEvent(eventName);
-  if (!effect) return;
+  if (!effect) return null;
   state.lastSfxAt[eventName] = nowMs;
   try {
     const key = `${effect.id}:${effect.src}`;
     const audio = state.audioEffectPlayers[key] || new Audio(effect.src);
     state.audioEffectPlayers[key] = audio;
+    audio.preload = "auto";
     if (audio.studyAdventureFadeTimer) window.clearInterval(audio.studyAdventureFadeTimer);
     audio.studyAdventureFadeTimer = null;
     audio.pause();
     audio.currentTime = 0;
     const baseVolume = state.sfxPreset === "cinematic" ? 0.92 : 0.48;
-    audio.volume = Math.max(0, Math.min(1, baseVolume * (Number.isFinite(options.volumeScale) ? options.volumeScale : 1)));
-    audio.play().catch(() => {});
+    audio.studyAdventureBaseVolume = Math.max(0, Math.min(1, baseVolume * (Number.isFinite(options.volumeScale) ? options.volumeScale : 1)));
+    audio.volume = effectiveGameSfxVolume(audio);
+    setNarrationLowPass(audio, state.ttsPlaybackActive);
+    audio.studyAdventurePlayPromise = audio.play();
+    audio.studyAdventurePlayPromise.catch(() => {});
     if (options.pulse !== false) pulseMapAudioReactor(eventName);
+    return audio;
   } catch {
     // Custom SFX should never interrupt the game loop.
+    return null;
   }
+}
+
+function effectiveGameSfxVolume(audio) {
+  const baseVolume = Number.isFinite(audio?.studyAdventureBaseVolume)
+    ? audio.studyAdventureBaseVolume
+    : Math.max(0, Math.min(1, Number(audio?.volume) || 0));
+  return Math.max(0, Math.min(1, baseVolume * (state.ttsPlaybackActive ? TTS_SFX_DUCK_GAIN : 1)));
+}
+
+function narrationAudioNode(audio) {
+  if (!audio || audio.tagName !== "AUDIO") return null;
+  const existing = narrationAudioNodes.get(audio);
+  if (existing) return existing;
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) return null;
+  try {
+    narrationAudioContext ||= new AudioContextClass();
+    const source = narrationAudioContext.createMediaElementSource(audio);
+    const filter = narrationAudioContext.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.frequency.value = 22000;
+    filter.Q.value = 0.72;
+    source.connect(filter);
+    filter.connect(narrationAudioContext.destination);
+    const node = { source, filter, lowPassActive: false };
+    narrationAudioNodes.set(audio, node);
+    return node;
+  } catch {
+    return null;
+  }
+}
+
+function setNarrationLowPass(audio, active) {
+  const node = narrationAudioNode(audio);
+  if (!node || !narrationAudioContext) return;
+  const nextActive = Boolean(active);
+  if (node.lowPassActive === nextActive) return;
+  node.lowPassActive = nextActive;
+  narrationAudioContext.resume?.().catch(() => {});
+  const frequency = node.filter.frequency;
+  const now = narrationAudioContext.currentTime;
+  const target = nextActive ? 1800 : 22000;
+  const duration = nextActive ? 0.34 : 1.4;
+  if (typeof frequency.cancelAndHoldAtTime === "function") {
+    frequency.cancelAndHoldAtTime(now);
+  } else {
+    const current = Math.max(40, Number(frequency.value) || 22000);
+    frequency.cancelScheduledValues(now);
+    frequency.setValueAtTime(current, now);
+  }
+  frequency.exponentialRampToValueAtTime(target, now + duration);
+}
+
+function narrationDuckedAudioPlayers() {
+  return [...new Set([
+    ...Object.values(state.audioEffectPlayers),
+    state.introSequenceAudio,
+    state.introSequenceFadingAudio,
+    state.failureAudio,
+    ...state.deploymentRosterAudio,
+    ...state.dashboardBootAudio
+  ].filter(Boolean))];
+}
+
+function syncGameSfxNarrationDuck() {
+  narrationDuckedAudioPlayers().forEach((audio) => {
+    if (!Number.isFinite(audio.studyAdventureBaseVolume)) audio.studyAdventureBaseVolume = audio.volume;
+    if (!audio.studyAdventureFadeTimer) audio.volume = effectiveGameSfxVolume(audio);
+    setNarrationLowPass(audio, state.ttsPlaybackActive);
+  });
 }
 
 function stopGameSfx(eventName) {
@@ -1018,7 +1205,9 @@ function startIntroSequenceAudio() {
     };
     audio.loop = true;
     audio.preload = "auto";
-    audio.volume = state.sfxPreset === "cinematic" ? 0.72 : 0.42;
+    audio.studyAdventureBaseVolume = state.sfxPreset === "cinematic" ? 0.72 : 0.42;
+    audio.volume = effectiveGameSfxVolume(audio);
+    setNarrationLowPass(audio, state.ttsPlaybackActive);
     state.introSequenceAudio = audio;
     audio.addEventListener("error", tryNextSource, { once: true });
     audio.play().catch(() => {
@@ -1098,7 +1287,9 @@ function playMissionFailureAudio() {
       playSource(index + 1);
     };
     audio.preload = "auto";
-    audio.volume = state.sfxPreset === "cinematic" ? 0.96 : 0.58;
+    audio.studyAdventureBaseVolume = state.sfxPreset === "cinematic" ? 0.96 : 0.58;
+    audio.volume = effectiveGameSfxVolume(audio);
+    setNarrationLowPass(audio, state.ttsPlaybackActive);
     state.failureAudio = audio;
     audio.addEventListener("error", tryNextSource, { once: true });
     audio.play().then(() => pulseMapAudioReactor("failure")).catch(() => {
@@ -1126,21 +1317,15 @@ function stopMissionFailureAudio() {
 
 function startNormalBackgroundMusicAfterReady() {
   fadeOutIntroSequenceAudio();
-  if (state.youtubeMusicUrl || state.youtubeBossMusicUrl) loadBackgroundMusic("normal", { fadeIn: true });
+  loadBackgroundMusic("normal", { fadeIn: true });
 }
 
 function syncBackgroundMusicPanel() {
-  const enabled = Boolean(
-    state.youtubeMusicUrl
-    || state.youtubeBossMusicUrl
-    || els.youtubeMusicUrl?.value?.trim()
-    || els.youtubeBossMusicUrl?.value?.trim()
-  );
-  if (els.backgroundMusicPanel) els.backgroundMusicPanel.hidden = !enabled;
+  if (els.backgroundMusicPanel) els.backgroundMusicPanel.hidden = false;
   if (els.backgroundMusicStatus) {
-    els.backgroundMusicStatus.textContent = enabled
-      ? state.backgroundMusicLoaded ? `${titleCase(state.backgroundMusicMode)} music loaded` : "Ready to load"
-      : "Not loaded";
+    els.backgroundMusicStatus.textContent = state.backgroundMusicLoaded
+      ? `${titleCase(state.backgroundMusicMode)} music loaded`
+      : "Bundled music ready";
   }
   syncMapAudioReactor();
 }
@@ -1150,12 +1335,81 @@ function sendYouTubePlayerCommand(iframe, func, args = []) {
   iframe.contentWindow.postMessage(JSON.stringify({ event: "command", func, args }), "*");
 }
 
-function rampBackgroundMusic(iframe, fromVolume, toVolume, durationMs, onComplete) {
+function clearBackgroundMusicRandomStart() {
+  window.clearTimeout(state.backgroundMusicRandomStartTimer);
+  window.clearInterval(state.backgroundMusicRandomStartPollTimer);
+  state.backgroundMusicRandomStartTimer = null;
+  state.backgroundMusicRandomStartPollTimer = null;
+  state.backgroundMusicRandomStartPending = null;
+}
+
+function finishBackgroundMusicRandomStart(pending, duration = 0) {
+  if (!pending || state.backgroundMusicRandomStartPending !== pending) return;
+  const { iframe, transitionRunId, videoId } = pending;
+  clearBackgroundMusicRandomStart();
+  if (transitionRunId !== state.backgroundMusicTransitionRunId || state.backgroundMusicVideoId !== videoId) return;
+  const latestStart = Math.max(0, Math.floor(Number(duration) - (30 * 60)));
+  if (latestStart > 0) {
+    const startAt = Math.floor(Math.random() * (latestStart + 1));
+    sendYouTubePlayerCommand(iframe, "seekTo", [startAt, true]);
+  }
+  fadeInBackgroundMusic(iframe);
+}
+
+function prepareBackgroundMusicRandomStart(iframe, transitionRunId, videoId) {
+  clearBackgroundMusicRandomStart();
+  const pending = { iframe, transitionRunId, videoId };
+  state.backgroundMusicRandomStartPending = pending;
+  const requestPlaybackInfo = () => iframe?.contentWindow?.postMessage(JSON.stringify({
+    event: "listening",
+    id: "study-adventure-music",
+    channel: "study-adventure-music"
+  }), "*");
+  requestPlaybackInfo();
+  state.backgroundMusicRandomStartPollTimer = window.setInterval(requestPlaybackInfo, 400);
+  sendYouTubePlayerCommand(iframe, "setVolume", [0]);
+  sendYouTubePlayerCommand(iframe, "playVideo");
+  state.backgroundMusicRandomStartTimer = window.setTimeout(() => finishBackgroundMusicRandomStart(pending), 3500);
+}
+
+window.addEventListener("message", (event) => {
+  const pending = state.backgroundMusicRandomStartPending;
+  if (!pending || event.source !== pending.iframe?.contentWindow) return;
+  let payload = event.data;
+  if (typeof payload === "string") {
+    try {
+      payload = JSON.parse(payload);
+    } catch {
+      return;
+    }
+  }
+  const duration = Number(payload?.info?.duration);
+  if (payload?.event === "infoDelivery" && Number.isFinite(duration) && duration > 0) {
+    finishBackgroundMusicRandomStart(pending, duration);
+  }
+});
+
+function backgroundMusicPlayer() {
+  return els.backgroundMusicEmbed?.querySelector("iframe, audio") || null;
+}
+
+function setBackgroundMusicPlayerVolume(player, volume) {
+  if (!player) return;
+  if (player.tagName === "AUDIO") {
+    player.volume = Math.max(0, Math.min(1, volume / 100));
+    setNarrationLowPass(player, state.ttsPlaybackActive);
+    player.play().catch(() => {});
+    return;
+  }
+  sendYouTubePlayerCommand(player, "setVolume", [Math.round(volume)]);
+  sendYouTubePlayerCommand(player, "playVideo");
+}
+
+function rampBackgroundMusic(player, fromVolume, toVolume, durationMs, onComplete) {
   window.clearInterval(state.backgroundMusicFadeTimer);
   state.backgroundMusicFadeTimer = null;
   state.backgroundMusicCurrentVolume = fromVolume;
-  sendYouTubePlayerCommand(iframe, "setVolume", [fromVolume]);
-  sendYouTubePlayerCommand(iframe, "playVideo");
+  setBackgroundMusicPlayerVolume(player, fromVolume);
 
   const startedAt = performance.now();
   state.backgroundMusicFadeTimer = window.setInterval(() => {
@@ -1163,7 +1417,7 @@ function rampBackgroundMusic(iframe, fromVolume, toVolume, durationMs, onComplet
     const eased = 1 - ((1 - progress) ** 3);
     const volume = fromVolume + ((toVolume - fromVolume) * eased);
     state.backgroundMusicCurrentVolume = volume;
-    sendYouTubePlayerCommand(iframe, "setVolume", [Math.round(volume)]);
+    setBackgroundMusicPlayerVolume(player, volume);
     if (progress >= 1) {
       window.clearInterval(state.backgroundMusicFadeTimer);
       state.backgroundMusicFadeTimer = null;
@@ -1176,99 +1430,138 @@ function backgroundMusicListeningVolume() {
   return state.ttsPlaybackActive ? BACKGROUND_MUSIC_DUCK_VOLUME : BACKGROUND_MUSIC_VOLUME;
 }
 
-function fadeInBackgroundMusic(iframe, durationMs = 2200, targetVolume = backgroundMusicListeningVolume()) {
-  rampBackgroundMusic(iframe, 0, targetVolume, durationMs);
+function fadeInBackgroundMusic(player, durationMs = 2200, targetVolume = backgroundMusicListeningVolume()) {
+  rampBackgroundMusic(player, 0, targetVolume, durationMs);
 }
 
 function duckBackgroundMusicForTts() {
   state.ttsPlaybackActive = true;
+  syncGameSfxNarrationDuck();
   if (!state.backgroundMusicLoaded || state.backgroundMusicFadingOutForBossReady) return;
-  const iframe = els.backgroundMusicEmbed?.querySelector("iframe");
-  if (!iframe) return;
-  rampBackgroundMusic(iframe, state.backgroundMusicCurrentVolume, BACKGROUND_MUSIC_DUCK_VOLUME, 320);
+  const player = backgroundMusicPlayer();
+  if (!player) return;
+  setNarrationLowPass(player, true);
+  rampBackgroundMusic(player, state.backgroundMusicCurrentVolume, BACKGROUND_MUSIC_DUCK_VOLUME, 320);
 }
 
 function restoreBackgroundMusicAfterTts() {
   state.ttsPlaybackActive = false;
+  syncGameSfxNarrationDuck();
   if (!state.backgroundMusicLoaded || state.backgroundMusicFadingOutForBossReady) return;
-  const iframe = els.backgroundMusicEmbed?.querySelector("iframe");
-  if (!iframe) return;
-  rampBackgroundMusic(iframe, state.backgroundMusicCurrentVolume, BACKGROUND_MUSIC_VOLUME, 620);
+  const player = backgroundMusicPlayer();
+  if (!player) return;
+  setNarrationLowPass(player, false);
+  rampBackgroundMusic(player, state.backgroundMusicCurrentVolume, BACKGROUND_MUSIC_VOLUME, 620);
 }
 
 function fadeOutBackgroundMusicForBossReady(durationMs = 1200) {
   if (!state.backgroundMusicLoaded) return;
-  const iframe = els.backgroundMusicEmbed?.querySelector("iframe");
-  if (!iframe) {
+  const player = backgroundMusicPlayer();
+  if (!player) {
     stopBackgroundMusic();
     return;
   }
   state.backgroundMusicFadingOutForBossReady = true;
   if (els.backgroundMusicStatus) els.backgroundMusicStatus.textContent = "Fading out for critical contact...";
-  rampBackgroundMusic(iframe, state.backgroundMusicCurrentVolume, 0, durationMs, () => stopBackgroundMusic());
+  rampBackgroundMusic(player, state.backgroundMusicCurrentVolume, 0, durationMs, () => stopBackgroundMusic());
 }
 
 function loadBackgroundMusic(mode = desiredBackgroundMusicMode(), options = {}) {
   const requestedMode = mode === "boss" ? "boss" : "normal";
   const normalUrl = els.youtubeMusicUrl?.value?.trim() || state.youtubeMusicUrl;
   const bossUrl = els.youtubeBossMusicUrl?.value?.trim() || state.youtubeBossMusicUrl;
-  const url = requestedMode === "boss" ? bossUrl || normalUrl : normalUrl || bossUrl;
-  const id = extractYouTubeId(url);
-  if (!id) {
-    if (els.backgroundMusicStatus) els.backgroundMusicStatus.textContent = "Invalid YouTube URL";
-    return;
-  }
+  const url = requestedMode === "boss" ? bossUrl : normalUrl;
+  const youtubeRequested = requestedMode === "boss" ? state.useYoutubeBossMusic : state.useYoutubeMusic;
+  const id = youtubeRequested ? extractYouTubeId(url) : "";
+  const useYoutube = Boolean(id);
+  const localSrc = requestedMode === "boss" ? LOCAL_BOSS_MUSIC_SRC : LOCAL_NORMAL_MUSIC_SRC;
+  const sourceKey = useYoutube ? `youtube:${id}` : `local:${requestedMode}`;
   state.youtubeMusicUrl = normalUrl;
   state.youtubeBossMusicUrl = bossUrl;
   window.localStorage.setItem("studyAdventureYoutubeMusicUrl", normalUrl);
   window.localStorage.setItem("studyAdventureYoutubeBossMusicUrl", bossUrl);
-  if (state.backgroundMusicLoaded && state.backgroundMusicVideoId === id) {
+  if (youtubeRequested && !useYoutube && els.backgroundMusicStatus) {
+    els.backgroundMusicStatus.textContent = `Invalid ${requestedMode} YouTube URL; using bundled music`;
+  }
+  if (state.backgroundMusicLoaded && state.backgroundMusicVideoId === sourceKey) {
     state.backgroundMusicMode = requestedMode;
     if (els.backgroundMusicPanel) els.backgroundMusicPanel.hidden = false;
     if (els.backgroundMusicStatus) els.backgroundMusicStatus.textContent = `${titleCase(state.backgroundMusicMode)} music loaded`;
-    const iframe = els.backgroundMusicEmbed?.querySelector("iframe");
-    if (iframe && !state.backgroundMusicFadingOutForBossReady) {
-      rampBackgroundMusic(iframe, state.backgroundMusicCurrentVolume, backgroundMusicListeningVolume(), 360);
+    const currentPlayer = backgroundMusicPlayer();
+    if (currentPlayer && !state.backgroundMusicFadingOutForBossReady) {
+      rampBackgroundMusic(currentPlayer, state.backgroundMusicCurrentVolume, backgroundMusicListeningVolume(), 360);
     }
     syncMapAudioReactor();
     return;
   }
 
-  const previousIframe = els.backgroundMusicEmbed?.querySelector("iframe");
+  const previousPlayer = backgroundMusicPlayer();
   const transitionRunId = ++state.backgroundMusicTransitionRunId;
   state.backgroundMusicMode = requestedMode;
   if (els.backgroundMusicStatus) {
-    els.backgroundMusicStatus.textContent = previousIframe && options.transition
+    els.backgroundMusicStatus.textContent = previousPlayer && options.transition
       ? `Transitioning to ${titleCase(requestedMode)} music...`
-      : `${titleCase(requestedMode)} music loaded`;
+      : `Loading ${titleCase(requestedMode)} music...`;
   }
 
-  const mountTrack = (fadeIn = false) => {
+  const mountTrack = (requestedFadeIn = false) => {
     if (transitionRunId !== state.backgroundMusicTransitionRunId) return;
+    const fadeIn = requestedMode === "normal" || requestedFadeIn;
+    const randomStart = requestedMode === "normal" && state.youtubeMusicRandomStart;
     state.backgroundMusicLoaded = true;
-    state.backgroundMusicVideoId = id;
+    state.backgroundMusicVideoId = sourceKey;
+    state.backgroundMusicFadingOutForBossReady = false;
     if (els.backgroundMusicPanel) els.backgroundMusicPanel.hidden = false;
     if (els.backgroundMusicStatus) els.backgroundMusicStatus.textContent = `${titleCase(requestedMode)} music loaded`;
     if (!els.backgroundMusicEmbed) return;
-    const src = `https://www.youtube.com/embed/${encodeURIComponent(id)}?autoplay=1&loop=1&playlist=${encodeURIComponent(id)}&controls=1&modestbranding=1&enablejsapi=1`;
-    els.backgroundMusicEmbed.innerHTML = `<iframe title="YouTube background music" src="${src}" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>`;
-    const iframe = els.backgroundMusicEmbed.querySelector("iframe");
     state.backgroundMusicCurrentVolume = fadeIn ? 0 : backgroundMusicListeningVolume();
-    iframe?.addEventListener("load", () => {
-      if (transitionRunId === state.backgroundMusicTransitionRunId && state.backgroundMusicVideoId === id) {
-        if (fadeIn) {
+
+    if (useYoutube) {
+      const origin = encodeURIComponent(window.location.origin);
+      const src = `https://www.youtube.com/embed/${encodeURIComponent(id)}?autoplay=1&loop=1&playlist=${encodeURIComponent(id)}&controls=1&modestbranding=1&enablejsapi=1&origin=${origin}`;
+      els.backgroundMusicEmbed.innerHTML = `<iframe title="YouTube background music" src="${src}" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>`;
+      const iframe = els.backgroundMusicEmbed.querySelector("iframe");
+      iframe?.addEventListener("load", () => {
+        if (transitionRunId !== state.backgroundMusicTransitionRunId || state.backgroundMusicVideoId !== sourceKey) return;
+        if (randomStart) {
+          prepareBackgroundMusicRandomStart(iframe, transitionRunId, sourceKey);
+        } else if (fadeIn) {
           fadeInBackgroundMusic(iframe);
         } else {
-          sendYouTubePlayerCommand(iframe, "setVolume", [backgroundMusicListeningVolume()]);
+          setBackgroundMusicPlayerVolume(iframe, backgroundMusicListeningVolume());
         }
-      }
-    }, { once: true });
+      }, { once: true });
+    } else {
+      els.backgroundMusicEmbed.innerHTML = `<audio title="Bundled ${escapeAttribute(requestedMode)} background music" src="${localSrc}" loop preload="auto" controls></audio>`;
+      const audio = els.backgroundMusicEmbed.querySelector("audio");
+      let localStarted = false;
+      if (audio) audio.volume = Math.max(0, Math.min(1, state.backgroundMusicCurrentVolume / 100));
+      audio?.addEventListener("error", () => {
+        if (transitionRunId === state.backgroundMusicTransitionRunId && els.backgroundMusicStatus) {
+          els.backgroundMusicStatus.textContent = `Missing ${localSrc}`;
+        }
+      }, { once: true });
+      const startLocalTrack = () => {
+        if (localStarted) return;
+        if (transitionRunId !== state.backgroundMusicTransitionRunId || state.backgroundMusicVideoId !== sourceKey) return;
+        localStarted = true;
+        if (randomStart && Number.isFinite(audio.duration) && audio.duration > 30 * 60) {
+          audio.currentTime = Math.floor(Math.random() * ((audio.duration - 30 * 60) + 1));
+        }
+        audio.play().catch(() => {});
+        if (fadeIn) fadeInBackgroundMusic(audio);
+        else setBackgroundMusicPlayerVolume(audio, backgroundMusicListeningVolume());
+      };
+      audio?.addEventListener("loadedmetadata", startLocalTrack, { once: true });
+      if (audio?.readyState >= 1) startLocalTrack();
+      else audio?.play().catch(() => {});
+    }
     syncMapAudioReactor();
     playGameSfx("ui");
   };
 
-  if (previousIframe && options.transition) {
-    rampBackgroundMusic(previousIframe, state.backgroundMusicCurrentVolume, 0, 900, () => mountTrack(true));
+  if (previousPlayer && options.transition) {
+    rampBackgroundMusic(previousPlayer, state.backgroundMusicCurrentVolume, 0, 900, () => mountTrack(true));
   } else {
     mountTrack(Boolean(options.fadeIn));
   }
@@ -1276,14 +1569,20 @@ function loadBackgroundMusic(mode = desiredBackgroundMusicMode(), options = {}) 
 
 function stopBackgroundMusic() {
   state.backgroundMusicTransitionRunId += 1;
+  clearBackgroundMusicRandomStart();
   window.clearInterval(state.backgroundMusicFadeTimer);
   state.backgroundMusicFadeTimer = null;
+  const player = backgroundMusicPlayer();
+  if (player?.tagName === "AUDIO") {
+    player.pause();
+    player.currentTime = 0;
+  }
   if (els.backgroundMusicEmbed) els.backgroundMusicEmbed.innerHTML = "";
   state.backgroundMusicLoaded = false;
   state.backgroundMusicVideoId = "";
   state.backgroundMusicCurrentVolume = 0;
   state.backgroundMusicFadingOutForBossReady = false;
-  if (els.backgroundMusicStatus) els.backgroundMusicStatus.textContent = state.youtubeMusicUrl || state.youtubeBossMusicUrl ? "Stopped" : "Not loaded";
+  if (els.backgroundMusicStatus) els.backgroundMusicStatus.textContent = "Stopped";
   syncMapAudioReactor();
 }
 
@@ -1316,17 +1615,72 @@ function startBossQuestionMusic() {
   if (!bossActive || state.bossMusicStartedNodes.has(state.currentNode)) return;
   state.bossMusicStartedNodes.add(state.currentNode);
   syncBossEyesVisual();
-  if (state.youtubeMusicUrl || state.youtubeBossMusicUrl) {
-    fadeOutGameSfx("boss", 480);
-    loadBackgroundMusic("boss", state.backgroundMusicLoaded ? { transition: true } : { fadeIn: true });
-  }
+  fadeOutGameSfx("boss", 480);
+  loadBackgroundMusic("boss", state.backgroundMusicLoaded ? { transition: true } : { fadeIn: true });
 }
 
 function syncBossEyesVisual() {
+  if (els.mapPanel?.classList.contains("boss-eyes-exiting")) {
+    els.mapPanel.classList.add("boss-eyes-active");
+    return;
+  }
   const node = state.nodes[state.currentNode];
   const bossActive = node?.type === "boss" || Boolean(currentBossProgress());
   const revealActive = bossActive && state.bossMusicStartedNodes.has(state.currentNode);
   els.mapPanel?.classList.toggle("boss-eyes-active", revealActive);
+}
+
+function beginBossEyesExit(force = false) {
+  if (!force && !els.mapPanel?.classList.contains("boss-eyes-active")) return;
+  window.clearTimeout(state.bossEyesExitTimer);
+  els.mapPanel.classList.add("boss-eyes-active", "boss-eyes-exiting");
+  state.bossEyesExitTimer = window.setTimeout(() => {
+    state.bossEyesExitTimer = null;
+    els.mapPanel?.classList.remove("boss-eyes-active", "boss-eyes-exiting");
+    clearBossDamageVisual();
+    syncBossEyesVisual();
+  }, 1400);
+}
+
+function clearBossDamageVisual() {
+  window.clearTimeout(state.bossDamageImpactTimer);
+  state.bossDamageImpactTimer = null;
+  state.bossScreenCrackLevel = 0;
+  state.bossScreenCrackNode = -1;
+  document.body.classList.remove("boss-damage-impact");
+  els.mapPanel?.classList.remove(
+    "boss-damage-impact",
+    "boss-crack-level-1",
+    "boss-crack-level-2",
+    "boss-crack-level-3"
+  );
+}
+
+function triggerBossDamageImpact(effects = []) {
+  const damageHits = effects.filter((effect) => effect.kind === "hit" && Number(effect.amount || 0) > 0);
+  const node = state.nodes[state.currentNode];
+  const bossActive = node?.type === "boss" || Boolean(currentBossProgress());
+  if (!bossActive || !damageHits.length || !els.mapPanel) return;
+
+  if (state.bossScreenCrackNode !== state.currentNode) {
+    clearBossDamageVisual();
+    state.bossScreenCrackNode = state.currentNode;
+  }
+  state.bossScreenCrackLevel = Math.min(3, state.bossScreenCrackLevel + damageHits.length);
+  els.mapPanel.classList.remove("boss-crack-level-1", "boss-crack-level-2", "boss-crack-level-3");
+  els.mapPanel.classList.add(`boss-crack-level-${state.bossScreenCrackLevel}`);
+
+  window.clearTimeout(state.bossDamageImpactTimer);
+  document.body.classList.remove("boss-damage-impact");
+  els.mapPanel.classList.remove("boss-damage-impact");
+  void els.mapPanel.offsetWidth;
+  document.body.classList.add("boss-damage-impact");
+  els.mapPanel.classList.add("boss-damage-impact");
+  state.bossDamageImpactTimer = window.setTimeout(() => {
+    document.body.classList.remove("boss-damage-impact");
+    els.mapPanel?.classList.remove("boss-damage-impact");
+    state.bossDamageImpactTimer = null;
+  }, 760);
 }
 
 function desiredBackgroundMusicMode() {
@@ -1394,12 +1748,27 @@ function waitForTtsPlayback(playback) {
   return ensureTtsManager()?.waitForPlayback(playback) || Promise.resolve();
 }
 
+function waitForTtsPresentationStart(playback) {
+  return ensureTtsManager()?.waitForPresentationStart(playback) || Promise.resolve();
+}
+
+function syncTtsPresentation(autoRead, extraDelayMs = 0) {
+  return waitForTtsPresentationStart(autoRead?.playback).then(() => {
+    const delay = (Number(autoRead?.visualDelay) || 0) + (Number(extraDelayMs) || 0);
+    return delayPresentation(delay);
+  });
+}
+
 function noTtsRead() {
   return ensureTtsManager()?.noRead() || { visualDelay: 0, playback: Promise.resolve() };
 }
 
 function speakText(text, options = {}) {
   return ensureTtsManager()?.speakText(text, options) || Promise.resolve();
+}
+
+function prefetchTtsTexts(items = []) {
+  return ensureTtsManager()?.prefetchTexts(items) || Promise.resolve([]);
 }
 
 function stopTts() {
@@ -1437,6 +1806,19 @@ function maybeAutoReadQuestion(options = {}) {
   return { visualDelay: ttsVisualDelayMs(), playback: speakText(text, { label: "Reading query" }) };
 }
 
+function prefetchUpcomingTts(payload = {}) {
+  if (!ttsCanSpeak()) return Promise.resolve([]);
+  const items = [];
+  if (state.ttsAutoLog && payload.continuationStory) {
+    items.push({ text: payload.continuationStory, purpose: "continuation" });
+  }
+  if (state.ttsAutoQuestion && payload.question) {
+    const questionText = currentQuestionSpeechText() || cleanSpeechText(payload.question);
+    if (questionText) items.push({ text: questionText, purpose: "question" });
+  }
+  return items.length ? prefetchTtsTexts(items) : Promise.resolve([]);
+}
+
 function delayPresentation(ms) {
   const delay = Math.max(0, Number(ms) || 0);
   if (!delay) return Promise.resolve();
@@ -1466,11 +1848,12 @@ function missionLogSpeechText(entry) {
 
 function currentQuestionSpeechText(info = currentQuestionInfo()) {
   if (!info.question) return "";
-  return info.question.question;
+  return displayQuestionText(info.question);
 }
 
 function cleanSpeechText(text) {
   return String(text || "")
+    .replace(/\breceiving\s+(?:transmission|comm(?:unication)?s?)\b[\s.:!\-]*/gi, "")
     .replace(/\s+/g, " ")
     .replace(/! Alert !/gi, "Alert.")
     .replace(/! Query Incoming !/gi, "Query incoming.")
@@ -1521,9 +1904,15 @@ function startTestSessionFromUrl() {
 
 function startMission() {
   try {
+    const lengthValidation = missionLengthValidation();
+    if (!lengthValidation.valid) {
+      updateSetupSummary();
+      setLaunchStatus(lengthValidation.message, true);
+      els.missionLength.focus();
+      return;
+    }
     stopTts();
     setLaunchStatus("Preparing mission...");
-    clampMissionLengthInput();
     const config = readMissionConfig();
     if (!config) {
       setLaunchStatus("Mission setup is incomplete. Add valid questions first.", true);
@@ -1555,11 +1944,17 @@ function startMission() {
 }
 
 function readMissionConfig() {
+  autoLoadDefaultMusicPreset();
   const engine = els.dmEngine.value;
   const chatMode = engine !== "classic";
   const localDmMode = engine === "local";
   const actionDrivenMode = Boolean(els.actionDrivenMode?.checked);
   const questionPool = getSetupStudyQuestions();
+  const lengthValidation = missionLengthValidation(questionPool.length, actionDrivenMode);
+  if (!lengthValidation.valid) {
+    setLaunchStatus(lengthValidation.message, true);
+    return null;
+  }
   const length = actionDrivenMode ? actionMissionLengthFor() : missionLengthFor(questionPool.length);
   const questions = actionDrivenMode
     ? makeActionMissionPlaceholders(length)
@@ -1585,9 +1980,13 @@ function readMissionConfig() {
     generatedMission: generatedMissionForLaunch(),
     emergencyTimerEnabled: els.emergencyTimerEnabled.checked,
     emergencyTimerDuration: Number(els.emergencyTimerDuration.value) || 60,
-    sfxPreset: els.sfxPreset?.value || "subtle",
+    secondWindEnabled: Boolean(els.secondWindEnabled?.checked),
+    sfxPreset: normalizeSfxPreset(els.sfxPreset?.value),
     youtubeMusicUrl: els.youtubeMusicUrl?.value.trim() || state.youtubeMusicUrl || "",
     youtubeBossMusicUrl: els.youtubeBossMusicUrl?.value.trim() || state.youtubeBossMusicUrl || "",
+    useYoutubeMusic: Boolean(els.useYoutubeMusic?.checked),
+    useYoutubeBossMusic: Boolean(els.useYoutubeBossMusic?.checked),
+    youtubeMusicRandomStart: Boolean(els.youtubeMusicRandomStart?.checked),
     bossTestMode: Boolean(els.bossTestMode?.checked),
     actionDrivenMode
   };
@@ -1679,17 +2078,22 @@ function actionMissionLengthFor() {
   return Math.max(1, Math.min(30, Math.round(requested)));
 }
 
-function clampMissionLengthInput() {
-  const actionDrivenMode = Boolean(els.actionDrivenMode?.checked);
-  const total = getSetupQuestionReport().questions.length;
-  const max = actionDrivenMode ? 30 : Math.max(1, total || 1);
-  const fallback = actionDrivenMode ? 5 : total || 1;
-  const requested = Number(els.missionLength.value);
-  const clamped = !Number.isFinite(requested) || requested < 1
-    ? fallback
-    : Math.max(1, Math.min(max, Math.round(requested)));
-  els.missionLength.value = String(clamped);
-  els.missionLength.dataset.manual = "true";
+function missionLengthValidation(total = getSetupQuestionReport().questions.length, actionDrivenMode = Boolean(els.actionDrivenMode?.checked)) {
+  if (!actionDrivenMode && total < 1) {
+    return { valid: true, value: 0, max: 0, message: "Add study questions to set a mission length." };
+  }
+  const raw = String(els.missionLength.value || "").trim();
+  const max = actionDrivenMode ? 30 : total;
+  const value = Number(raw);
+  if (!raw || !Number.isInteger(value) || value < 1 || value > max) {
+    return {
+      valid: false,
+      value,
+      max,
+      message: `Enter a whole mission length from 1 to ${max}. The mission will not start until this is changed.`
+    };
+  }
+  return { valid: true, value, max, message: "" };
 }
 
 function makeActionMissionPlaceholders(length) {
@@ -1754,7 +2158,7 @@ function launchMission(players, config) {
     state.localDmProvider = config.localDmProvider || selectedLocalDmProvider();
     state.ollamaModel = config.ollamaModel;
     state.resolved = false;
-    state.players = cleanPlayers.map((name) => ({ name, hp: 5, status: [], incapacitated: false }));
+    state.players = cleanPlayers.map((name) => ({ name, hp: 5, status: [], incapacitated: false, points: 0 }));
     state.inventory = { medkits: 2, ems: 0 };
     state.missionType = config.missionType;
     state.environment = config.environment;
@@ -1771,6 +2175,7 @@ function launchMission(players, config) {
     state.nodes = buildNodes(state.questions.length);
     state.mapLayoutSeed = seedFrom(`${state.title}|${cleanPlayers.join(",")}|${config.questions.length}|${Date.now()}|${Math.random()}`);
     state.mapPositions = generateSprawledRoutePositions(state.nodes.length, state.mapLayoutSeed);
+    state.mapRevealedNodes = new Set();
     state.roomNames = {};
     state.bossAreaNames = generatedBossAreaFallbacks(state.missionType, state.environment, state.threat);
     applyGeneratedBossAreas(config.generatedMission?.bossAreas);
@@ -1788,6 +2193,10 @@ function launchMission(players, config) {
     state.nodeResults = {};
     state.recoveryUsed = new Set();
     state.selectedEMS = false;
+    state.secondWindEnabled = Boolean(config.secondWindEnabled);
+    state.secondWindUsed = false;
+    state.secondWindPlayerName = "";
+    state.secondWindPendingPlayerName = "";
     state.challengeHistory = [];
     state.feedLastId = "";
     state.playerPromptId = "";
@@ -1795,10 +2204,17 @@ function launchMission(players, config) {
     state.playerPromptRequiredNames = [];
     state.playerAnswers = [];
     state.playerActions = [];
+    state.queuedPlayerActions = [];
     state.resolutionDelayPending = false;
     state.resolutionDelayPromptId = "";
     state.resolutionDelayTimer = null;
     state.processedPlayerActionIds = new Set();
+    state.processedQueuedActionIds = new Set();
+    state.scoredPromptIds = new Set();
+    state.questionOpenedAt = 0;
+    state.questionDurationMs = 60_000;
+    state.questionPauseStartedAt = 0;
+    state.questionPausedTotalMs = 0;
     state.readinessLogged = false;
     state.currentBriefing = null;
     state.openingLogStory = "";
@@ -1807,8 +2223,11 @@ function launchMission(players, config) {
     state.bossReadyChecks = new Set();
     state.bossAudioStartedNodes = new Set();
     state.bossMusicStartedNodes = new Set();
+    window.clearTimeout(state.bossEyesExitTimer);
+    state.bossEyesExitTimer = null;
     window.clearTimeout(state.bossEyesStrikeTimer);
     state.bossEyesStrikeTimer = null;
+    clearBossDamageVisual();
     state.answerPending = false;
     state.lastSubmittedAnswer = "";
     state.previousAnswerFlashId = "";
@@ -1829,9 +2248,15 @@ function launchMission(players, config) {
     state.sfxPreset = config.sfxPreset || "subtle";
     state.youtubeMusicUrl = config.youtubeMusicUrl || "";
     state.youtubeBossMusicUrl = config.youtubeBossMusicUrl || "";
+    state.useYoutubeMusic = Boolean(config.useYoutubeMusic);
+    state.useYoutubeBossMusic = Boolean(config.useYoutubeBossMusic);
+    state.youtubeMusicRandomStart = Boolean(config.youtubeMusicRandomStart);
     window.localStorage.setItem("studyAdventureSfxPreset", state.sfxPreset);
     window.localStorage.setItem("studyAdventureYoutubeMusicUrl", state.youtubeMusicUrl);
     window.localStorage.setItem("studyAdventureYoutubeBossMusicUrl", state.youtubeBossMusicUrl);
+    window.localStorage.setItem("studyAdventureUseYoutubeMusic", String(state.useYoutubeMusic));
+    window.localStorage.setItem("studyAdventureUseYoutubeBossMusic", String(state.useYoutubeBossMusic));
+    window.localStorage.setItem("studyAdventureYoutubeMusicRandomStart", String(state.youtubeMusicRandomStart));
     stopMissionFailureAudio();
     stopBackgroundMusic();
     setMissionFailureVisual(false);
@@ -1870,7 +2295,9 @@ function launchMission(players, config) {
       state.playerParticipants = [];
       state.playerAnswers = [];
       state.playerActions = [];
+      state.queuedPlayerActions = [];
       state.processedPlayerActionIds = new Set();
+      state.processedQueuedActionIds = new Set();
       renderPlayerSessionPanel();
     }
     beginNextNode();
@@ -1924,6 +2351,7 @@ function performMissionReset({ preserveTransition = false } = {}) {
   state.roomNames = {};
   state.mapPositions = [];
   state.mapLayoutSeed = 0;
+  state.mapRevealedNodes = new Set();
   state.bossAreaNames = { mid: "", final: "" };
   state.bossPhasePlans = {};
   state.bossPhasePlanRequests = {};
@@ -1941,6 +2369,10 @@ function performMissionReset({ preserveTransition = false } = {}) {
   state.challengeTypes = [];
   state.recoveryUsed = new Set();
   state.selectedEMS = false;
+  state.secondWindEnabled = false;
+  state.secondWindUsed = false;
+  state.secondWindPlayerName = "";
+  state.secondWindPendingPlayerName = "";
   state.feedLastId = "";
   state.roomCode = "";
   state.playerPromptId = "";
@@ -1948,10 +2380,17 @@ function performMissionReset({ preserveTransition = false } = {}) {
   state.playerPromptRequiredNames = [];
   state.playerAnswers = [];
   state.playerActions = [];
+  state.queuedPlayerActions = [];
   state.resolutionDelayPending = false;
   state.resolutionDelayPromptId = "";
   state.resolutionDelayTimer = null;
   state.processedPlayerActionIds = new Set();
+  state.processedQueuedActionIds = new Set();
+  state.scoredPromptIds = new Set();
+  state.questionOpenedAt = 0;
+  state.questionDurationMs = 60_000;
+  state.questionPauseStartedAt = 0;
+  state.questionPausedTotalMs = 0;
   state.playerParticipants = [];
   state.playerJoinUrl = "";
   state.playerJoinUrlReady = false;
@@ -1967,6 +2406,9 @@ function performMissionReset({ preserveTransition = false } = {}) {
   state.bossMusicStartedNodes = new Set();
   window.clearTimeout(state.bossEyesStrikeTimer);
   state.bossEyesStrikeTimer = null;
+  window.clearTimeout(state.bossEyesExitTimer);
+  state.bossEyesExitTimer = null;
+  clearBossDamageVisual();
   state.answerPending = false;
   state.lastSubmittedAnswer = "";
   state.previousAnswerFlashId = "";
@@ -2005,7 +2447,8 @@ function performMissionReset({ preserveTransition = false } = {}) {
     "situation-recovery",
     "situation-party-wounded",
     "situation-party-critical",
-    "situation-failure"
+    "situation-failure",
+    "mission-log-streaming"
   );
   delete document.body.dataset.missionTheme;
   setMissionFailureVisual(false);
@@ -2158,7 +2601,7 @@ function restoreLobbyFromServer() {
 function startPlayerSession() {
   loadPlayerJoinUrl();
   renderPlayerSessionPanel();
-  publishPlayerSession({ status: "briefing", prompt: null, resetAnswers: true });
+  publishPlayerSession({ status: "briefing", prompt: null, resetAnswers: true, resetQueuedActions: true });
   stopPlayerPolling();
   state.playerPollTimer = window.setInterval(pollPlayerAnswers, 900);
   pollPlayerAnswers();
@@ -2310,10 +2753,12 @@ function randomSimulatorNames(count) {
 function stopPlayerSession() {
   stopPlayerPolling();
   cancelSimulatorAutoAnswerTimers();
-  if (state.roomCode) publishPlayerSession({ status: "ended", prompt: null, resetAnswers: true });
+  if (state.roomCode) publishPlayerSession({ status: "ended", prompt: null, resetAnswers: true, resetQueuedActions: true });
   state.playerAnswers = [];
   state.playerActions = [];
+  state.queuedPlayerActions = [];
   state.processedPlayerActionIds = new Set();
+  state.processedQueuedActionIds = new Set();
   state.playerParticipants = [];
   renderPlayerSessionPanel();
 }
@@ -2334,8 +2779,10 @@ function publishPlayerSession(extra = {}) {
     players: extra.players || state.players.map((player) => player.name),
     playerStates: extra.playerStates || playerStatePayload(),
     actionCooldownMs: state.actionDrivenMode ? 0 : PLAYER_ACTION_COOLDOWN_MS,
+    allowQueuedPlayerActions: Boolean(state.started && state.teamReady && state.localDmMode && state.deviceMode === "multi" && !state.actionDrivenMode),
     prompt: extra.prompt === undefined ? buildPlayerPrompt() : extra.prompt,
-    resetAnswers: Boolean(extra.resetAnswers)
+    resetAnswers: Boolean(extra.resetAnswers),
+    resetQueuedActions: Boolean(extra.resetQueuedActions)
   };
   return playerSessionApi.publishSession(payload);
 }
@@ -2373,7 +2820,8 @@ function playerStatePayload() {
     name: player.name,
     hp: Math.max(0, player.hp),
     status: [...player.status],
-    incapacitated: Boolean(player.incapacitated)
+    incapacitated: Boolean(player.incapacitated),
+    points: Math.max(0, Math.round(Number(player.points) || 0))
   }));
 }
 
@@ -2427,7 +2875,7 @@ function buildPlayerPrompt() {
     accepting: state.questionPresentationReady && !state.answerPending && !state.resolutionDelayPending && !sideActionBlocksPlayerAnswers() && !state.resolved,
     timer: playerTimerPayload(),
     mode: info.question.mode,
-    question: info.question.question,
+    question: displayQuestionText(info.question),
     choices: info.question.mode === "multiple"
       ? info.question.choices
           .filter((choice) => !(state.narrowedChoices[state.currentQuestion] || []).includes(choice.key))
@@ -2551,6 +2999,7 @@ function handlePlayerAnswersPayload(payload, requestedPromptId = "") {
   const previousSubmissionNames = new Set(previousVisibleSubmissions.map((entry) => normalize(entry.playerName)).filter(Boolean));
   state.playerAnswers = (payload.answers || []).filter((answer) => !currentPromptId || answer.promptId === currentPromptId);
   state.playerActions = (payload.actions || []).filter((action) => !currentPromptId || action.promptId === currentPromptId);
+  state.queuedPlayerActions = Array.isArray(payload.queuedActions) ? payload.queuedActions : [];
   state.playerParticipants = payload.participants || [];
   const visibleSubmissions = state.actionDrivenMode ? state.playerActions : state.playerAnswers;
   const newlySubmittedNames = [...new Set(visibleSubmissions
@@ -2593,8 +3042,9 @@ function handlePlayerAnswersPayload(payload, requestedPromptId = "") {
       queueFinalSubmissionResolution(() => resolveActionRoomTurn(), "all operator actions received");
     }
   }
-  maybeResolvePlayerAction();
   maybeAutoResolveEmergencyAnswer();
+  maybeResolveQueuedPlayerAction();
+  maybeResolvePlayerAction();
 }
 
 function maybeResolvePlayerAction() {
@@ -2607,6 +3057,25 @@ function maybeResolvePlayerAction() {
     .sort((a, b) => a.submittedAt - b.submittedAt)[0];
   if (!nextAction) return;
   state.processedPlayerActionIds.add(nextAction.id);
+  resolvePlayerSideAction(nextAction);
+}
+
+function maybeResolveQueuedPlayerAction() {
+  if (!state.localDmMode || state.deviceMode !== "multi" || state.actionDrivenMode || !state.teamReady) return;
+  if (!state.questionPresentationReady || state.answerPending || state.resolutionDelayPending || state.sideActionPending || state.resolved || state.emergencyTimer?.kind === "emergency") return;
+  if (!actionsAllowedThisEncounter()) return;
+  const nextAction = [...state.queuedPlayerActions]
+    .filter((action) => !state.processedQueuedActionIds.has(action.id))
+    .sort((a, b) => Number(a.submittedAt || 0) - Number(b.submittedAt || 0))[0];
+  if (!nextAction) return;
+  state.processedQueuedActionIds.add(nextAction.id);
+  state.queuedPlayerActions = state.queuedPlayerActions.filter((action) => action.id !== nextAction.id);
+  playerSessionApi.consumeQueuedAction({ roomCode: state.roomCode, actionId: nextAction.id });
+  logDebugEvent({
+    kind: "state",
+    label: "Queued player action released",
+    detail: `${nextAction.playerName || "Operator"} | ${nextAction.action}`
+  });
   resolvePlayerSideAction(nextAction);
 }
 
@@ -3439,12 +3908,10 @@ function applySearchReward(target, scoredEntry, outcome) {
     const roll = state.rng();
     if (roll < 0.15) {
       state.inventory.medkits += 2;
-      playGameSfx("loot");
       outcome.rewardLines.push(`${scoredEntry.playerName}: found 2 Medkits`);
       outcome.rewardFacts.push(`${scoredEntry.playerName} finds two usable medkits in ${target.label}.`);
     } else if (roll < 0.55) {
       state.inventory.medkits += 1;
-      playGameSfx("loot");
       outcome.rewardLines.push(`${scoredEntry.playerName}: found 1 Medkit`);
       outcome.rewardFacts.push(`${scoredEntry.playerName} finds one usable medkit in ${target.label}.`);
     }
@@ -3462,7 +3929,6 @@ function applySearchReward(target, scoredEntry, outcome) {
     };
     player.bonuses = asArray(player.bonuses).filter((item) => item?.kind !== "combat");
     player.bonuses.push(bonus);
-    playGameSfx("loot");
     outcome.rewardLines.push(`${player.name}: found improvised combat gear`);
     outcome.rewardFacts.push(`${player.name} salvages gear from ${target.label} that can strengthen their next attack.`);
   }
@@ -4129,7 +4595,9 @@ function maybeAutoResolveEmergencyAnswer() {
   const answers = [...state.playerAnswers].sort((a, b) => a.submittedAt - b.submittedAt);
   if (!answers.length) return;
   if (info.type.kind === "emergency") {
-    setDeviceAnswerResults(deviceAnswerEntries([answers[0]], info.question));
+    const entries = deviceAnswerEntries([answers[0]], info.question);
+    setDeviceAnswerResults(entries);
+    awardDeviceAnswerPointsOnce(entries, info.question);
     logDebugEvent({
       kind: "state",
       label: "Auto-resolving emergency answer",
@@ -4145,7 +4613,9 @@ function maybeAutoResolveEmergencyAnswer() {
   if (info.type.locked && info.operator) {
     const operatorAnswer = answers.find((answer) => sameName(answer.playerName, info.operator.name));
     if (operatorAnswer?.answer) {
-      setDeviceAnswerResults(deviceAnswerEntries([operatorAnswer], info.question));
+      const entries = deviceAnswerEntries([operatorAnswer], info.question);
+      setDeviceAnswerResults(entries);
+      awardDeviceAnswerPointsOnce(entries, info.question);
       logDebugEvent({
         kind: "state",
         label: "Auto-resolving locked operator answer",
@@ -4159,6 +4629,7 @@ function maybeAutoResolveEmergencyAnswer() {
     return;
   }
   if (everyoneActiveSubmitted(answers)) {
+    awardDeviceAnswerPointsOnce(deviceAnswerEntries(answers, info.question), info.question);
     if (usesIndividualTeamDeviceScoring(info)) {
       queueFinalSubmissionResolution(
         () => resolveLocalDeviceTeamAnswers(answers),
@@ -4306,6 +4777,93 @@ function deviceAnswerEntries(answers, question) {
       submittedAt: submitted.submittedAt || 0
     };
   }).filter(Boolean);
+}
+
+function questionDifficulty(question) {
+  const difficulty = normalize(question?.difficulty || "medium");
+  if (difficulty === "easy" || difficulty === "hard") return difficulty;
+  return "medium";
+}
+
+function difficultyPointMultiplier(question) {
+  return { easy: 1, medium: 1.5, hard: 2 }[questionDifficulty(question)];
+}
+
+function questionScoringDurationMs(info = currentQuestionInfo()) {
+  if (info?.type?.boss) return 180_000;
+  if (info?.type?.kind === "emergency") return 10_000;
+  return Math.max(10_000, Number(state.emergencyTimerDuration || 60) * 1000);
+}
+
+function pointTimestamp(value) {
+  if (Number.isFinite(Number(value)) && Number(value) > 0) return Number(value);
+  const parsed = Date.parse(String(value || ""));
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+function calculateAnswerPoints(question, submittedAt = Date.now()) {
+  const durationMs = Math.max(1_000, Number(state.questionDurationMs) || 60_000);
+  const openedAt = Number(state.questionOpenedAt) || pointTimestamp(submittedAt);
+  const submittedTime = pointTimestamp(submittedAt);
+  const activePauseMs = state.questionPauseStartedAt
+    ? Math.max(0, submittedTime - state.questionPauseStartedAt)
+    : 0;
+  const elapsedMs = Math.max(0, submittedTime - openedAt - state.questionPausedTotalMs - activePauseMs);
+  const speedRatio = Math.max(0, Math.min(1, 1 - elapsedMs / durationMs));
+  const rawPoints = 100 + Math.round(100 * speedRatio);
+  return {
+    points: Math.round(rawPoints * difficultyPointMultiplier(question)),
+    difficulty: questionDifficulty(question),
+    multiplier: difficultyPointMultiplier(question),
+    elapsedMs
+  };
+}
+
+function awardPointsToPlayer(player, question, submittedAt) {
+  if (!player) return null;
+  const award = calculateAnswerPoints(question, submittedAt);
+  player.points = Math.max(0, Math.round(Number(player.points) || 0)) + award.points;
+  return { player, ...award, total: player.points };
+}
+
+function scoringPromptId() {
+  return state.playerPromptId || `${state.currentQuestion}-${state.currentNode}`;
+}
+
+function logPointAwards(awards, question) {
+  if (!awards.length) return;
+  logDebugEvent({
+    kind: "state",
+    label: "Player points awarded",
+    detail: `${questionDifficulty(question)} | ${awards.map((award) => `${award.player.name} +${award.points} (${(award.elapsedMs / 1000).toFixed(1)}s, total ${award.total})`).join(" | ")}`
+  });
+  renderStatus();
+}
+
+function awardDeviceAnswerPointsOnce(entries, question) {
+  const promptId = scoringPromptId();
+  if (state.scoredPromptIds.has(promptId)) return;
+  state.scoredPromptIds.add(promptId);
+  const awards = entries
+    .filter((entry) => entry?.correct && entry.player)
+    .map((entry) => awardPointsToPlayer(entry.player, question, entry.submittedAt))
+    .filter(Boolean);
+  logPointAwards(awards, question);
+}
+
+function awardSharedAnswerPointsOnce({ correct, question, type = {}, operator = null, submittedAt = Date.now(), scoringPlayer = null, source = "" }) {
+  const promptId = scoringPromptId();
+  if (state.scoredPromptIds.has(promptId)) return;
+  state.scoredPromptIds.add(promptId);
+  if (!correct || state.actionDrivenMode) return;
+  if (state.deviceMode === "multi" && !scoringPlayer) return;
+  let recipients = [];
+  if (scoringPlayer) recipients = [scoringPlayer];
+  else if (type.locked && operator) recipients = [operator];
+  else if (type.kind === "emergency" && type.emergencyAnswerPlayer) recipients = [type.emergencyAnswerPlayer];
+  else recipients = activePlayers();
+  const awards = recipients.map((player) => awardPointsToPlayer(player, question, submittedAt)).filter(Boolean);
+  logPointAwards(awards, question);
 }
 
 function deviceChallengeSucceeded(entries, type) {
@@ -5003,13 +5561,10 @@ function syncSetupMode() {
   const actionDrivenMode = Boolean(els.actionDrivenMode?.checked);
   const pastedQuestions = els.questionSource.value === "paste";
   const savedQuestions = els.questionSource.value === "saved";
-  const usePools = pastedQuestions && els.difficultyPools.checked;
   const deviceMode = selectedDeviceMode();
   syncDeviceModeClass(deviceMode);
   if (deviceMode === "single" && state.joinLobbyActive) closeJoinLobby();
-  els.questionBankGroup.hidden = actionDrivenMode || !pastedQuestions || usePools;
-  els.difficultyPoolsGroup.hidden = actionDrivenMode || !pastedQuestions;
-  els.difficultyQuestionBanks.hidden = actionDrivenMode || !usePools;
+  els.questionBankGroup.hidden = actionDrivenMode || !pastedQuestions;
   els.savedQuestionSetsPanel.hidden = actionDrivenMode || els.questionSource.value === "demo";
   els.questionTips.hidden = actionDrivenMode || !pastedQuestions;
   els.saveQuestionSetBtn.disabled = actionDrivenMode || !pastedQuestions;
@@ -5251,10 +5806,17 @@ function checkMissionSystems() {
         return { label: "Local Narrator", state: count ? "ok" : "warn", detail: count ? `${count} model${count === 1 ? "" : "s"}` : "No models" };
       })
       .catch(() => ({ label: "Local Narrator", state: "bad", detail: `${localDmProviderLabel()} offline` })),
-    fetch("/api/tts/status", { cache: "no-store" })
-      .then((response) => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)))
-      .then((body) => ({ label: "Voice System", state: body.available ? "ok" : "warn", detail: body.available ? "Piper ready" : "Optional offline" }))
-      .catch(() => ({ label: "Voice System", state: "warn", detail: "Optional offline" }))
+    (() => {
+      const provider = els.setupTtsProvider?.value || state.ttsProvider || "browser";
+      if (provider === "browser") {
+        const available = Boolean(window.speechSynthesis);
+        return Promise.resolve({ label: "Voice System", state: available ? "ok" : "warn", detail: available ? "Browser voice ready" : "Browser voice unavailable" });
+      }
+      return fetch(`/api/tts/status?provider=${encodeURIComponent(provider)}`, { cache: "no-store" })
+        .then((response) => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)))
+        .then((body) => ({ label: "Voice System", state: body.available ? "ok" : "warn", detail: body.available ? `${provider === "kokoro" ? "Kokoro" : "Piper"} ready` : `${provider === "kokoro" ? "Kokoro" : "Piper"} unavailable` }))
+        .catch(() => ({ label: "Voice System", state: "warn", detail: `${provider === "kokoro" ? "Kokoro" : "Piper"} unavailable` }));
+    })()
   ];
 
   return Promise.all(checks).then((results) => {
@@ -5405,25 +5967,14 @@ function persistQuestionSetsToServer() {
 }
 
 function saveCurrentQuestionSet() {
-  const useDifficulty = Boolean(els.difficultyPools.checked);
   const texts = {
     mainText: els.questionsInput.value.trim(),
-    easyText: els.easyQuestionsInput.value.trim(),
-    mediumText: els.mediumQuestionsInput.value.trim(),
-    hardText: els.hardQuestionsInput.value.trim()
+    easyText: "",
+    mediumText: "",
+    hardText: ""
   };
-  const sourceText = useDifficulty
-    ? [texts.easyText, texts.mediumText, texts.hardText].join("\n\n").trim()
-    : texts.mainText;
-  const report = useDifficulty
-    ? {
-        questions: [
-          ...parseQuestions(texts.easyText),
-          ...parseQuestions(texts.mediumText),
-          ...parseQuestions(texts.hardText)
-        ]
-      }
-    : parseQuestionReport(texts.mainText);
+  const sourceText = texts.mainText;
+  const report = parseQuestionReport(texts.mainText);
   if (!sourceText || !report.questions.length) {
     setLaunchStatus("Paste valid questions before saving a question set.", true);
     return;
@@ -5439,7 +5990,7 @@ function saveCurrentQuestionSet() {
     name,
     createdAt: existing?.createdAt || now,
     updatedAt: now,
-    useDifficulty,
+    useDifficulty: false,
     ...texts
   };
   const nextSets = existing
@@ -5455,6 +6006,17 @@ function saveCurrentQuestionSet() {
   updateSetupSummary();
 }
 
+function syncQuestionSetSelectAllControl(sets, selected) {
+  if (!els.questionSetsSelectAll || !els.questionSetsSelectAllLabel || !els.questionSetsSelectAllControl) return;
+  const selectedCount = sets.filter((set) => selected.has(String(set.id))).length;
+  const allSelected = sets.length > 0 && selectedCount === sets.length;
+  els.questionSetsSelectAll.checked = allSelected;
+  els.questionSetsSelectAll.indeterminate = selectedCount > 0 && !allSelected;
+  els.questionSetsSelectAll.disabled = sets.length === 0;
+  els.questionSetsSelectAllControl.classList.toggle("is-disabled", sets.length === 0);
+  els.questionSetsSelectAllLabel.textContent = allSelected ? "Deselect all" : "Select all";
+}
+
 function renderSavedQuestionSets() {
   if (!els.savedQuestionSetsList || !els.savedQuestionSetsNote) return;
   const sets = readSavedQuestionSets();
@@ -5462,6 +6024,7 @@ function renderSavedQuestionSets() {
   els.savedQuestionSetsNote.textContent = sets.length
     ? `${sets.length} saved set${sets.length === 1 ? "" : "s"}. Check one or more, then choose Saved Question Sets as the source.`
     : "No saved sets yet.";
+  syncQuestionSetSelectAllControl(sets, selected);
   els.savedQuestionSetsList.innerHTML = sets.length ? sets.map((set) => {
     const count = savedQuestionSetReport(set).questions.length;
     return `
@@ -5470,11 +6033,11 @@ function renderSavedQuestionSets() {
           <input class="questionSetUseCheck" type="checkbox" value="${escapeAttribute(set.id)}" ${selected.has(set.id) ? "checked" : ""}>
           <span>
             <strong>${escapeHtml(set.name)}</strong>
-            <small>${count} parsed question${count === 1 ? "" : "s"}${set.useDifficulty ? " · difficulty pools" : ""}</small>
+            <small>${count} parsed question${count === 1 ? "" : "s"}${set.useDifficulty ? " · legacy split bank" : ""}</small>
           </span>
         </label>
         <div class="saved-question-actions">
-          <button class="secondary loadQuestionSetBtn" type="button" data-set-id="${escapeAttribute(set.id)}">Load</button>
+          <button class="secondary loadQuestionSetBtn" type="button" data-set-id="${escapeAttribute(set.id)}">Open in Editor</button>
           <button class="secondary deleteQuestionSetBtn" type="button" data-set-id="${escapeAttribute(set.id)}">Delete</button>
         </div>
       </div>
@@ -5487,6 +6050,7 @@ function renderSavedQuestionSets() {
       if (input.checked) next.add(input.value);
       else next.delete(input.value);
       writeSelectedQuestionSetIds(next);
+      syncQuestionSetSelectAllControl(sets, next);
       updateSetupSummary();
     });
   });
@@ -5502,15 +6066,26 @@ function loadQuestionSetForEditing(id) {
   const set = readSavedQuestionSets().find((entry) => entry.id === id);
   if (!set) return;
   els.questionSource.value = "paste";
-  els.difficultyPools.checked = Boolean(set.useDifficulty);
-  els.questionsInput.value = set.mainText || "";
-  els.easyQuestionsInput.value = set.easyText || "";
-  els.mediumQuestionsInput.value = set.mediumText || "";
-  els.hardQuestionsInput.value = set.hardText || "";
+  els.questionsInput.value = editableQuestionSetText(set);
   els.questionSetNameInput.value = set.name;
   delete els.missionLength.dataset.manual;
   syncSetupMode();
   setLaunchStatus(`Loaded "${set.name}" for editing.`);
+}
+
+function editableQuestionSetText(set) {
+  if (!set?.useDifficulty) return set?.mainText || "";
+  return [
+    labeledQuestionBlocks(set.easyText, "Easy"),
+    labeledQuestionBlocks(set.mediumText, "Medium"),
+    labeledQuestionBlocks(set.hardText, "Hard")
+  ].filter(Boolean).join("\n\n");
+}
+
+function labeledQuestionBlocks(text, difficulty) {
+  return splitQuestionBlocks(text)
+    .map((block) => `Difficulty: ${difficulty}\n${block}`)
+    .join("\n\n");
 }
 
 function deleteQuestionSet(id) {
@@ -5599,13 +6174,7 @@ function getSetupStudyQuestions() {
     return getPastedQuestionReport().questions;
   }
 
-  if (!els.difficultyPools.checked) return getPastedQuestionReport().questions;
-
-  return [
-    ...parseQuestions(els.easyQuestionsInput.value).map((question) => ({ ...question, difficulty: "easy" })),
-    ...parseQuestions(els.mediumQuestionsInput.value).map((question) => ({ ...question, difficulty: "medium" })),
-    ...parseQuestions(els.hardQuestionsInput.value).map((question) => ({ ...question, difficulty: "hard" }))
-  ];
+  return getPastedQuestionReport().questions;
 }
 
 function getPastedQuestionReport() {
@@ -5621,23 +6190,13 @@ function getSetupQuestionReport() {
     if (savedReport.questions.length) return savedReport;
     return getPastedQuestionReport();
   }
-  if (!els.difficultyPools.checked) return getPastedQuestionReport();
-
-  const reports = [
-    parseQuestionReport(els.easyQuestionsInput.value),
-    parseQuestionReport(els.mediumQuestionsInput.value),
-    parseQuestionReport(els.hardQuestionsInput.value)
-  ];
-  return {
-    questions: reports.flatMap((report) => report.questions),
-    rejected: reports.flatMap((report) => report.rejected)
-  };
+  return getPastedQuestionReport();
 }
 
 function missionLengthFor(total) {
   const requested = Number(els.missionLength.value);
   if (!total) return 0;
-  if (!Number.isFinite(requested) || requested < 1) return total;
+  if (!Number.isFinite(requested) || requested < 1) return Math.max(1, Math.ceil(total / 2));
   return Math.max(1, Math.min(total, Math.round(requested)));
 }
 
@@ -5689,10 +6248,11 @@ function updateSetupSummary() {
   const deviceMode = selectedDeviceMode();
   const savedSourceActive = els.questionSource.value === "saved";
   const selectedSets = savedSourceActive ? selectedQuestionSets() : [];
-  els.missionLength.max = String(actionDrivenMode ? 30 : Math.max(1, total));
   const manualLength = els.missionLength.dataset.manual === "true";
   if (actionDrivenMode && !manualLength) els.missionLength.value = "5";
-  if (!actionDrivenMode && total && !manualLength) els.missionLength.value = String(total);
+  if (!actionDrivenMode && total && !manualLength) els.missionLength.value = String(Math.max(1, Math.ceil(total / 2)));
+  if (!actionDrivenMode && !total && !manualLength) els.missionLength.value = "";
+  const lengthValidation = missionLengthValidation(total, actionDrivenMode);
   const length = actionDrivenMode ? actionMissionLengthFor() : missionLengthFor(total);
   const engine = els.dmEngine.options[els.dmEngine.selectedIndex]?.text || "Local Auto DM";
   const structure = missionStructureSummary(length);
@@ -5705,6 +6265,16 @@ function updateSetupSummary() {
     ? roster.length ? `${roster.length} player${roster.length === 1 ? "" : "s"} ready for teacher-screen input.` : "Add one player per line for Single Device mode."
     : "Players will join by device after setup.";
   const rejected = report.rejected.length;
+  if (els.missionLengthNote) {
+    els.missionLengthNote.textContent = lengthValidation.valid
+      ? actionDrivenMode
+        ? "Action missions support 1 to 30 rooms."
+        : total
+        ? `${lengthValidation.value} of ${total} questions. The automatic default is half of the bank.`
+        : "Defaults to half of the available questions."
+      : lengthValidation.message;
+    els.missionLengthNote.classList.toggle("input-warning", !lengthValidation.valid);
+  }
   const setPrefix = savedSourceActive
     ? selectedSets.length
       ? `${selectedSets.length} saved set${selectedSets.length === 1 ? "" : "s"} selected. `
@@ -5717,7 +6287,8 @@ function updateSetupSummary() {
     : total
     ? `${setPrefix}${total} question${total === 1 ? "" : "s"} parsed. Mission will use ${length} question${length === 1 ? "" : "s"} across ${structure.challengeRooms} encounter room${structure.challengeRooms === 1 ? "" : "s"} plus ${structure.recoveryRooms} recovery room${structure.recoveryRooms === 1 ? "" : "s"}. Boss plan: ${structure.bossText}.${structure.warning ? ` ${structure.warning}` : ""}${rejected ? ` ${rejected} block${rejected === 1 ? "" : "s"} could not be parsed.` : ""}`
     : `${setPrefix}No questions parsed yet.`;
-  els.questionCountNote.classList.toggle("has-errors", rejected > 0);
+  if (!lengthValidation.valid) els.questionCountNote.textContent += ` ${lengthValidation.message}`;
+  els.questionCountNote.classList.toggle("has-errors", rejected > 0 || !lengthValidation.valid);
   renderParseIssues(report.rejected);
   els.preflightSummary.textContent = false && total
     ? `${players.length} players · ${length} challenges · ${engine}`
@@ -5727,6 +6298,7 @@ function updateSetupSummary() {
     : total
     ? `${deviceMode === "single" ? `${roster.length || 0} players` : "Device join lobby"} - ${length} questions - ${structure.challengeRooms} encounter rooms - ${engine}${bossTest ? " - Boss test start" : ""}${state.fastMode ? " - Fast pacing" : ""}`
     : "Add study questions to begin.";
+  if (!lengthValidation.valid) els.preflightSummary.textContent = "Mission length needs attention before launch.";
 }
 
 function renderParseIssues(rejected) {
@@ -5770,12 +6342,7 @@ function highlightRejectedQuestionBlock(block) {
 }
 
 function findRejectedQuestionBlock(block) {
-  const sources = [
-    els.questionsInput,
-    els.easyQuestionsInput,
-    els.mediumQuestionsInput,
-    els.hardQuestionsInput
-  ].filter(Boolean);
+  const sources = [els.questionsInput].filter(Boolean);
   for (const input of sources) {
     const range = findTextRange(input.value, block);
     if (range) return { input, ...range };
@@ -5819,24 +6386,33 @@ function selectMissionQuestions(questions, length) {
     hard: shuffleForSession(questions.filter((question) => question.difficulty === "hard"))
   };
   const remaining = shuffleForSession(questions);
-  const picked = [];
+  const picked = Array(count).fill(null);
 
-  for (let index = 0; index < count; index++) {
-    const desired = desiredDifficultyForEncounter(index, count);
-    const fallbacks = desired === "hard" ? ["hard", "medium", "easy"] : desired === "easy" ? ["easy", "medium", "hard"] : ["medium", "easy", "hard"];
+  const takeQuestion = (fallbacks) => {
     const pool = fallbacks.map((name) => pools[name]).find((candidate) => candidate.length);
     const question = pool ? pool.shift() : remaining[0];
-    if (!question) break;
-    picked.push(question);
+    if (!question) return null;
     for (const key of Object.keys(pools)) {
       const position = pools[key].indexOf(question);
       if (position >= 0) pools[key].splice(position, 1);
     }
     const remainingPosition = remaining.indexOf(question);
     if (remainingPosition >= 0) remaining.splice(remainingPosition, 1);
+    return question;
+  };
+
+  // Reserve hard material for major encounters before filling ordinary rooms.
+  for (let index = 0; index < count; index++) {
+    if (isBossQuestion(index, count)) picked[index] = takeQuestion(["hard", "medium", "easy"]);
   }
 
-  return picked;
+  for (let index = 0; index < count; index++) {
+    if (picked[index]) continue;
+    const desired = desiredDifficultyForEncounter(index, count);
+    picked[index] = takeQuestion(desired === "easy" ? ["easy", "medium", "hard"] : ["medium", "easy", "hard"]);
+  }
+
+  return picked.filter(Boolean);
 }
 
 function shuffleForSession(items) {
@@ -6522,8 +7098,9 @@ function startDeploymentSequence(options = {}) {
   els.deploymentTitle.hidden = true;
   els.deploymentTitle.classList.remove("operators-deployed");
   if (els.deploymentReadyMessage) {
-    els.deploymentReadyMessage.hidden = true;
+    els.deploymentReadyMessage.hidden = false;
     els.deploymentReadyMessage.classList.remove("visible");
+    els.deploymentReadyMessage.classList.add("standby");
   }
   const titleStatus = els.deploymentTitle.querySelector("span");
   if (titleStatus) titleStatus.textContent = "SIGNAL ACQUIRED";
@@ -6557,6 +7134,7 @@ function completeDeploymentSequence() {
       if (els.deploymentReadyMessage) {
         els.deploymentReadyMessage.hidden = false;
         window.requestAnimationFrame(() => {
+          els.deploymentReadyMessage.classList.remove("standby");
           els.deploymentReadyMessage.classList.add("visible");
           startDeploymentReadyBlinkAudio(runId);
         });
@@ -6632,7 +7210,9 @@ function playDeploymentOperatorCue() {
       state.deploymentRosterAudio = state.deploymentRosterAudio.filter((entry) => entry !== audio);
     };
     audio.preload = "auto";
-    audio.volume = state.sfxPreset === "cinematic" ? 0.9 : 0.52;
+    audio.studyAdventureBaseVolume = state.sfxPreset === "cinematic" ? 0.9 : 0.52;
+    audio.volume = effectiveGameSfxVolume(audio);
+    setNarrationLowPass(audio, state.ttsPlaybackActive);
     audio.addEventListener("ended", cleanup, { once: true });
     audio.addEventListener("error", cleanup, { once: true });
     state.deploymentRosterAudio.push(audio);
@@ -6751,7 +7331,9 @@ function playDashboardOperatorCue() {
       state.dashboardBootAudio = state.dashboardBootAudio.filter((entry) => entry !== audio);
     };
     audio.preload = "auto";
-    audio.volume = state.sfxPreset === "cinematic" ? 0.88 : 0.5;
+    audio.studyAdventureBaseVolume = state.sfxPreset === "cinematic" ? 0.88 : 0.5;
+    audio.volume = effectiveGameSfxVolume(audio);
+    setNarrationLowPass(audio, state.ttsPlaybackActive);
     audio.addEventListener("ended", cleanup, { once: true });
     audio.addEventListener("error", cleanup, { once: true });
     state.dashboardBootAudio.push(audio);
@@ -6769,7 +7351,9 @@ function playDashboardPanelCue() {
       state.dashboardBootAudio = state.dashboardBootAudio.filter((entry) => entry !== audio);
     };
     audio.preload = "auto";
-    audio.volume = state.sfxPreset === "cinematic" ? 0.72 : 0.38;
+    audio.studyAdventureBaseVolume = state.sfxPreset === "cinematic" ? 0.72 : 0.38;
+    audio.volume = effectiveGameSfxVolume(audio);
+    setNarrationLowPass(audio, state.ttsPlaybackActive);
     audio.addEventListener("ended", cleanup, { once: true });
     audio.addEventListener("error", cleanup, { once: true });
     state.dashboardBootAudio.push(audio);
@@ -6987,13 +7571,15 @@ function renderStatus() {
       <div class="status-card-heading">
         <strong title="${escapeAttribute(player.name)}"><span class="player-colored-name">${escapeHtml(displayPlayerName(player.name))}</span></strong>
         ${actionTurnBadge(player)}
-        ${lockedOperatorBadge(player)}
         ${answerSubmissionBadge(player)}
         ${answerResultBadge(player)}
+        ${emsPlayerBadge(player)}
+        ${secondWindBadge(player)}
       </div>
       <div class="status-vitals">
         <strong>${Math.max(0, player.hp)} HP</strong>
         <span class="${statusCodeClass(player)}" title="${escapeAttribute(player.status.length ? player.status.join(", ") : "No status effects")}">${escapeHtml(statusCodeText(player))}</span>
+        <span class="player-points" title="Study points">${Math.max(0, Math.round(Number(player.points) || 0))} PTS</span>
         ${playerBonusBadge(player)}
       </div>
     </div>
@@ -7053,17 +7639,21 @@ function playerPromptStatusClasses(player) {
   return classes.join(" ");
 }
 
-function lockedOperatorBadge(player) {
-  if (!state.started || !state.questionPresentationReady || state.answerPending || state.resolved || state.actionDrivenMode) return "";
-  const info = currentQuestionInfo();
-  if (!info?.type?.locked || !info.operator || !sameName(player.name, info.operator.name)) return "";
-  return `<span class="locked-operator-badge" title="Locked operator" aria-label="Locked operator">LOCKED</span>`;
-}
-
 function answerSubmissionBadge(player) {
   if (!state.started || state.deviceMode !== "multi" || !state.questionPresentationReady || state.answerPending || state.resolved) return "";
   if (!participantHasCurrentSubmission({ name: player.name })) return "";
   return `<span class="answer-submit-badge" title="Submitted" aria-label="Submitted">Submitted</span>`;
+}
+
+function emsPlayerBadge(player) {
+  if (!state.selectedEMS || player.incapacitated) return "";
+  return `<span class="ems-player-badge" title="Protected by the armed EMS field" aria-label="EMS protected">EMS</span>`;
+}
+
+function secondWindBadge(player) {
+  if (!state.secondWindUsed || !sameName(player.name, state.secondWindPlayerName)) return "";
+  const pending = sameName(player.name, state.secondWindPendingPlayerName);
+  return `<span class="second-wind-badge ${pending ? "pending" : ""}" title="${pending ? "Next answer must be correct" : "Second Wind secured"}" aria-label="${pending ? "Second Wind pending" : "Second Wind secured"}">${pending ? "2ND WIND?" : "2ND WIND"}</span>`;
 }
 
 function statusCodeText(player) {
@@ -7227,6 +7817,8 @@ function playerStatusClasses(player) {
   }
   if (player.incapacitated) classes.push("incapacitated");
   else if (player.hp <= 2) classes.push("low-health");
+  if (state.selectedEMS && !player.incapacitated) classes.push("ems-protected");
+  if (state.secondWindUsed && sameName(player.name, state.secondWindPlayerName)) classes.push("second-wind-used");
 
   for (const status of player.status) {
     classes.push(`has-${normalize(status).trim().replace(/\s+/g, "-")}`);
@@ -7262,12 +7854,13 @@ function renderMap() {
       && state.routeTransition?.to === i + 1
       && state.transmissionPending
       && state.routeTransition.moving;
+    if (i >= state.currentNode && !transmitting) continue;
     const line = svg("line", {
       x1: positions[i].x,
       y1: positions[i].y,
       x2: positions[i + 1].x,
       y2: positions[i + 1].y,
-      class: `route-line ${i < state.currentNode ? "cleared" : ""}`
+      class: `route-line ${i < state.currentNode ? "cleared" : ""} ${transmitting ? "discovering" : ""}`
     });
     els.missionMap.appendChild(line);
     if (transmitting) {
@@ -7281,10 +7874,13 @@ function renderMap() {
 
   state.nodes.forEach((node, index) => {
     const pos = positions[index];
-    const group = svg("g", {});
     const receiving = state.transmissionPending && state.routeTransition?.to === index;
+    const discovered = index < state.currentNode || (routeVisible && index === state.currentNode) || receiving;
+    if (!discovered) return;
+    const newlyDiscovered = !state.mapRevealedNodes.has(index);
+    state.mapRevealedNodes.add(index);
+    const group = svg("g", { class: `map-location${newlyDiscovered ? " newly-discovered" : ""}` });
     const status = index < state.currentNode ? "cleared" : routeVisible && index === state.currentNode ? "current" : receiving ? "receiving" : "base";
-    const discovered = index < state.currentNode || (routeVisible && index <= state.currentNode);
     const resultClass = discovered && node.type !== "recovery" && state.nodeResults[index] !== undefined
       ? state.nodeResults[index] ? "correct" : "incorrect"
       : "";
@@ -7480,7 +8076,7 @@ function renderMapQuestionOverlay() {
         <span>${escapeHtml(heading)}</span>
         <strong>${escapeHtml(progress)}</strong>
       </div>
-      <p>${escapeHtml(info.question.question)}</p>
+      <p>${escapeHtml(displayQuestionText(info.question))}</p>
       ${choices}
     </div>
   `;
@@ -7714,7 +8310,7 @@ function renderChallenge(node) {
     <p class="typewriter" data-text="${escapeAttribute(setup.story)}"></p>
     <div class="question-text pending-content">
       <strong>${q.mode === "fill" ? "Fill in the blank:" : "Question:"}</strong>
-      <p>${escapeHtml(q.question)}</p>
+      <p>${escapeHtml(displayQuestionText(q))}</p>
       ${choicesHtml}
     </div>
   `;
@@ -8090,12 +8686,13 @@ function renderChatControls() {
   syncAnswerControlsDock();
   const presentationLocked = state.teamReady && !state.questionPresentationReady;
   const readyCheckActive = state.bossReadyPending;
-  const controlsLocked = state.answerPending || state.sideActionPending || presentationLocked;
+  const controlsLocked = state.answerPending || state.sideActionPending || presentationLocked || state.resolved || !state.teamReady || readyCheckActive;
   const emergencyActive = state.emergencyTimer?.kind === "emergency";
   const sideActionUsed = state.sideActionRooms.has(state.currentNode);
   const sideActionAvailable = actionsAllowedThisEncounter();
   const actionModeActive = Boolean(state.actionDrivenMode && state.teamReady && !readyCheckActive);
   const narrowed = new Set(state.narrowedChoices[state.currentQuestion] || []);
+  const fixedAnswerLetters = ["A", "B", "C", "D"];
   const quickAnswers = state.nodes[state.currentNode]?.type === "recovery"
     ? ["A", "B", "C"]
     : state.questions[state.currentQuestion]?.mode === "fill"
@@ -8114,6 +8711,8 @@ function renderChatControls() {
     </div>
   ` : "";
   const sideActionOutsideAnswer = state.teamReady && !readyCheckActive && !actionModeActive ? sideActionForm : "";
+  const dockedSideAction = state.deviceMode === "single" ? sideActionOutsideAnswer : "";
+  const drawerSideAction = state.deviceMode === "single" ? "" : sideActionOutsideAnswer;
   const manualFallbackPanel = state.teamReady && !readyCheckActive && !actionModeActive && state.deviceMode === "multi" ? `
     <section class="manual-fallback teacher-controls-panel">
       <h4>Manual Answer Fallback</h4>
@@ -8160,19 +8759,31 @@ function renderChatControls() {
     <form id="playerAnswerForm" class="player-answer-form">
       <label>
         Player Answer
-        ${quickAnswers.length ? `
-          <div class="quick-answer-row">
-            ${quickAnswers.map((letter) => `<button class="quickAnswerBtn secondary" data-answer="${letter}" type="button" ${controlsLocked || narrowed.has(letter) ? "disabled" : ""}>${letter}</button>`).join("")}
-          </div>
-        ` : ""}
+        <div class="quick-answer-row">
+          ${fixedAnswerLetters.map((letter) => `<button class="quickAnswerBtn secondary" data-answer="${letter}" type="button" ${controlsLocked || !quickAnswers.includes(letter) || narrowed.has(letter) ? "disabled" : ""}>${letter}</button>`).join("")}
+        </div>
         <div class="answer-submit-row">
-          <input id="playerAnswerInput" type="text" autocomplete="off" placeholder="${quickAnswers.length ? "A, B, C, D, or a short answer" : "Enter a short answer"}" ${controlsLocked ? "disabled" : ""}>
-          <button id="submitPlayerAnswerBtn" type="submit" ${controlsLocked ? "disabled" : ""}>Submit</button>
+          <input id="playerAnswerInput" type="text" autocomplete="off" placeholder="${quickAnswers.length ? "Use the answer buttons" : "Enter a short answer"}" ${controlsLocked || quickAnswers.length ? "disabled" : ""}>
+          <button id="submitPlayerAnswerBtn" type="submit" ${controlsLocked || quickAnswers.length ? "disabled" : ""}>Submit</button>
         </div>
       </label>
       <div id="answerSubmitState" class="answer-submit-state ${state.answerPending ? "pending" : ""}">
         ${state.answerPending ? `Answer sent: ${escapeHtml(state.lastSubmittedAnswer)}. Receiving transmission.` : presentationLocked ? "Incoming mission prompt..." : "Submit from here for faster table flow."}
       </div>
+    </form>
+  ` : state.deviceMode === "single" ? `
+    <form id="playerAnswerForm" class="player-answer-form controls-standby">
+      <label>
+        Player Answer
+        <div class="quick-answer-row">
+          ${fixedAnswerLetters.map((letter) => `<button class="quickAnswerBtn secondary" data-answer="${letter}" type="button" disabled>${letter}</button>`).join("")}
+        </div>
+        <div class="answer-submit-row">
+          <input id="playerAnswerInput" type="text" autocomplete="off" placeholder="Awaiting active challenge" disabled>
+          <button id="submitPlayerAnswerBtn" type="submit" disabled>Submit</button>
+        </div>
+      </label>
+      <div id="answerSubmitState" class="answer-submit-state">Controls standing by.</div>
     </form>
   ` : "";
   const primaryMissionButton = state.teamReady && !readyCheckActive && !actionModeActive
@@ -8215,6 +8826,7 @@ function renderChatControls() {
   els.answerControls.innerHTML = `
     <div class="dm-console">
       ${answerForm}
+      ${dockedSideAction}
     </div>
   `;
 
@@ -8223,7 +8835,7 @@ function renderChatControls() {
       <div class="mission-controls-body">
         ${primaryMissionButton}
         ${manualFallbackPanel}
-        ${sideActionOutsideAnswer}
+        ${drawerSideAction}
         ${dmToolsPanel}
       </div>
     `;
@@ -8263,6 +8875,9 @@ function renderChatControls() {
 
 function confirmTeamReady() {
   state.teamReady = true;
+  if (state.deviceMode === "multi" && state.roomCode) {
+    publishPlayerSession({ status: "waiting", prompt: null, resetAnswers: false });
+  }
   startNormalBackgroundMusicAfterReady();
   playGameSfx("ui");
   state.questionPresentationReady = false;
@@ -8428,7 +9043,10 @@ function submitPlayerAnswerValue(answer, options = {}) {
     body: JSON.stringify(payload)
   })
     .then(() => {
-      if (state.localDmMode) resolveLocalSubmittedAnswer(cleanAnswer);
+      if (state.localDmMode) resolveLocalSubmittedAnswer(cleanAnswer, {
+        source,
+        submittedAt: payload.submittedAt
+      });
     })
     .catch(() => {
       state.answerPending = false;
@@ -8501,9 +9119,14 @@ function startEmergencyTimerForCurrentEncounter(type = challengeType(state.curre
     nodeIndex: state.currentNode,
     questionIndex: state.currentQuestion,
     promptId,
-    warningPlayed: false
+    warningPlayed: false,
+    alarmRequired: type.kind === "emergency" || actionPressure,
+    alarmPlayed: false
   };
-  if (type.kind === "emergency" || actionPressure) playGameSfx("emergency");
+  state.questionDurationMs = durationMs;
+  state.questionOpenedAt = Date.now() + deliveryGraceMs;
+  state.questionPauseStartedAt = 0;
+  state.questionPausedTotalMs = 0;
   state.emergencyTimer.interval = window.setInterval(tickEmergencyTimer, 100);
   applyDashboardAtmosphere();
   if (deliveryGraceMs > 0) {
@@ -8515,12 +9138,20 @@ function startEmergencyTimerForCurrentEncounter(type = challengeType(state.curre
       timer.paused = false;
       timer.starting = false;
       timer.deadline = Date.now() + timer.remainingMs;
+      startEmergencyAlarmForTimer(timer);
       renderTimerSurfaces();
       publishTimerStateToPlayers();
     }, deliveryGraceMs);
   }
+  startEmergencyAlarmForTimer(state.emergencyTimer);
   renderTimerSurfaces();
   if (options.publish !== false) publishPlayerSession({ status: "open", prompt: buildPlayerPrompt(), resetAnswers: false });
+}
+
+function startEmergencyAlarmForTimer(timer = state.emergencyTimer) {
+  if (!timer || !timer.alarmRequired || timer.alarmPlayed || timer.starting || timer.paused) return;
+  timer.alarmPlayed = true;
+  playGameSfx("emergency", { minInterval: 0 });
 }
 
 function tickEmergencyTimer() {
@@ -8545,11 +9176,14 @@ function toggleEmergencyTimerPause() {
   }
   timer.starting = false;
   if (timer.paused) {
+    resumeQuestionScoringClock();
     timer.paused = false;
     timer.deadline = Date.now() + timer.remainingMs;
+    startEmergencyAlarmForTimer(timer);
   } else {
     timer.remainingMs = Math.max(0, timer.deadline - Date.now());
     timer.paused = true;
+    pauseQuestionScoringClock();
     stopGameSfx("timer");
   }
   renderTimerSurfaces();
@@ -8566,6 +9200,7 @@ function pauseChallengeTimer() {
   timer.starting = false;
   timer.remainingMs = Math.max(0, timer.deadline - Date.now());
   timer.paused = true;
+  pauseQuestionScoringClock();
   stopGameSfx("timer");
   renderTimerSurfaces();
   publishTimerStateToPlayers();
@@ -8579,10 +9214,23 @@ function resumeChallengeTimer() {
     timer.startGraceTimer = null;
   }
   timer.starting = false;
+  resumeQuestionScoringClock();
   timer.paused = false;
   timer.deadline = Date.now() + timer.remainingMs;
+  startEmergencyAlarmForTimer(timer);
   renderTimerSurfaces();
   publishTimerStateToPlayers();
+}
+
+function pauseQuestionScoringClock() {
+  if (!state.questionOpenedAt || state.questionPauseStartedAt) return;
+  state.questionPauseStartedAt = Date.now();
+}
+
+function resumeQuestionScoringClock() {
+  if (!state.questionPauseStartedAt) return;
+  state.questionPausedTotalMs += Math.max(0, Date.now() - state.questionPauseStartedAt);
+  state.questionPauseStartedAt = 0;
 }
 
 function publishTimerStateToPlayers() {
@@ -9384,6 +10032,7 @@ function finishLocalSideAction(outcome, playerEvents, story) {
   publishPlayerSession({ status: "open", prompt: buildPlayerPrompt(), resetAnswers: false });
   renderPlayerSessionPanel();
   renderMapQuestionOverlay();
+  window.setTimeout(maybeResolveQueuedPlayerAction, ACTION_DIALOGUE_HOLD_MS + 500);
 }
 
 function makeLocalSideActionPrompt(action, actor, outcome, playerEvents) {
@@ -9564,13 +10213,14 @@ function startTransmissionFeedback({ correct, context, playerEvents = [] }) {
   const routeTo = bossProgress && !bossProgress.finalStep
     ? state.currentNode
     : Math.min(state.nodes.length - 1, state.currentNode + 1);
+  const destinationIsBoss = state.nodes[routeTo]?.type === "boss";
   state.transmissionPending = true;
   state.transmissionStartedAt = Date.now();
   state.routeTransition = {
     from: state.currentNode,
     to: routeTo,
     correct: Boolean(correct),
-    boss: Boolean(context.type?.boss),
+    boss: destinationIsBoss,
     moving: false
   };
   updateCurrentNodeResult(Boolean(correct));
@@ -9612,6 +10262,9 @@ function beginDeferredRouteTransition(payload) {
   state.transmissionStartedAt = Date.now();
   state.routeTransition = { ...transition };
   state.routeTransition.moving = transition.to !== transition.from;
+  const leavingBoss = state.routeTransition.moving && state.nodes[transition.from]?.type === "boss" && state.nodes[transition.to]?.type !== "boss";
+  if (leavingBoss) beginBossEyesExit(true);
+  else els.mapPanel?.classList.remove("boss-eyes-exiting");
   if (state.routeTransition.moving && !state.routeTransition.soundPlayed) {
     state.routeTransition.soundPlayed = true;
     playGameSfx("transition");
@@ -9733,6 +10386,15 @@ function resolveLocalSubmittedAnswer(answer, options = {}) {
   state.resolved = true;
   const before = snapshotPlayers();
   const correct = isLocalAnswerCorrect(answer, context.question);
+  awardSharedAnswerPointsOnce({
+    correct,
+    question: context.question,
+    type: context.type,
+    operator: context.operator,
+    submittedAt: options.submittedAt || Date.now(),
+    scoringPlayer: options.scoringPlayer || null,
+    source: options.source || ""
+  });
   rememberPreviousAnswer(answer, context.question, correct);
   const result = applyEncounter(correct, context.type, context.operator);
   const playerEvents = changedPlayerEvents(before, result.eventNotes);
@@ -9841,6 +10503,9 @@ function resolveLocalEmergencyDeviceAnswer(submitted, timerSnapshot = null) {
   renderInventoryActions();
   renderMapQuestionOverlay();
   resolveLocalSubmittedAnswer(submitted.answer, {
+    submittedAt: submitted.submittedAt,
+    scoringPlayer: player || null,
+    source: "device-auto",
     typePatch: {
       emergencyAnswerPlayer: player || null,
       emergencySlow: slow
@@ -10159,11 +10824,21 @@ function changedPlayerEvents(before, eventNotes = {}) {
     const hpChanged = old.hp !== player.hp;
     const statusChanged = old.status.join("|") !== player.status.join("|");
     const downChanged = old.incapacitated !== player.incapacitated;
-    if (!hpChanged && !statusChanged && !downChanged) return [];
+    const cause = eventNotes[player.name] || "";
+    const secondWindArmed = /Second Wind chance begins/i.test(cause);
+    const secondWindSecured = /Second Wind secured/i.test(cause);
+    const secondWindFailed = /Second Wind fails/i.test(cause);
+    const secondWindChanged = secondWindArmed || secondWindSecured || secondWindFailed;
+    if (!hpChanged && !statusChanged && !downChanged && !secondWindChanged) return [];
     const lost = Math.max(0, old.hp - player.hp);
     const gained = Math.max(0, player.hp - old.hp);
-    const cause = eventNotes[player.name] || "";
-    const note = player.incapacitated && !old.incapacitated
+    const note = secondWindArmed
+      ? "Second Wind armed, now 1 HP"
+      : secondWindSecured
+      ? "Second Wind secured, 1 HP"
+      : secondWindFailed
+      ? "Second Wind failed, incapacitated"
+      : player.incapacitated && !old.incapacitated
       ? "incapacitated"
       : lost && /existing Bleeding/i.test(cause) ? `${lost} HP lost from existing Bleeding`
       : lost ? `${lost} HP lost`
@@ -10175,8 +10850,8 @@ function changedPlayerEvents(before, eventNotes = {}) {
       hp: player.hp,
       status: [...player.status],
       incapacitated: player.incapacitated,
-      effect: gained ? "heal" : lost ? "hit" : "status",
-      amount: lost || gained || 0,
+      effect: secondWindArmed || secondWindSecured || gained ? "heal" : secondWindFailed || lost ? "hit" : "status",
+      amount: secondWindArmed || secondWindSecured ? 1 : lost || gained || 0,
       note,
       cause
     }];
@@ -10249,6 +10924,13 @@ function recoveryAreaName(node) {
 function resolveLocalRecovery(answer) {
   const node = state.nodes[state.currentNode];
   if (!node || node.type !== "recovery") return;
+  const recoveryNodeIndex = state.currentNode;
+  const nextNodeIndex = Math.min(state.nodes.length, recoveryNodeIndex + 1);
+  const nextNode = state.nodes[nextNodeIndex];
+  const nextQuestion = state.questions[state.currentQuestion];
+  const nextAreaName = nextNode?.type === "boss"
+    ? roomName(nextNode, nextNodeIndex)
+    : nextQuestion?.area || roomName(nextNode || { type: "challenge" }, nextNodeIndex);
   state.resolved = true;
   const before = snapshotPlayers();
   const choice = String(answer).trim().toUpperCase();
@@ -10273,9 +10955,6 @@ function resolveLocalRecovery(answer) {
   }
 
   const playerEvents = changedPlayerEvents(before);
-  state.currentNode = Math.min(state.nodes.length, state.currentNode + 1);
-  state.resolved = false;
-  const qInfo = currentQuestionInfo();
   const choiceText = choice === "A" ? `Everyone active recovers ${hp} HP` : choice === "B" ? `Gain ${medkits} Medkits` : `Gain ${ems} EMS Device${ems > 1 ? "s" : ""}`;
   const reviveText = down ? `${down.name} is revived to 3 HP.` : "";
   const prompt = [
@@ -10287,42 +10966,52 @@ function resolveLocalRecovery(answer) {
     `Recovery area: ${recoveryAreaName(node)}.`,
     node.afterBoss ? "Aftermath requirement: show the physical aftermath of the confrontation they just survived, then make the recovery feel like a hard-won pause that pushes the mission forward." : "Aftermath requirement: this is a standard recovery window.",
     `Choice: ${choiceText}. ${reviveText}`,
-    `Next area: ${qInfo.areaName}.`,
-    `Next question concept: ${qInfo.question?.question || "final route"}`
+    `Next area: ${nextAreaName}.`,
+    `Next question concept: ${nextQuestion?.question || "final route"}`
   ].join("\n");
+
+  const finishRecovery = (text) => {
+    travelFromRecoveryRoom(recoveryNodeIndex, nextNodeIndex, () => {
+      state.resolved = false;
+      const destination = state.nodes[state.currentNode];
+      if (destination?.type === "boss" && !state.bossReadyChecks.has(state.currentNode)) {
+        appendTranscript({
+          tag: "Readiness Check",
+          areaName: bossAreaName(destination),
+          story: text || `The team takes the recovery window, then follows the tightening route toward ${bossAreaName(destination)}.`,
+          readyCheck: true,
+          bossNodeIndex: state.currentNode,
+          bossPhase: destination.bossPhase || "mid",
+          players: playerEvents,
+          inventory: { ...state.inventory },
+          statusLog: [choiceText, reviveText].filter(Boolean).join(" ")
+        });
+      } else {
+        const qInfo = currentQuestionInfo();
+        appendTranscript({
+          tag: qInfo.tag,
+          areaName: qInfo.areaName,
+          story: text || `The team takes the recovery window, seals what wounds they can, and pushes into ${qInfo.areaName}.`,
+          activeObstacle: qInfo.activeObstacle,
+          question: qInfo.questionText,
+          players: playerEvents,
+          inventory: { ...state.inventory },
+          statusLog: [choiceText, reviveText].filter(Boolean).join(" ")
+        });
+      }
+      renderStatus();
+      renderMap();
+    });
+  };
 
   setAnswerPendingText("Receiving recovery transmission...");
   startPassiveTransmissionFeedback({ type: { label: "Recovery Event" }, playerEvents });
   requestOllama(prompt, { temperature: 0.72 })
     .then((text) => {
-      stopTransmissionFeedback();
-      appendTranscript({
-        tag: qInfo.tag,
-        areaName: qInfo.areaName,
-        story: cleanLocalNarration(text) || `The team takes the recovery window and pushes into ${qInfo.areaName}.`,
-        activeObstacle: qInfo.activeObstacle,
-        question: qInfo.questionText,
-        players: playerEvents,
-        inventory: { ...state.inventory },
-        statusLog: [choiceText, reviveText].filter(Boolean).join(" ")
-      });
-      renderStatus();
-      renderMap();
+      finishRecovery(cleanLocalNarration(text));
     })
     .catch(() => {
-      stopTransmissionFeedback();
-      appendTranscript({
-        tag: qInfo.tag,
-        areaName: qInfo.areaName,
-        story: `The team takes the recovery window, seals what wounds they can, and pushes into ${qInfo.areaName}.`,
-        activeObstacle: qInfo.activeObstacle,
-        question: qInfo.questionText,
-        players: playerEvents,
-        inventory: { ...state.inventory },
-        statusLog: [choiceText, reviveText].filter(Boolean).join(" ")
-      });
-      renderStatus();
-      renderMap();
+      finishRecovery("");
     });
 }
 
@@ -10777,13 +11466,25 @@ function fallbackBossPhase(index, total, node) {
 function localQuestionText(question, type, operator = null, questionIndex = state.currentQuestion) {
   if (!question) return "";
   const prefix = type.locked && operator ? `${operator.name} only: ` : "";
-  if (question.mode === "fill") return `${prefix}${question.question}`;
+  if (question.mode === "fill") return `${prefix}${displayQuestionText(question)}`;
   const narrowed = new Set(state.narrowedChoices[questionIndex] || []);
   const choices = question.choices
     .filter((choice) => !narrowed.has(choice.key))
     .map((choice) => `${choice.key}. ${choice.text}`)
     .join("\n");
-  return `${prefix}${question.question}\n\n${choices}`;
+  return `${prefix}${displayQuestionText(question)}\n\n${choices}`;
+}
+
+function displayQuestionText(question) {
+  const text = String(question?.question || "");
+  if (question?.mode !== "fill") return text;
+  const formatted = text
+    .replace(/_{2,}/g, "____")
+    .replace(/\s+([,.;:?!])/g, "$1")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+  if (question?.type === "fill" && !/_{2,}/.test(formatted)) return `${formatted} ____`;
+  return formatted;
 }
 
 function localStatusLog(playerEvents, loot) {
@@ -11690,6 +12391,15 @@ function appendTranscript(feed) {
   const payload = typeof feed === "string" ? { text: feed } : feed;
   normalizeFeedText(payload);
   addMissionLogHistory(payload);
+  const pendingRouteMove = Boolean(
+    payload.advanceRoom
+    && state.routeTransition?.to !== state.routeTransition?.from
+  );
+  if (pendingRouteMove && !payload.continuationStory) {
+    const fromName = roomName(state.nodes[state.routeTransition.from] || { type: "challenge" }, state.routeTransition.from);
+    const toName = roomName(state.nodes[state.routeTransition.to] || { type: "challenge" }, state.routeTransition.to);
+    payload.continuationStory = `The squad clears ${fromName} and follows the secured route toward ${toName}. The next threshold reacts before the formation can settle.`;
+  }
   const hasContinuationGate = Boolean(payload.advanceRoom && payload.continuationStory);
   const deferQuestionUntilContinuation = hasContinuationGate && Boolean(payload.isRecovery);
   const presentationRunId = beginLogPresentation();
@@ -11721,6 +12431,8 @@ function appendTranscript(feed) {
   const entry = document.createElement("section");
   entry.className = "transcript-entry";
   if (payload.speechText) entry.dataset.speechText = payload.speechText;
+  const showOpeningVoiceLoader = shouldShowOpeningVoiceLoader(payload);
+  if (showOpeningVoiceLoader) entry.classList.add("tts-generation-pending");
 
   if (payload.tag && !payload.hideLogTag) {
     const tag = document.createElement("div");
@@ -11728,6 +12440,8 @@ function appendTranscript(feed) {
     tag.textContent = missionLogTagText(payload);
     entry.appendChild(tag);
   }
+
+  if (showOpeningVoiceLoader) entry.insertAdjacentHTML("beforeend", voiceGenerationTransmissionHtml());
 
   if (payload.story) {
     const story = document.createElement("p");
@@ -11767,8 +12481,11 @@ function appendTranscript(feed) {
   if (effects.length && !payload.suppressEffectFlash) flashStatusEffects(effects);
   renderInventoryActions();
   const autoRead = maybeAutoReadMissionLog(entry);
+  prefetchUpcomingTts(payload);
   const readyCheckAudioLeadMs = payload.readyCheck ? 500 : 0;
-  const typing = delayPresentation(autoRead.visualDelay + readyCheckAudioLeadMs).then(() => {
+  const typing = syncTtsPresentation(autoRead, readyCheckAudioLeadMs).then(() => {
+    return revealPreparedVoiceText(entry);
+  }).then(() => {
     if (payload.question) startBossQuestionMusic();
     return typeQueuedText(entry);
   });
@@ -11806,6 +12523,44 @@ function appendTranscript(feed) {
     finishTranscriptQuestionFlow(payload);
   });
   return true;
+}
+
+function shouldShowOpeningVoiceLoader(payload) {
+  return Boolean(
+    payload?.teamReadyGate
+    && state.ttsAutoLog
+    && ["piper", "kokoro"].includes(state.ttsProvider)
+    && ttsCanSpeak()
+  );
+}
+
+function voiceGenerationTransmissionHtml() {
+  return `
+    <div class="transmission-display tts-generation-transmission">
+      <div class="transmission-heading">
+        <strong>RECEIVING TRANSMISSION...</strong>
+        <span class="signal-bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+      </div>
+      <div class="transmission-waveform" aria-hidden="true">
+        ${Array.from({ length: 24 }, () => "<i></i>").join("")}
+      </div>
+      <p>Preparing narrator channel...</p>
+    </div>
+  `;
+}
+
+function revealPreparedVoiceText(entry) {
+  const loader = entry?.querySelector?.(".tts-generation-transmission");
+  if (!loader) return Promise.resolve();
+  loader.classList.add("fading");
+  entry.classList.remove("tts-generation-pending");
+  entry.classList.add("tts-generation-ready");
+  return new Promise((resolve) => {
+    window.setTimeout(() => {
+      loader.remove();
+      resolve();
+    }, 240);
+  });
 }
 
 function completeTranscriptAdvance(payload) {
@@ -11934,7 +12689,7 @@ function revealMissionContinuation(entry, payload, gate) {
   const transitionStartedAt = beginDeferredRouteTransition(payload);
   renderInventoryActions();
   const autoRead = maybeAutoReadMissionLog(continuationEntry);
-  delayPresentation(autoRead.visualDelay).then(() => typeText(continuation, payload.continuationStory)).then(() => {
+  syncTtsPresentation(autoRead).then(() => typeText(continuation, payload.continuationStory)).then(() => {
     return waitForTtsPlayback(autoRead.playback);
   }).then(() => {
     if (runId !== state.logPresentationRunId) return;
@@ -12035,8 +12790,9 @@ function queueMapQuestionReveal(onReady) {
     state.mapQuestionOverlayKey = "";
     const alertInfo = currentQuestionInfo();
     if (!state.actionDrivenMode && alertInfo?.type?.kind !== "action") playGameSfx("question");
+    els.mapQuestionOverlay?.style.setProperty("--query-alert-duration", `${queryAlertDurationMs()}ms`);
     renderMapQuestionOverlay();
-    const revealDelay = window.setTimeout(() => {
+    waitForQueryAlert().then(() => {
       if (revealRunId !== state.questionRevealRunId || state.resolved) return;
       state.mapQuestionAlertActive = false;
       state.questionSurfaceVisible = true;
@@ -12049,14 +12805,17 @@ function queueMapQuestionReveal(onReady) {
       const unlockDelay = Math.min(1200, Math.max(250, Number(autoRead.visualDelay) || 0));
       const unlockTimer = window.setTimeout(() => {
         if (revealRunId !== state.questionRevealRunId || state.resolved) return;
-        state.questionSurfaceVisible = false;
-        state.questionPresentationReady = true;
-        renderMapQuestionOverlay();
+      state.questionSurfaceVisible = false;
+      state.questionPresentationReady = true;
+      state.questionOpenedAt = Date.now();
+      state.questionDurationMs = questionScoringDurationMs(currentQuestionInfo());
+      state.questionPauseStartedAt = 0;
+      state.questionPausedTotalMs = 0;
+      renderMapQuestionOverlay();
         if (typeof onReady === "function") onReady();
       }, unlockDelay);
       state.typeTimers.push(unlockTimer);
-    }, questionRevealDelayMs());
-    state.typeTimers.push(revealDelay);
+    });
   }, questionAlertDelayMs());
   state.typeTimers.push(alertDelay);
 }
@@ -12088,6 +12847,7 @@ function formatEncounterTag(tag) {
 function beginLogPresentation() {
   state.logPresentationPending = true;
   state.logPresentationRunId += 1;
+  document.body.classList.add("mission-log-streaming");
   renderInventoryActions();
   return state.logPresentationRunId;
 }
@@ -12095,6 +12855,7 @@ function beginLogPresentation() {
 function finishLogPresentation(runId) {
   if (runId !== state.logPresentationRunId) return;
   state.logPresentationPending = false;
+  document.body.classList.remove("mission-log-streaming");
   renderInventoryActions();
 }
 
@@ -12231,6 +12992,12 @@ function appendDamageLog(entry, payload) {
   }
 
   appendStatusUpdateLog(log, entry);
+  if (statusLogIncludesItemGain(payload.statusLog)) playGameSfx("loot");
+}
+
+function statusLogIncludesItemGain(statusLog) {
+  const text = String(statusLog || "");
+  return /\b(?:inventory gained|found\s+(?:\d+|one|two)?\s*(?:medkits?|ems devices?|combat gear)|gained\s+(?:an?\s+)?(?:medkit|ems device)|salvaged?\s+.*(?:gear|supplies))\b/i.test(text);
 }
 
 function appendStatusUpdateLog(log, fallbackEntry) {
@@ -12382,6 +13149,7 @@ function addStatusToPlayer(player, status) {
 function flashStatusEffects(effects) {
   if (effects.some((effect) => effect.kind === "hit" || effect.amount > 0 && effect.kind !== "heal")) playGameSfx("damage");
   else if (effects.some((effect) => effect.kind === "heal")) playGameSfx("recovery");
+  triggerBossDamageImpact(effects);
   window.requestAnimationFrame(() => {
     window.requestAnimationFrame(() => {
       for (const { player, kind, amount } of effects) {
@@ -12476,25 +13244,26 @@ function clearPlayerStatus(index) {
   renderStatus();
 }
 
-function renderAnswerControls(q) {
+function renderAnswerControls(q, { locked = false, nextLabel = "" } = {}) {
   syncAnswerControlsDock();
   const sideActionHtml = classicTeamActionControlsHtml();
-  if (q.mode === "multiple") {
-    els.answerControls.innerHTML = `
-      ${emergencyTimerCardHtml()}
-      <div class="answer-grid">
-        ${q.choices.map((choice) => `<button class="answerBtn" data-answer="${choice.key}" type="button">${choice.key}</button>`).join("")}
-      </div>
+  const availableChoices = new Set(q.mode === "multiple" ? q.choices.map((choice) => choice.key) : []);
+  els.answerControls.innerHTML = `
+    <div class="single-device-submission-grid">
+      <form id="classicAnswerForm" class="classic-answer-form player-answer-form">
+        <div class="answer-grid">
+          ${["A", "B", "C", "D"].map((letter) => `<button class="answerBtn" data-answer="${letter}" type="button" ${!locked && availableChoices.has(letter) ? "" : "disabled"}>${letter}</button>`).join("")}
+        </div>
+        <div class="answer-submit-row">
+          <input id="fillAnswer" class="text-answer" type="text" placeholder="${nextLabel ? "Challenge resolved" : q.mode === "fill" ? "Enter answer" : "Use the answer buttons"}" ${!locked && q.mode === "fill" ? "" : "disabled"}>
+          ${nextLabel
+            ? `<button id="nextBtn" type="button">${escapeHtml(nextLabel)}</button>`
+            : `<button id="submitFillBtn" type="submit" ${!locked && q.mode === "fill" ? "" : "disabled"}>Submit</button>`}
+        </div>
+      </form>
       ${sideActionHtml}
-    `;
-  } else {
-    els.answerControls.innerHTML = `
-      ${emergencyTimerCardHtml()}
-      <input id="fillAnswer" class="text-answer" type="text" placeholder="Enter answer">
-      <button id="submitFillBtn" type="button">Submit</button>
-      ${sideActionHtml}
-    `;
-  }
+    </div>
+  `;
 
   bindEmergencyTimerControls();
   const sideActionButton = document.getElementById("sideActionBtn");
@@ -12502,13 +13271,12 @@ function renderAnswerControls(q) {
   document.querySelectorAll(".answerBtn").forEach((button) => {
     button.addEventListener("click", () => resolveChallenge(button.dataset.answer));
   });
-  const fillButton = document.getElementById("submitFillBtn");
-  if (fillButton) {
-    fillButton.addEventListener("click", () => {
+  document.getElementById("classicAnswerForm")?.addEventListener("submit", (event) => {
+      event.preventDefault();
       const input = document.getElementById("fillAnswer");
       resolveChallenge(input.value);
-    });
-  }
+  });
+  document.getElementById("nextBtn")?.addEventListener("click", beginNextNode);
 }
 
 function classicTeamActionControlsHtml() {
@@ -12557,6 +13325,15 @@ function resolveChallenge(answer, options = {}) {
   const correct = question.mode === "multiple"
     ? String(answer).toUpperCase() === question.answerKey
     : isCloseAnswer(answer, question.answerText);
+  awardSharedAnswerPointsOnce({
+    correct,
+    question,
+    type,
+    operator,
+    submittedAt: options.submittedAt || Date.now(),
+    scoringPlayer: options.scoringPlayer || null,
+    source: options.source || ""
+  });
   rememberPreviousAnswer(answer, question, correct);
 
   const result = applyEncounter(correct, type, operator);
@@ -12591,12 +13368,14 @@ function resolveChallenge(answer, options = {}) {
   `;
   els.encounterCard.appendChild(resolution);
 
-  els.answerControls.innerHTML = "";
+  renderAnswerControls(question, { locked: true });
   const presentationRunId = beginLogPresentation();
   typeQueuedText(resolution).then(() => {
     finishLogPresentation(presentationRunId);
-    els.answerControls.innerHTML = `<button id="nextBtn" type="button">${state.currentQuestion >= state.questions.length ? "Finish Mission" : "Next Challenge"}</button>`;
-    document.getElementById("nextBtn").addEventListener("click", beginNextNode);
+    renderAnswerControls(question, {
+      locked: true,
+      nextLabel: state.currentQuestion >= state.questions.length ? "Finish Mission" : "Next Challenge"
+    });
   });
 
   renderStatus();
@@ -12754,6 +13533,8 @@ function useMedkit(playerIndex) {
 }
 
 function applyEncounter(correct, type, operator) {
+  const lastStandingBeforeEncounter = soleActivePlayer();
+  const pendingSecondWind = secondWindPendingPlayer();
   const eventNotes = bleedTick();
 
   const emsWasArmed = state.selectedEMS;
@@ -12799,6 +13580,8 @@ function applyEncounter(correct, type, operator) {
       : "The prepared cover catches the room's backlash. The squad stays low until the worst of it passes, then forces the route open.";
   }
 
+  resolvePendingSecondWind(pendingSecondWind, correct, eventNotes, consequenceFacts);
+  if (!pendingSecondWind) tryArmSecondWind(lastStandingBeforeEncounter, eventNotes, consequenceFacts);
   const down = state.players.filter((player) => player.incapacitated);
   if (down.length) incapacitated = `${down.map((player) => player.name).join(", ")} cannot answer until revived.`;
   state.selectedEMS = false;
@@ -12808,6 +13591,8 @@ function applyEncounter(correct, type, operator) {
 }
 
 function applyDeviceTeamEncounter(entries, type) {
+  const lastStandingBeforeEncounter = soleActivePlayer();
+  const pendingSecondWind = secondWindPendingPlayer();
   const eventNotes = bleedTick();
 
   const wrongEntries = entries.filter((entry) => !entry.correct);
@@ -12857,6 +13642,9 @@ function applyDeviceTeamEncounter(entries, type) {
       : "The prepared cover catches the room's backlash. The squad stays low until the worst of it passes, then forces the route open.";
   }
 
+  const pendingEntry = entries.find((entry) => entry.player && sameName(entry.player.name, pendingSecondWind?.name));
+  resolvePendingSecondWind(pendingSecondWind, Boolean(pendingEntry?.correct), eventNotes, consequenceFacts);
+  if (!pendingSecondWind) tryArmSecondWind(lastStandingBeforeEncounter, eventNotes, consequenceFacts);
   const down = state.players.filter((player) => player.incapacitated);
   if (down.length) incapacitated = `${down.map((player) => player.name).join(", ")} cannot answer until revived.`;
   state.selectedEMS = false;
@@ -12895,6 +13683,50 @@ function bleedTick() {
 function addEventNote(eventNotes, name, note) {
   if (!eventNotes || !name || !note) return;
   eventNotes[name] = eventNotes[name] ? `${eventNotes[name]} ${note}` : note;
+}
+
+function soleActivePlayer() {
+  const active = activePlayers();
+  return active.length === 1 ? active[0] : null;
+}
+
+function secondWindPendingPlayer() {
+  if (!state.secondWindPendingPlayerName) return null;
+  return state.players.find((player) => sameName(player.name, state.secondWindPendingPlayerName)) || null;
+}
+
+function tryArmSecondWind(player, eventNotes, consequenceFacts = []) {
+  if (!state.secondWindEnabled || state.secondWindUsed || !player?.incapacitated || player.hp > 0) return false;
+  if (state.currentQuestion >= state.questions.length - 1) return false;
+  if (state.players.some((teammate) => teammate !== player && !teammate.incapacitated)) return false;
+
+  state.secondWindUsed = true;
+  state.secondWindPlayerName = player.name;
+  state.secondWindPendingPlayerName = player.name;
+  player.hp = 1;
+  player.incapacitated = false;
+  player.status = [];
+  addEventNote(eventNotes, player.name, `Second Wind chance begins as ${player.name} refuses to collapse. ${player.name} holds at 1 HP with status effects cleared and must answer the next question correctly.`);
+  consequenceFacts.push(`Second Wind chance begins for ${player.name}; lethal incapacitation delayed; restored to 1 HP; status effects cleared; next answer must be correct; once-per-mission chance consumed`);
+  return true;
+}
+
+function resolvePendingSecondWind(player, answeredCorrectly, eventNotes, consequenceFacts = []) {
+  if (!player) return false;
+  state.secondWindPendingPlayerName = "";
+  if (answeredCorrectly) {
+    player.hp = Math.max(1, player.hp);
+    player.incapacitated = false;
+    addEventNote(eventNotes, player.name, `Second Wind secured when ${player.name} answers correctly and holds the line at 1 HP.`);
+    consequenceFacts.push(`Second Wind secured by ${player.name}'s correct answer; operator remains active at 1 HP`);
+    return true;
+  }
+
+  player.hp = 0;
+  player.incapacitated = true;
+  addEventNote(eventNotes, player.name, `Second Wind fails when ${player.name} misses the required answer and finally collapses.`);
+  consequenceFacts.push(`Second Wind fails for ${player.name}; required answer was incorrect; operator becomes incapacitated`);
+  return false;
 }
 
 function applyDamage(player, amount, source) {
@@ -13437,7 +14269,6 @@ function failureNarration(targets, terminal) {
 }
 
 function grantLoot() {
-  playGameSfx("loot");
   const find = state.rng();
   if (find < 0.45) {
     state.inventory.medkits += 1;
@@ -13492,7 +14323,7 @@ function renderRecovery(node) {
   const transcript = appendMissionLogEntry(entry, { replace: true });
   els.answerControls.innerHTML = "";
   const autoRead = maybeAutoReadMissionLog(entry);
-  delayPresentation(autoRead.visualDelay).then(() => typeQueuedText(entry)).then(() => {
+  syncTtsPresentation(autoRead).then(() => typeQueuedText(entry)).then(() => {
     return waitForTtsPlayback(autoRead.playback);
   }).then(() => {
     finishLogPresentation(presentationRunId);
@@ -13591,25 +14422,53 @@ function renderRecoveryContinueGate(entry, summary, playerEvents = [], recoveryN
 }
 
 function continueAfterRecovery(summary, playerEvents = [], recoveryNode = null) {
-  state.currentNode = Math.min(state.nodes.length, state.currentNode + 1);
-  state.resolved = false;
-  state.answerPending = false;
-  state.questionPresentationReady = false;
-  clearSubmittedAnswer();
-  renderStatus();
+  const fromNode = state.currentNode;
+  const toNode = Math.min(state.nodes.length, fromNode + 1);
+  travelFromRecoveryRoom(fromNode, toNode, () => {
+    state.resolved = false;
+    state.answerPending = false;
+    state.questionPresentationReady = false;
+    clearSubmittedAnswer();
+    renderStatus();
+    renderMap();
+
+    if (state.currentNode >= state.nodes.length || state.currentQuestion >= state.questions.length) {
+      renderEnding();
+      return;
+    }
+
+    if (state.chatMode || state.localDmMode) {
+      appendRecoveryTransitionToNextEncounter(summary, playerEvents, recoveryNode);
+      return;
+    }
+
+    beginNextNode();
+  });
+}
+
+function travelFromRecoveryRoom(fromNode, toNode, onArrive) {
+  stopTransmissionFeedback();
+  state.transmissionPending = true;
+  state.transmissionStartedAt = Date.now();
+  state.routeTransition = {
+    from: fromNode,
+    to: toNode,
+    correct: true,
+    boss: state.nodes[toNode]?.type === "boss",
+    moving: toNode !== fromNode,
+    soundPlayed: true
+  };
+  if (state.routeTransition.moving) playGameSfx("transition");
   renderMap();
+  renderRouteTelemetry();
 
-  if (state.currentNode >= state.nodes.length || state.currentQuestion >= state.questions.length) {
-    renderEnding();
-    return;
-  }
-
-  if (state.chatMode || state.localDmMode) {
-    appendRecoveryTransitionToNextEncounter(summary, playerEvents, recoveryNode);
-    return;
-  }
-
-  beginNextNode();
+  window.setTimeout(() => {
+    state.currentNode = toNode;
+    stopTransmissionFeedback(false);
+    renderMap();
+    renderRouteTelemetry();
+    if (typeof onArrive === "function") onArrive();
+  }, state.routeTransition.moving ? ROUTE_TRAVEL_MS : 0);
 }
 
 function appendRecoveryTransitionToNextEncounter(summary, playerEvents = [], recoveryNode = null) {

@@ -21,6 +21,32 @@ const piperExePath = process.env.PIPER_EXE || defaultPiperExePath;
 const piperModelPath = process.env.PIPER_MODEL || defaultPiperModelPath;
 const piperConfigPath = process.env.PIPER_CONFIG || `${piperModelPath}.json`;
 const piperCachePath = path.join(root, ".tts-cache");
+const kokoroWorkerPath = path.join(root, "kokoro-worker.py");
+const kokoroRuntimePath = process.env.KOKORO_RUNTIME || path.join(root, "tts", "kokoro", "runtime");
+const kokoroModelPath = process.env.KOKORO_MODEL_DIR || path.join(root, "tts", "kokoro", "model", "kokoro-en-v0_19");
+const kokoroPython = process.env.KOKORO_PYTHON || "python";
+const kokoroVoices = [
+  { id: 0, name: "af", label: "American Female" },
+  { id: 1, name: "af_bella", label: "Bella (American Female)" },
+  { id: 2, name: "af_nicole", label: "Nicole (American Female)" },
+  { id: 3, name: "af_sarah", label: "Sarah (American Female)" },
+  { id: 4, name: "af_sky", label: "Sky (American Female)" },
+  { id: 5, name: "am_adam", label: "Adam (American Male)" },
+  { id: 6, name: "am_michael", label: "Michael (American Male)" },
+  { id: 7, name: "bf_emma", label: "Emma (British Female)" },
+  { id: 8, name: "bf_isabella", label: "Isabella (British Female)" },
+  { id: 9, name: "bm_george", label: "George (British Male)" },
+  { id: 10, name: "bm_lewis", label: "Lewis (British Male)" }
+];
+let kokoroWorker = null;
+let kokoroReady = false;
+let kokoroStartupPromise = null;
+let kokoroStartupResolve = null;
+let kokoroStartupReject = null;
+let kokoroStdoutBuffer = "";
+let kokoroLastError = "";
+let kokoroRequestId = 0;
+const kokoroPending = new Map();
 
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
@@ -53,7 +79,9 @@ let playerSession = {
   participants: [],
   answers: [],
   actions: [],
+  queuedActions: [],
   removedNames: [],
+  allowQueuedPlayerActions: false,
   actionCooldownMs: DEFAULT_PLAYER_ACTION_COOLDOWN_MS,
   promptPublishedAt: 0,
   promptAcceptAfter: 0,
@@ -446,6 +474,157 @@ function generatePiperSpeech(text, options = {}) {
   });
 }
 
+function kokoroStatus() {
+  const workerExists = fs.existsSync(kokoroWorkerPath);
+  const runtimeExists = fs.existsSync(path.join(kokoroRuntimePath, "sherpa_onnx", "__init__.py"));
+  const modelExists = fs.existsSync(path.join(kokoroModelPath, "model.onnx"));
+  const voicesExist = fs.existsSync(path.join(kokoroModelPath, "voices.bin"));
+  const tokensExist = fs.existsSync(path.join(kokoroModelPath, "tokens.txt"));
+  const dataExists = fs.existsSync(path.join(kokoroModelPath, "espeak-ng-data"));
+  return {
+    available: workerExists && runtimeExists && modelExists && voicesExist && tokensExist && dataExists,
+    ready: kokoroReady,
+    workerExists,
+    runtimeExists,
+    modelExists,
+    voicesExist,
+    tokensExist,
+    dataExists,
+    voiceName: "Kokoro: Lewis (British Male)",
+    voices: kokoroVoices,
+    error: kokoroLastError
+  };
+}
+
+function rejectKokoroPending(error) {
+  kokoroPending.forEach((pending) => {
+    clearTimeout(pending.timeout);
+    pending.reject(error);
+  });
+  kokoroPending.clear();
+}
+
+function resetKokoroWorker(error) {
+  const failure = error instanceof Error ? error : new Error(String(error || "Kokoro worker stopped"));
+  kokoroLastError = failure.message;
+  kokoroReady = false;
+  kokoroWorker = null;
+  kokoroStdoutBuffer = "";
+  if (kokoroStartupReject) kokoroStartupReject(failure);
+  kokoroStartupPromise = null;
+  kokoroStartupResolve = null;
+  kokoroStartupReject = null;
+  rejectKokoroPending(failure);
+}
+
+function handleKokoroMessage(message) {
+  if (message?.type === "ready") {
+    kokoroReady = true;
+    kokoroLastError = "";
+    if (kokoroStartupResolve) kokoroStartupResolve(message);
+    kokoroStartupPromise = null;
+    kokoroStartupResolve = null;
+    kokoroStartupReject = null;
+    return;
+  }
+  const pending = kokoroPending.get(String(message?.id || ""));
+  if (!pending) return;
+  kokoroPending.delete(String(message.id));
+  clearTimeout(pending.timeout);
+  if (message.ok) pending.resolve(message);
+  else pending.reject(new Error(message.error || "Kokoro speech generation failed"));
+}
+
+function startKokoroWorker() {
+  if (kokoroWorker && kokoroReady) return Promise.resolve();
+  if (kokoroStartupPromise) return kokoroStartupPromise;
+  const status = kokoroStatus();
+  if (!status.available) {
+    return Promise.reject(new Error("Kokoro is not installed. Run setup-kokoro-tts.ps1 first."));
+  }
+
+  kokoroStartupPromise = new Promise((resolve, reject) => {
+    kokoroStartupResolve = resolve;
+    kokoroStartupReject = reject;
+  });
+  const startupTimeout = setTimeout(() => {
+    if (!kokoroReady) {
+      kokoroWorker?.kill();
+      resetKokoroWorker(new Error("Kokoro model loading timed out"));
+    }
+  }, 30_000);
+
+  kokoroWorker = spawn(kokoroPython, ["-u", kokoroWorkerPath], {
+    cwd: root,
+    windowsHide: true,
+    env: {
+      ...process.env,
+      KOKORO_RUNTIME: kokoroRuntimePath,
+      KOKORO_MODEL_DIR: kokoroModelPath
+    }
+  });
+  let stderr = "";
+  kokoroWorker.stdout.on("data", (chunk) => {
+    kokoroStdoutBuffer += chunk.toString();
+    const lines = kokoroStdoutBuffer.split(/\r?\n/);
+    kokoroStdoutBuffer = lines.pop() || "";
+    lines.filter(Boolean).forEach((line) => {
+      try {
+        handleKokoroMessage(JSON.parse(line));
+      } catch {
+        kokoroLastError = `Invalid Kokoro worker response: ${line.slice(0, 180)}`;
+      }
+    });
+    if (kokoroReady) clearTimeout(startupTimeout);
+  });
+  kokoroWorker.stderr.on("data", (chunk) => {
+    stderr += chunk.toString();
+  });
+  kokoroWorker.on("error", (error) => {
+    clearTimeout(startupTimeout);
+    resetKokoroWorker(error);
+  });
+  kokoroWorker.on("close", (code) => {
+    clearTimeout(startupTimeout);
+    if (kokoroWorker || !kokoroReady) {
+      resetKokoroWorker(new Error(stderr.trim() || `Kokoro worker exited with code ${code}`));
+    }
+  });
+  return kokoroStartupPromise;
+}
+
+async function generateKokoroSpeech(text, options = {}) {
+  await startKokoroWorker();
+  fs.mkdirSync(piperCachePath, { recursive: true });
+  const id = String(++kokoroRequestId);
+  const outputPath = path.join(piperCachePath, `kokoro-${Date.now()}-${id}.wav`);
+  const requestedVoiceId = Number.parseInt(options.voiceId, 10);
+  const voiceId = Number.isFinite(requestedVoiceId) ? Math.max(0, Math.min(10, requestedVoiceId)) : 10;
+  const rate = Math.max(0.75, Math.min(1.25, Number(options.rate) || 1));
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      kokoroPending.delete(id);
+      reject(new Error("Kokoro speech generation timed out"));
+    }, 90_000);
+    kokoroPending.set(id, { resolve, reject, timeout });
+    kokoroWorker.stdin.write(`${JSON.stringify({ id, text, rate, sid: voiceId, outputPath })}\n`, (error) => {
+      if (!error) return;
+      clearTimeout(timeout);
+      kokoroPending.delete(id);
+      reject(error);
+    });
+  });
+  try {
+    return prependWavSilence(fs.readFileSync(outputPath), 240);
+  } finally {
+    fs.unlink(outputPath, () => {});
+  }
+}
+
+process.on("exit", () => {
+  if (kokoroWorker) kokoroWorker.kill();
+});
+
 function prependWavSilence(buffer, silenceMs = 250) {
   try {
     if (!Buffer.isBuffer(buffer) || buffer.length < 44) return buffer;
@@ -611,6 +790,7 @@ const server = http.createServer(async (req, res) => {
         participants: roomChanged ? [] : playerSession.participants,
         answers: parsed.resetAnswers || promptChanged ? [] : playerSession.answers,
         actions: parsed.resetAnswers || promptChanged ? [] : playerSession.actions,
+        queuedActions: roomChanged || parsed.resetQueuedActions ? [] : playerSession.queuedActions,
         removedNames: roomChanged ? [] : playerSession.removedNames,
         promptPublishedAt,
         promptAcceptAfter,
@@ -661,6 +841,11 @@ const server = http.createServer(async (req, res) => {
         if (!playerId && name && String(action.playerName || "").toLowerCase() === name) return false;
         return true;
       });
+      playerSession.queuedActions = playerSession.queuedActions.filter((action) => {
+        if (playerId && action.playerId === playerId) return false;
+        if (!playerId && name && String(action.playerName || "").toLowerCase() === name) return false;
+        return true;
+      });
       playerSession.players = playerSession.players.filter((player) => {
         if (!name) return true;
         return String(player || "").toLowerCase() !== name;
@@ -678,7 +863,8 @@ const server = http.createServer(async (req, res) => {
       const actions = playerSession.actions.filter((action) => {
         return (!roomCode || action.roomCode === roomCode) && (!promptId || action.promptId === promptId);
       });
-      return sendJson(res, 200, { ok: true, roomCode, promptId, answers, actions, participants: playerSession.participants });
+      const queuedActions = playerSession.queuedActions.filter((action) => !roomCode || action.roomCode === roomCode);
+      return sendJson(res, 200, { ok: true, roomCode, promptId, answers, actions, queuedActions, participants: playerSession.participants });
     }
 
     if (url.pathname === "/api/player-answer" && req.method === "POST") {
@@ -728,11 +914,16 @@ const server = http.createServer(async (req, res) => {
       const action = sanitizeText(parsed.action, { maxLength: 180 });
       const playerId = String(parsed.playerId || "").trim();
       const postedPlayerName = sanitizePlayerName(parsed.playerName);
+      const queued = Boolean(parsed.queued);
       if (!roomCode || roomCode !== playerSession.roomCode) return sendJson(res, 400, { ok: false, error: "Invalid room code" });
-      if (!promptId || promptId !== playerSession.prompt?.id) return sendJson(res, 400, { ok: false, error: "Prompt is no longer active" });
-      if (playerSession.status !== "open" || !playerSession.prompt?.accepting) return sendJson(res, 409, { ok: false, error: "Prompt is not accepting actions" });
-      if (Date.now() < Number(playerSession.promptAcceptAfter || 0)) return sendJson(res, 409, { ok: false, error: "Prompt is still locking in" });
-      if (!playerSession.prompt?.allowPlayerActions && !playerSession.prompt?.actionOnly) return sendJson(res, 409, { ok: false, error: "This prompt is not accepting actions" });
+      if (queued) {
+        if (!playerSession.allowQueuedPlayerActions) return sendJson(res, 409, { ok: false, error: "Action queue is not available yet" });
+      } else {
+        if (!promptId || promptId !== playerSession.prompt?.id) return sendJson(res, 400, { ok: false, error: "Prompt is no longer active" });
+        if (playerSession.status !== "open" || !playerSession.prompt?.accepting) return sendJson(res, 409, { ok: false, error: "Prompt is not accepting actions" });
+        if (Date.now() < Number(playerSession.promptAcceptAfter || 0)) return sendJson(res, 409, { ok: false, error: "Prompt is still locking in" });
+        if (!playerSession.prompt?.allowPlayerActions && !playerSession.prompt?.actionOnly) return sendJson(res, 409, { ok: false, error: "This prompt is not accepting actions" });
+      }
       if (!action) return sendJson(res, 400, { ok: false, error: "Missing action" });
       const participant = playerSession.participants.find((player) => player.id === playerId);
       if (!participant) return sendJson(res, 403, { ok: false, error: "Player is not in this room" });
@@ -752,20 +943,37 @@ const server = http.createServer(async (req, res) => {
         });
       }
       const priorIndex = playerSession.actions.findIndex((entry) => entry.promptId === promptId && entry.playerId === playerId);
-      if (priorIndex >= 0 && !playerSession.prompt?.actionOnly) return sendJson(res, 409, { ok: false, error: "Action already submitted for this turn" });
+      if (!queued && priorIndex >= 0 && !playerSession.prompt?.actionOnly) return sendJson(res, 409, { ok: false, error: "Action already submitted for this turn" });
+      if (queued && playerSession.queuedActions.some((entry) => entry.playerId === playerId)) {
+        return sendJson(res, 409, { ok: false, error: "You already have an action queued" });
+      }
       const entry = {
         id: `player-action-${now}-${Math.random().toString(16).slice(2)}`,
         roomCode,
-        promptId,
+        promptId: promptId || playerSession.prompt?.id || "",
         action,
         playerId,
         playerName,
-        submittedAt: now
+        submittedAt: now,
+        queued
       };
-      playerSession.actions.push(entry);
+      if (queued) playerSession.queuedActions.push(entry);
+      else playerSession.actions.push(entry);
       participant.lastActionAt = now;
       playerSession.updatedAt = Date.now();
       return sendJson(res, 200, { ok: true, action: entry, cooldownUntil: now + cooldownMs, cooldownMs });
+    }
+
+    if (url.pathname === "/api/player-action-consume" && req.method === "POST") {
+      const body = await readBody(req);
+      const parsed = body ? JSON.parse(body) : {};
+      const roomCode = String(parsed.roomCode || "").trim().toUpperCase();
+      const actionId = String(parsed.actionId || "").trim();
+      if (!roomCode || roomCode !== playerSession.roomCode) return sendJson(res, 400, { ok: false, error: "Invalid room code" });
+      const before = playerSession.queuedActions.length;
+      playerSession.queuedActions = playerSession.queuedActions.filter((entry) => entry.id !== actionId);
+      playerSession.updatedAt = Date.now();
+      return sendJson(res, 200, { ok: true, consumed: before !== playerSession.queuedActions.length });
     }
 
     if (url.pathname === "/api/ollama/tags" && req.method === "GET") {
@@ -834,7 +1042,9 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/tts/status" && req.method === "GET") {
-      return sendJson(res, 200, { ok: true, provider: "piper", ...piperStatus() });
+      const provider = url.searchParams.get("provider") === "kokoro" ? "kokoro" : "piper";
+      const status = provider === "kokoro" ? kokoroStatus() : piperStatus();
+      return sendJson(res, 200, { ok: true, provider, ...status });
     }
 
     if (url.pathname === "/api/tts/speak" && req.method === "POST") {
@@ -842,7 +1052,10 @@ const server = http.createServer(async (req, res) => {
       const parsed = body ? JSON.parse(body) : {};
       const text = sanitizeText(parsed.text, { maxLength: 2500 });
       if (!text) return sendJson(res, 400, { ok: false, error: "Missing text" });
-      const audio = await generatePiperSpeech(text, { rate: parsed.rate });
+      const provider = parsed.provider === "kokoro" ? "kokoro" : "piper";
+      const audio = provider === "kokoro"
+        ? await generateKokoroSpeech(text, { rate: parsed.rate, voiceId: parsed.voiceId })
+        : await generatePiperSpeech(text, { rate: parsed.rate });
       res.writeHead(200, {
         "content-type": "audio/wav",
         "cache-control": "no-store",

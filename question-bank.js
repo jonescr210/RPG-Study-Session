@@ -188,7 +188,9 @@ Correct Answer: A`;
   }
 
   function parseQuestionBlock(block) {
-    const compact = cleanQuestionMarkup(block).replace(/\s+/g, " ").trim();
+    const cleaned = cleanQuestionMarkup(block).replace(/\s+/g, " ").trim();
+    const difficulty = parseQuestionDifficulty(cleaned);
+    const compact = stripQuestionDifficulty(cleaned);
     const answerMatch = compact.match(/\b(?:correct\s+answer|correct|answer|ans)\s*[:\-]\s*([A-H])(?:[\).:\-]|\b)/i)
       || compact.match(/\b(?:correct\s+answer|correct|answer|ans)\s*[:\-]\s*(.+?)\s*$/i);
     if (!answerMatch) return null;
@@ -197,7 +199,10 @@ Correct Answer: A`;
     const body = compact.slice(0, answerMatch.index).trim();
     const choicePattern = /\b([A-H])[\).\:\-]\s+/gi;
     const labels = [...body.matchAll(choicePattern)];
-    if (labels.length < 2) return parseTrueFalseQuestion(body, answerRaw) || parseFillQuestion(body, answerRaw);
+    if (labels.length < 2) {
+      const parsed = parseTrueFalseQuestion(body, answerRaw) || parseFillQuestion(body, answerRaw);
+      return parsed ? { ...parsed, difficulty } : null;
+    }
 
     const question = stripQuestionStem(body.slice(0, labels[0].index));
     const choices = labels.map((label, index) => {
@@ -225,8 +230,21 @@ Correct Answer: A`;
       answerKey: answerChoice.key,
       answerText: answerChoice.text,
       area: inferQuestionArea(question),
-      type: trueFalseType ? "true-false" : undefined
+      type: trueFalseType ? "true-false" : undefined,
+      difficulty
     };
+  }
+
+  function parseQuestionDifficulty(value) {
+    const match = String(value || "").match(/(?:^|\s)(?:difficulty|level)\s*[:\-]\s*(easy|medium|normal|hard)\b/i);
+    if (!match) return "medium";
+    return match[1].toLowerCase() === "normal" ? "medium" : match[1].toLowerCase();
+  }
+
+  function stripQuestionDifficulty(value) {
+    return String(value || "")
+      .replace(/^(?:difficulty|level)\s*[:\-]\s*(?:easy|medium|normal|hard)\b\s*/i, "")
+      .trim();
   }
 
   function parseTrueFalseQuestion(body, answerRaw) {
@@ -291,7 +309,9 @@ Correct Answer: A`;
 
   function cleanQuestionMarkup(value) {
     return String(value || "")
+      .replace(/_{3,}/g, "\uE000")
       .replace(/[*_`]/g, "")
+      .replace(/\uE000/g, "____")
       .replace(/^\s*[-+]\s+/gm, "")
       .replace(/\[(?:\d+|source[^\]]*)\]/gi, "")
       .trim();

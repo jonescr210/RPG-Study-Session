@@ -9,6 +9,8 @@ const playerState = {
   promptArmedAt: 0,
   submittedPromptId: "",
   submittedActionPromptId: "",
+  queuedActionId: "",
+  queuedActionSignature: "",
   pollTimer: null,
   promptTimer: null,
   actionCooldownTimer: null,
@@ -18,7 +20,9 @@ const playerState = {
   hapticsSupported: "vibrate" in navigator && typeof navigator.vibrate === "function",
   hapticsEnabled: localStorage.getItem("studyAdventureHaptics") === "true",
   lastTimerBuzzKey: "",
-  lastTimeoutBuzzPromptId: ""
+  lastTimeoutBuzzPromptId: "",
+  queryArrivalTimer: null,
+  answerConfirmedTimer: null
 };
 
 const PLAYER_PROMPT_ARM_DELAY_MS = 1200;
@@ -36,6 +40,7 @@ const playerEls = {
   playerHapticsToggle: document.getElementById("playerHapticsToggle"),
   playerHapticsNote: document.getElementById("playerHapticsNote"),
   playerVitals: document.getElementById("playerVitals"),
+  playerQueuedActionPanel: document.getElementById("playerQueuedActionPanel"),
   playerPromptArea: document.getElementById("playerPromptArea")
 };
 
@@ -152,7 +157,9 @@ function renderSession(session) {
   playerEls.playerMissionTitle.textContent = session.title || "Awaiting Mission";
   playerEls.playerRoomBadge.textContent = playerState.roomCode;
   renderVitals(session);
+  renderQueuedActionPanel(session);
   const prompt = session.prompt;
+  syncPlayerAtmosphere(session, prompt);
   if (session.status === "lobby") {
     renderWaiting("You are in the squad lobby. Waiting for Mission Control to deploy.");
     return;
@@ -189,12 +196,103 @@ function renderWaiting(message) {
   stopPromptTimer();
   stopActionCooldownTimer();
   playerState.renderedPromptSignature = `waiting:${message}`;
+  const submitted = /^Answer submitted/i.test(message);
   playerEls.playerPromptArea.innerHTML = `
-    <div class="player-waiting">
+    <div class="player-waiting ${submitted ? "submitted-waiting" : ""}">
       <span class="signal-bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
       <p>${escapeHtml(message)}</p>
     </div>
   `;
+}
+
+function syncPlayerAtmosphere(session = {}, prompt = null) {
+  const resolving = session.status === "resolving" || Boolean(prompt && !prompt.accepting);
+  document.body.classList.toggle("player-boss-active", Boolean(prompt?.boss));
+  document.body.classList.toggle("player-emergency-active", prompt?.timer?.kind === "emergency");
+  document.body.classList.toggle("player-action-active", Boolean(prompt?.actionOnly));
+  document.body.classList.toggle("player-briefing-active", session.status === "briefing" || session.status === "lobby");
+  document.body.classList.toggle("player-resolving", resolving);
+}
+
+function triggerPlayerQueryArrival(prompt = {}) {
+  window.clearTimeout(playerState.queryArrivalTimer);
+  document.body.classList.remove("player-query-arrival");
+  void document.body.offsetWidth;
+  document.body.classList.add("player-query-arrival");
+  playerState.queryArrivalTimer = window.setTimeout(() => {
+    document.body.classList.remove("player-query-arrival");
+    playerState.queryArrivalTimer = null;
+  }, prompt.boss ? 1250 : 900);
+}
+
+function triggerPlayerAnswerConfirmed() {
+  window.clearTimeout(playerState.answerConfirmedTimer);
+  document.body.classList.remove("player-answer-confirmed");
+  void document.body.offsetWidth;
+  document.body.classList.add("player-answer-confirmed");
+  playerState.answerConfirmedTimer = window.setTimeout(() => {
+    document.body.classList.remove("player-answer-confirmed");
+    playerState.answerConfirmedTimer = null;
+  }, 1250);
+}
+
+function renderQueuedActionPanel(session = {}) {
+  const panel = playerEls.playerQueuedActionPanel;
+  if (!panel) return;
+  const prompt = session.prompt;
+  const available = Boolean(session.allowQueuedPlayerActions && !prompt?.actionOnly);
+  if (!available) {
+    panel.hidden = true;
+    panel.innerHTML = "";
+    playerState.queuedActionSignature = "hidden";
+    return;
+  }
+
+  const queued = Array.isArray(session.queuedActions)
+    ? session.queuedActions.find((entry) => entry.playerId === playerState.playerId || sameName(entry.playerName, playerState.playerName))
+    : null;
+  const cooldown = actionCooldownInfo(session);
+  const incapacitated = Boolean(playerState.lastVitals?.incapacitated);
+  const enabled = !queued && !incapacitated && cooldown.remainingMs <= 0;
+  const statusText = queued
+    ? "Action queued. It will deploy at the next safe opening."
+    : incapacitated
+      ? "Incapacitated players cannot queue actions."
+      : cooldown.remainingMs > 0
+        ? `Action recharging: ${formatCooldown(cooldown.remainingMs)} remaining.`
+        : "Queue an action before or after answering. It will not count as an answer.";
+  const signature = JSON.stringify({ available, queued: queued?.id || "", enabled, incapacitated, cooling: cooldown.remainingMs > 0 });
+  if (playerState.queuedActionSignature === signature) return;
+  playerState.queuedActionSignature = signature;
+  playerState.queuedActionId = queued?.id || "";
+  panel.hidden = false;
+  panel.innerHTML = `
+    <form id="playerQueuedActionForm" class="player-action-form player-queued-action-form">
+      <label>
+        Queue Player Action
+        <div class="player-action-row">
+          <input id="playerQueuedActionInput" type="text" maxlength="180" autocomplete="off" placeholder="Search, inspect, brace, help..." ${enabled ? "" : "disabled"}>
+          <button type="submit" ${enabled ? "" : "disabled"}>Queue</button>
+        </div>
+        <button id="playerQueuedAutoActionBtn" class="player-auto-action-btn" type="button" ${enabled ? "" : "disabled"}>Act for me!</button>
+      </label>
+      <div id="playerQueuedActionStatus" class="player-submit-status">${escapeHtml(statusText)}</div>
+    </form>
+  `;
+  document.getElementById("playerQueuedActionForm")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitQueuedAction(document.getElementById("playerQueuedActionInput")?.value.trim() || "");
+  });
+  document.getElementById("playerQueuedAutoActionBtn")?.addEventListener("click", () => {
+    const action = randomPlayerGeneratedAction(currentAutoActionCategory(), {
+      name: playerState.playerName || "Operator",
+      areaName: prompt?.areaName || "the active area",
+      challengeLabel: prompt?.challengeLabel || "Mission"
+    });
+    const input = document.getElementById("playerQueuedActionInput");
+    if (input) input.value = action;
+    submitQueuedAction(action);
+  });
 }
 
 function renderPrompt(prompt, enabled, note, session = {}) {
@@ -237,7 +335,7 @@ function renderPrompt(prompt, enabled, note, session = {}) {
     : prompt.mode === "multiple"
     ? `<div class="player-choice-grid">${prompt.choices.map((choice) => `<button class="playerChoiceBtn" type="button" data-answer="${choice.key}" data-prompt-id="${escapeAttribute(prompt.id)}" ${controlsEnabled ? "" : "disabled"}>${choice.key}<span>${escapeHtml(choice.text)}</span></button>`).join("")}</div>`
     : `<form id="playerFillForm" class="player-fill-form" data-prompt-id="${escapeAttribute(prompt.id)}"><input id="playerFillInput" type="text" placeholder="Type your answer" ${controlsEnabled ? "" : "disabled"}><button type="submit" ${controlsEnabled ? "" : "disabled"}>Submit</button></form>`;
-  const actionForm = prompt.allowPlayerActions ? `
+  const actionForm = prompt.allowPlayerActions && prompt.actionOnly ? `
     <form id="playerActionForm" class="player-action-form" data-action-base-enabled="${actionBaseEnabled ? "true" : "false"}" data-action-only="${prompt.actionOnly ? "true" : "false"}" data-cooldown-until="${actionCooldown.cooldownUntil}" data-cooldown-ms="${actionCooldown.cooldownMs}">
       <label>
         Player Action
@@ -307,6 +405,7 @@ function renderPrompt(prompt, enabled, note, session = {}) {
     });
   }
   if (isNewPrompt && prompt.timer) vibratePlayer(prompt.timer.kind === "emergency" ? "emergency-start" : "timer-start");
+  if (isNewPrompt) triggerPlayerQueryArrival(prompt);
   startPromptTimer(prompt.timer);
   startActionCooldownTimer();
 }
@@ -344,6 +443,7 @@ function startPromptTimer(timer) {
 function stopPromptTimer() {
   if (playerState.promptTimer) window.clearInterval(playerState.promptTimer);
   playerState.promptTimer = null;
+  document.body.classList.remove("player-time-critical", "player-time-final");
 }
 
 function startActionCooldownTimer() {
@@ -414,6 +514,8 @@ function updatePromptTimer(timer) {
   card.classList.toggle("critical", seconds <= 5);
   card.classList.toggle("final-seconds", seconds <= 3);
   card.classList.toggle("paused", Boolean(timer.paused));
+  document.body.classList.toggle("player-time-critical", seconds > 0 && seconds <= 10 && !timer.paused);
+  document.body.classList.toggle("player-time-final", seconds > 0 && seconds <= 3 && !timer.paused);
   updateTimerHaptics(timer, seconds);
 }
 
@@ -470,7 +572,8 @@ function renderVitals(session) {
 
   if (playerEls.playerVitals) {
     playerEls.playerVitals.className = classNames.join(" ");
-    playerEls.playerVitals.innerHTML = `<strong>${hp} HP</strong><span>${escapeHtml(statusText)}</span>`;
+    const points = Math.max(0, Math.round(Number(vitals.points) || 0));
+    playerEls.playerVitals.innerHTML = `<strong>${hp} HP</strong><span>${escapeHtml(statusText)}</span><b class="player-vitals-points">${points} PTS</b>`;
     if (tookDamage) {
       playerEls.playerVitals.classList.remove("damage-flash");
       void playerEls.playerVitals.offsetWidth;
@@ -585,6 +688,7 @@ function submitAnswer(answer, expectedPromptId = playerState.promptId) {
     .then(({ ok, payload }) => {
       if (!ok || !payload.ok) throw new Error(payload.error || "Answer rejected.");
       playerState.submittedPromptId = playerState.promptId;
+      triggerPlayerAnswerConfirmed();
       renderWaiting("Answer submitted. Awaiting Mission Control.");
     })
     .catch((error) => {
@@ -662,6 +766,47 @@ function submitAction(action, expectedPromptId = playerState.promptId) {
     })
     .catch((error) => {
       if (status) status.textContent = error.message || "Could not send action.";
+    });
+}
+
+function submitQueuedAction(action) {
+  const cleanAction = sanitizeText(action, { maxLength: 180 });
+  const status = document.getElementById("playerQueuedActionStatus");
+  if (!cleanAction || playerState.queuedActionId) return;
+  if (playerState.lastVitals?.incapacitated) {
+    if (status) status.textContent = "You are incapacitated and cannot act until revived.";
+    return;
+  }
+  if (status) status.textContent = "Queueing action...";
+  fetch("/api/player-action", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      roomCode: playerState.roomCode,
+      playerId: playerState.playerId,
+      playerName: playerState.playerName,
+      promptId: playerState.promptId,
+      action: cleanAction,
+      queued: true,
+      clientSentAt: Date.now()
+    })
+  })
+    .then((response) => response.json().then((payload) => ({ ok: response.ok, payload })))
+    .then(({ ok, payload }) => {
+      if (!ok || !payload.ok) throw new Error(payload.error || "Action rejected.");
+      playerState.queuedActionId = payload.action?.id || "queued";
+      playerState.localActionCooldownUntil = Number(payload.cooldownUntil) || Date.now() + (Number(payload.cooldownMs) || 120000);
+      playerState.queuedActionSignature = "";
+      if (status) status.textContent = "Action queued. It will deploy at the next safe opening.";
+      const input = document.getElementById("playerQueuedActionInput");
+      const form = document.getElementById("playerQueuedActionForm");
+      if (input) input.disabled = true;
+      form?.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+      vibratePlayer("confirm");
+      pollSession();
+    })
+    .catch((error) => {
+      if (status) status.textContent = error.message || "Could not queue action.";
     });
 }
 

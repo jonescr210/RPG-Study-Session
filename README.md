@@ -54,9 +54,15 @@ The local model creates mission briefings, room descriptions, consequences, acti
 - `question-bank.js` - Question parsing and demo question support.
 - `local-dm-prompts.js` - Prompt builders for local AI narration.
 - `action-rooms.js` - Action-driven room types and room entity helpers.
-- `tts-manager.js` - Browser/Piper text-to-speech manager.
+- `tts-manager.js` - Browser, Piper, and Kokoro text-to-speech manager.
+- `kokoro-worker.py` - Keeps the local Kokoro voice model loaded between narration requests.
 - `shared-data.js` - Shared names, action banks, and profanity filtering.
+- `TRANSFER_SUMMARY.md` - Current development handoff, architecture notes, known risks, and next implementation steps.
 
 ## Notes
+
+### Optional Kokoro narration
+
+Kokoro provides higher-quality local narration than the browser voice while remaining fully offline. Run `setup-kokoro-tts.ps1` from PowerShell once, restart the Study Adventure server, then select **Local Kokoro** and a voice on the setup screen. The downloaded runtime and model are stored under `tts/kokoro/` and are intentionally excluded from Git because they use roughly 700 MB on disk.
 
 This is a local-first classroom tool. Runtime files such as logs, saved question sets, local voice models, checkpoints, and generated session data are ignored by Git so the repo stays clean for portfolio use.
