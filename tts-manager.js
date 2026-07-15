@@ -21,6 +21,15 @@
     let synthesisQueue = Promise.resolve();
     const preparedClips = new Map();
     const maxPreparedClips = 10;
+    const TTS_NETWORK_TIMEOUT_MS = 30_000;
+    const TTS_PLAYBACK_TIMEOUT_MS = 45_000;
+
+    function fetchWithTimeout(resource, requestOptions = {}, timeoutMs = TTS_NETWORK_TIMEOUT_MS) {
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => controller.abort(), Math.max(1, Number(timeoutMs) || TTS_NETWORK_TIMEOUT_MS));
+      return fetch(resource, { ...requestOptions, signal: controller.signal })
+        .finally(() => window.clearTimeout(timer));
+    }
 
     function notifyPlaybackStart() {
       if (playbackActive) return;
@@ -298,7 +307,7 @@
     }
 
     function fetchLocalTtsStatus(provider) {
-      return fetch(`/api/tts/status?provider=${encodeURIComponent(provider)}`, { cache: "no-store" })
+      return fetchWithTimeout(`/api/tts/status?provider=${encodeURIComponent(provider)}`, { cache: "no-store" }, 8_000)
         .then((response) => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)));
     }
 
@@ -342,7 +351,21 @@
     }
 
     function waitForPlayback(playback) {
-      return Promise.resolve(playback || state.ttsLastPlaybackPromise || Promise.resolve()).catch(() => {});
+      const active = Promise.resolve(playback || state.ttsLastPlaybackPromise || Promise.resolve()).catch(() => {});
+      return new Promise((resolve) => {
+        let settled = false;
+        const complete = () => {
+          if (settled) return;
+          settled = true;
+          window.clearTimeout(timeout);
+          resolve();
+        };
+        const timeout = window.setTimeout(() => {
+          stop();
+          complete();
+        }, TTS_PLAYBACK_TIMEOUT_MS);
+        active.then(complete, complete);
+      });
     }
 
     function waitForPresentationStart(playback) {
@@ -410,7 +433,7 @@
     }
 
     function requestLocalSpeech(text, config) {
-      return fetch("/api/tts/speak", {
+      return fetchWithTimeout("/api/tts/speak", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({

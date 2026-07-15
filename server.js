@@ -2,6 +2,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const zlib = require("zlib");
 const { spawn } = require("child_process");
 const sharedData = require("./shared-data.js");
 
@@ -11,10 +12,17 @@ const feedPath = path.join(root, "dm-feed.json");
 const answerPath = path.join(root, "dm-answer.json");
 const questionSetsPath = path.join(root, "question-sets.json");
 const musicPresetsPath = path.join(root, "music-presets.json");
+const serverLogDirectory = path.join(root, "logs");
+const serverLogPath = path.join(serverLogDirectory, "server-debug.log");
+const SERVER_LOG_MAX_BYTES = 2 * 1024 * 1024;
+const SERVER_LOG_ROTATIONS = 3;
 const ollamaHost = process.env.OLLAMA_HOST || "http://localhost:11434";
 const lmStudioHost = process.env.LM_STUDIO_HOST || "http://127.0.0.1:1234";
 const DEFAULT_PLAYER_ACTION_COOLDOWN_MS = 120_000;
 const PLAYER_PROMPT_SERVER_ARM_MS = 2_000;
+const PLAYER_CLASS_IDS = ["soldier", "medic", "scout", "enforcer", "engineer", "tactician"];
+const EXTERNAL_REQUEST_TIMEOUT_MS = 60_000;
+const STATUS_REQUEST_TIMEOUT_MS = 10_000;
 const defaultPiperExePath = path.join(root, "tts", "piper", process.platform === "win32" ? "piper.exe" : "piper");
 const defaultPiperModelPath = path.join(root, "tts", "voices", "en_GB-northern_english_male-medium.onnx");
 const piperExePath = process.env.PIPER_EXE || defaultPiperExePath;
@@ -47,6 +55,89 @@ let kokoroStdoutBuffer = "";
 let kokoroLastError = "";
 let kokoroRequestId = 0;
 const kokoroPending = new Map();
+let serverRequestCounter = 0;
+const traceThrottle = new Map();
+
+function rotateServerLogIfNeeded() {
+  try {
+    if (!fs.existsSync(serverLogPath) || fs.statSync(serverLogPath).size < SERVER_LOG_MAX_BYTES) return;
+    for (let index = SERVER_LOG_ROTATIONS; index >= 1; index -= 1) {
+      const source = index === 1 ? serverLogPath : `${serverLogPath}.${index - 1}`;
+      const destination = `${serverLogPath}.${index}`;
+      if (!fs.existsSync(source)) continue;
+      if (fs.existsSync(destination)) fs.rmSync(destination, { force: true });
+      fs.renameSync(source, destination);
+    }
+  } catch (error) {
+    console.error(`[server-trace] log rotation failed: ${error.message || error}`);
+  }
+}
+
+function serverTrace(event, details = {}, level = "info") {
+  const entry = {
+    at: new Date().toISOString(),
+    level,
+    event,
+    pid: process.pid,
+    ...details
+  };
+  const line = JSON.stringify(entry);
+  try {
+    fs.mkdirSync(serverLogDirectory, { recursive: true });
+    rotateServerLogIfNeeded();
+    fs.appendFileSync(serverLogPath, `${line}\n`, "utf8");
+  } catch (error) {
+    console.error(`[server-trace] log write failed: ${error.message || error}`);
+  }
+  const announce = `[server-trace] ${entry.at} ${level.toUpperCase()} ${event}${details.message ? ` | ${details.message}` : ""}`;
+  if (level === "error") console.error(announce);
+  else if (level === "warn") console.warn(announce);
+  else console.log(announce);
+  return entry;
+}
+
+function serverTraceThrottled(key, intervalMs, event, details = {}, level = "warn") {
+  const now = Date.now();
+  if (now - Number(traceThrottle.get(key) || 0) < intervalMs) return null;
+  traceThrottle.set(key, now);
+  return serverTrace(event, details, level);
+}
+
+function readServerTrace(limit = 200) {
+  try {
+    const lines = fs.readFileSync(serverLogPath, "utf8").trim().split(/\r?\n/).filter(Boolean);
+    return lines.slice(-Math.max(1, Math.min(1000, Number(limit) || 200))).map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return { at: "", level: "error", event: "trace.parse_failed", message: line.slice(0, 500) };
+      }
+    });
+  } catch {
+    return [];
+  }
+}
+
+function sessionTraceSummary() {
+  return {
+    roomCode: playerSession.roomCode || "",
+    sessionStatus: playerSession.status || "",
+    promptId: playerSession.prompt?.id || "",
+    promptAccepting: Boolean(playerSession.prompt?.accepting),
+    participants: playerSession.participants.length,
+    answers: playerSession.answers.length,
+    actions: playerSession.actions.length,
+    revision: Number(playerSession.revision) || 0,
+    hostRevision: Number(playerSession.hostRevision) || 0
+  };
+}
+
+function fetchWithTimeout(resource, options = {}, timeoutMs = EXTERNAL_REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(1, Number(timeoutMs) || EXTERNAL_REQUEST_TIMEOUT_MS));
+  return fetch(resource, { ...options, signal: controller.signal })
+    .finally(() => clearTimeout(timer));
+}
 
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
@@ -58,13 +149,77 @@ const contentTypes = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
   ".wav": "audio/wav",
   ".mp3": "audio/mpeg",
   ".ogg": "audio/ogg",
   ".m4a": "audio/mp4",
   ".aac": "audio/aac",
-  ".flac": "audio/flac"
+  ".flac": "audio/flac",
+  ".mp4": "video/mp4",
+  ".webm": "video/webm"
 };
+
+const streamableMediaExtensions = new Set([
+  ".wav",
+  ".mp3",
+  ".ogg",
+  ".m4a",
+  ".aac",
+  ".flac",
+  ".mp4",
+  ".webm"
+]);
+
+const compressibleStaticExtensions = new Set([
+  ".html",
+  ".css",
+  ".js",
+  ".json",
+  ".md",
+  ".svg"
+]);
+
+function staticFileEtag(stats) {
+  return `W/"${stats.size.toString(16)}-${Math.trunc(stats.mtimeMs).toString(16)}"`;
+}
+
+function staticRequestIsFresh(req, etag, modifiedAtMs) {
+  const ifNoneMatch = String(req.headers["if-none-match"] || "").trim();
+  if (ifNoneMatch) {
+    return ifNoneMatch === "*" || ifNoneMatch.split(",").some((value) => value.trim() === etag);
+  }
+  const ifModifiedSince = String(req.headers["if-modified-since"] || "").trim();
+  if (!ifModifiedSince) return false;
+  const cachedAt = Date.parse(ifModifiedSince);
+  if (!Number.isFinite(cachedAt)) return false;
+  return Math.trunc(modifiedAtMs / 1000) <= Math.trunc(cachedAt / 1000);
+}
+
+function parseByteRange(rangeHeader, size) {
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(String(rangeHeader || "").trim());
+  if (!match || size <= 0) return { invalid: true };
+  const startText = match[1];
+  const endText = match[2];
+  if (!startText && !endText) return { invalid: true };
+
+  let start;
+  let end;
+  if (!startText) {
+    const suffixLength = Number(endText);
+    if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) return { invalid: true };
+    start = Math.max(0, size - suffixLength);
+    end = size - 1;
+  } else {
+    start = Number(startText);
+    end = endText ? Number(endText) : size - 1;
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return { invalid: true };
+    end = Math.min(end, size - 1);
+  }
+
+  if (start < 0 || start >= size || end < start) return { invalid: true };
+  return { start, end };
+}
 
 let currentFeed = readFeed();
 let currentAnswer = readAnswer();
@@ -85,6 +240,8 @@ let playerSession = {
   actionCooldownMs: DEFAULT_PLAYER_ACTION_COOLDOWN_MS,
   promptPublishedAt: 0,
   promptAcceptAfter: 0,
+  revision: 0,
+  hostRevision: 0,
   updatedAt: Date.now()
 };
 
@@ -145,6 +302,16 @@ function writeMusicPresetStore(store = musicPresetStore) {
 }
 
 function sendJson(res, status, payload) {
+  if (status >= 400) {
+    serverTrace("http.rejected", {
+      requestId: res._traceRequestId || "",
+      method: res._traceMethod || "",
+      path: res._tracePath || "",
+      statusCode: status,
+      message: String(payload?.error || "Request rejected").slice(0, 500),
+      ...sessionTraceSummary()
+    }, status >= 500 ? "error" : "warn");
+  }
   const body = JSON.stringify(payload);
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
@@ -170,15 +337,23 @@ function publicPlayerSession() {
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let body = "";
+    const timeout = setTimeout(() => {
+      reject(new Error("Request body timed out"));
+      req.destroy();
+    }, 10_000);
+    const finish = (callback, value) => {
+      clearTimeout(timeout);
+      callback(value);
+    };
     req.on("data", (chunk) => {
       body += chunk;
       if (body.length > 5_000_000) {
-        reject(new Error("Request body too large"));
+        finish(reject, new Error("Request body too large"));
         req.destroy();
       }
     });
-    req.on("end", () => resolve(body));
-    req.on("error", reject);
+    req.on("end", () => finish(resolve, body));
+    req.on("error", (error) => finish(reject, error));
   });
 }
 
@@ -271,15 +446,22 @@ async function callOllama(payload) {
     ? Math.floor(requestedPredict)
     : null;
   const startedAt = Date.now();
+  const model = payload.model || "llama3.2:3b";
+  serverTrace("llm.started", {
+    provider: "ollama",
+    model,
+    promptChars: String(payload.prompt || "").length,
+    format: payload.format || "text"
+  });
   const options = {
     temperature: Number.isFinite(Number(payload.temperature)) ? Number(payload.temperature) : 0.75
   };
   if (numPredict) options.num_predict = numPredict;
-  const response = await fetch(`${ollamaHost}/api/generate`, {
+  const response = await fetchWithTimeout(`${ollamaHost}/api/generate`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      model: payload.model || "llama3.2:3b",
+      model,
       prompt: payload.prompt || "",
       stream: false,
       format: payload.format || undefined,
@@ -293,6 +475,13 @@ async function callOllama(payload) {
   const result = JSON.parse(body);
   result.server_duration_ms = Date.now() - startedAt;
   result.num_predict = numPredict;
+  serverTrace("llm.completed", {
+    provider: "ollama",
+    model,
+    durationMs: result.server_duration_ms,
+    responseChars: String(result.response || "").length,
+    numPredict
+  });
   return result;
 }
 
@@ -303,6 +492,12 @@ async function callLmStudio(payload) {
     : null;
   const startedAt = Date.now();
   const model = payload.model || "google/gemma-4-e4b";
+  serverTrace("llm.started", {
+    provider: "lmstudio",
+    model,
+    promptChars: String(payload.prompt || "").length,
+    format: payload.format || "text"
+  });
   const requestReasoning = lmStudioReasoningSetting(model);
   const requestBody = {
     model,
@@ -323,7 +518,7 @@ async function callLmStudio(payload) {
   };
   if (requestReasoning) requestBody.reasoning = requestReasoning;
   if (numPredict) requestBody.max_tokens = numPredict;
-  const response = await fetch(`${lmStudioHost}/v1/chat/completions`, {
+  const response = await fetchWithTimeout(`${lmStudioHost}/v1/chat/completions`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(requestBody)
@@ -341,7 +536,7 @@ async function callLmStudio(payload) {
   if (!cleaned && (reasoning || Number(result.usage?.reasoning_output_tokens) > 0 || Number(result.usage?.reasoning_tokens) > 0)) {
     throw new Error("LM Studio returned reasoning-only output. Select a non-thinking model or disable thinking for this model in LM Studio.");
   }
-  return {
+  const normalizedResult = {
     model: result.model || payload.model || "google/gemma-4-e4b",
     response: cleaned,
     total_duration: null,
@@ -349,20 +544,28 @@ async function callLmStudio(payload) {
     num_predict: numPredict,
     stats: result.usage || null
   };
+  serverTrace("llm.completed", {
+    provider: "lmstudio",
+    model: normalizedResult.model,
+    durationMs: normalizedResult.server_duration_ms,
+    responseChars: normalizedResult.response.length,
+    numPredict
+  });
+  return normalizedResult;
 }
 
 async function loadLmStudioModel(model) {
   const requestedModel = String(model || "").trim();
   if (!requestedModel) throw new Error("Missing model");
   const startedAt = Date.now();
-  const response = await fetch(`${lmStudioHost}/api/v1/models/load`, {
+  const response = await fetchWithTimeout(`${lmStudioHost}/api/v1/models/load`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       model: requestedModel,
       echo_load_config: true
     })
-  });
+  }, STATUS_REQUEST_TIMEOUT_MS);
   const body = await response.text();
   if (!response.ok) throw new Error(body || `LM Studio returned ${response.status}`);
   const parsed = body ? JSON.parse(body) : {};
@@ -673,6 +876,41 @@ function prependWavSilence(buffer, silenceMs = 250) {
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+    const requestId = `req-${++serverRequestCounter}`;
+    const requestStartedAt = Date.now();
+    res._traceRequestId = requestId;
+    res._traceMethod = req.method || "";
+    res._tracePath = url.pathname;
+    res.once("finish", () => {
+      const durationMs = Date.now() - requestStartedAt;
+      if (durationMs >= 2_000) {
+        serverTrace("http.slow", {
+          requestId,
+          method: req.method || "",
+          path: url.pathname,
+          status: res.statusCode,
+          durationMs,
+          ...sessionTraceSummary()
+        }, "warn");
+      }
+    });
+    req.once("aborted", () => {
+      serverTrace("http.aborted", {
+        requestId,
+        method: req.method || "",
+        path: url.pathname,
+        durationMs: Date.now() - requestStartedAt
+      }, "warn");
+    });
+
+    if (url.pathname === "/api/debug/server-log" && req.method === "GET") {
+      return sendJson(res, 200, {
+        ok: true,
+        logPath: serverLogPath,
+        session: sessionTraceSummary(),
+        entries: readServerTrace(url.searchParams.get("limit"))
+      });
+    }
 
     if (url.pathname === "/j" && req.method === "GET") {
       const room = String(url.searchParams.get("room") || "").trim().toUpperCase();
@@ -694,6 +932,12 @@ const server = http.createServer(async (req, res) => {
       if (!parsed.id) parsed.id = `feed-${Date.now()}`;
       currentFeed = parsed;
       fs.writeFileSync(feedPath, JSON.stringify(currentFeed, null, 2) + "\n");
+      serverTrace("dm.feed_updated", {
+        feedId: currentFeed.id,
+        hasQuestion: Boolean(currentFeed.question),
+        advanceRoom: Boolean(currentFeed.advanceRoom),
+        textChars: String(currentFeed.story || currentFeed.text || "").length
+      });
       return sendJson(res, 200, { ok: true, feed: currentFeed });
     }
 
@@ -707,6 +951,14 @@ const server = http.createServer(async (req, res) => {
       if (!parsed.id) parsed.id = `answer-${Date.now()}`;
       currentAnswer = parsed;
       fs.writeFileSync(answerPath, JSON.stringify(currentAnswer, null, 2) + "\n");
+      serverTrace("teacher.answer_received", {
+        answerId: currentAnswer.id,
+        promptId: currentAnswer.promptId || "",
+        source: currentAnswer.source || "",
+        questionIndex: currentAnswer.questionIndex ?? null,
+        nodeIndex: currentAnswer.nodeIndex ?? null,
+        timeout: Boolean(currentAnswer.timeout)
+      });
       return sendJson(res, 200, { ok: true, answer: currentAnswer });
     }
 
@@ -760,6 +1012,21 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/player-session" && req.method === "GET") {
+      const playerId = String(url.searchParams.get("playerId") || "").trim();
+      const participant = playerId ? playerSession.participants.find((entry) => entry.id === playerId) : null;
+      if (participant) {
+        const now = Date.now();
+        const heartbeatGapMs = Number(participant.lastSeenAt) ? now - Number(participant.lastSeenAt) : 0;
+        participant.lastSeenAt = now;
+        if (heartbeatGapMs >= 15_000) {
+          serverTrace("player.heartbeat_resumed", {
+            roomCode: playerSession.roomCode,
+            playerId: participant.id,
+            playerName: participant.name,
+            heartbeatGapMs
+          }, "warn");
+        }
+      }
       return sendJson(res, 200, publicPlayerSession());
     }
 
@@ -778,25 +1045,106 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const parsed = body ? JSON.parse(body) : {};
       const previousPromptId = playerSession.prompt?.id || "";
+      const previousStatus = playerSession.status || "";
       const nextPromptId = parsed.prompt?.id || "";
       const roomChanged = parsed.roomCode && parsed.roomCode !== playerSession.roomCode;
       const now = Date.now();
+      const incomingHostRevision = Math.max(0, Number(parsed.hostRevision) || 0);
+      const currentHostRevision = roomChanged ? 0 : Math.max(0, Number(playerSession.hostRevision) || 0);
+      if (!roomChanged && incomingHostRevision && incomingHostRevision <= currentHostRevision) {
+        serverTrace("session.publish_stale", {
+          roomCode: playerSession.roomCode,
+          incomingHostRevision,
+          currentHostRevision,
+          previousPromptId,
+          nextPromptId
+        }, "warn");
+        return sendJson(res, 409, { ok: false, stale: true, error: "Stale host update ignored", session: publicPlayerSession() });
+      }
+      const clearingPrompt = Object.prototype.hasOwnProperty.call(parsed, "prompt") && parsed.prompt === null;
+      const expectedPromptId = String(parsed.expectedPromptId || "");
+      const activePromptId = String(playerSession.prompt?.id || "");
+      if (!roomChanged && clearingPrompt && expectedPromptId && activePromptId && expectedPromptId !== activePromptId) {
+        serverTrace("session.prompt_clear_conflict", {
+          roomCode: playerSession.roomCode,
+          expectedPromptId,
+          activePromptId,
+          incomingHostRevision
+        }, "warn");
+        return sendJson(res, 409, { ok: false, conflict: true, error: "Prompt clear no longer matches active prompt", session: publicPlayerSession() });
+      }
       const promptChanged = Boolean(nextPromptId && nextPromptId !== previousPromptId);
       const promptPublishedAt = promptChanged ? now : Number(playerSession.promptPublishedAt || 0);
       const promptAcceptAfter = promptChanged ? now + PLAYER_PROMPT_SERVER_ARM_MS : Number(playerSession.promptAcceptAfter || 0);
       playerSession = {
         ...playerSession,
         ...parsed,
-        participants: roomChanged ? [] : playerSession.participants,
+        participants: roomChanged || parsed.resetParticipants ? [] : playerSession.participants,
         answers: parsed.resetAnswers || promptChanged ? [] : playerSession.answers,
         actions: parsed.resetAnswers || promptChanged ? [] : playerSession.actions,
         queuedActions: roomChanged || parsed.resetQueuedActions ? [] : playerSession.queuedActions,
         removedNames: roomChanged ? [] : playerSession.removedNames,
         promptPublishedAt,
         promptAcceptAfter,
+        revision: Math.max(0, Number(playerSession.revision) || 0) + 1,
+        hostRevision: Math.max(currentHostRevision, incomingHostRevision),
         updatedAt: now
       };
+      delete playerSession.expectedPromptId;
+      delete playerSession.resetParticipants;
+      serverTrace("session.published", {
+        roomCode: playerSession.roomCode,
+        roomChanged: Boolean(roomChanged),
+        previousStatus,
+        status: playerSession.status,
+        previousPromptId,
+        promptId: playerSession.prompt?.id || "",
+        promptChanged,
+        accepting: Boolean(playerSession.prompt?.accepting),
+        acceptAfter: Number(playerSession.promptAcceptAfter) || 0,
+        resetAnswers: Boolean(parsed.resetAnswers),
+        resetParticipants: Boolean(parsed.resetParticipants),
+        participants: playerSession.participants.length,
+        answers: playerSession.answers.length,
+        hostRevision: playerSession.hostRevision,
+        revision: playerSession.revision
+      });
       return sendJson(res, 200, { ok: true, session: publicPlayerSession() });
+    }
+
+    if (url.pathname === "/api/player-sync" && req.method === "GET") {
+      const roomCode = String(url.searchParams.get("roomCode") || "").trim().toUpperCase();
+      const promptId = String(url.searchParams.get("promptId") || "");
+      if (!roomCode || roomCode !== playerSession.roomCode) {
+        serverTraceThrottled(`sync-room:${roomCode}:${playerSession.roomCode}`, 5_000, "sync.room_mismatch", {
+          requestedRoomCode: roomCode,
+          activeRoomCode: playerSession.roomCode,
+          requestedPromptId: promptId,
+          activePromptId: playerSession.prompt?.id || ""
+        });
+        return sendJson(res, 409, { ok: false, error: "Session room changed", session: publicPlayerSession() });
+      }
+      if (promptId && playerSession.prompt?.id && promptId !== playerSession.prompt.id) {
+        serverTraceThrottled(`sync-prompt:${promptId}:${playerSession.prompt.id}`, 5_000, "sync.prompt_mismatch", {
+          roomCode,
+          requestedPromptId: promptId,
+          activePromptId: playerSession.prompt.id,
+          status: playerSession.status,
+          accepting: Boolean(playerSession.prompt.accepting)
+        });
+      }
+      const answers = playerSession.answers.filter((answer) => !promptId || answer.promptId === promptId);
+      const actions = playerSession.actions.filter((action) => !promptId || action.promptId === promptId);
+      const queuedActions = playerSession.queuedActions.filter((action) => action.roomCode === roomCode);
+      return sendJson(res, 200, {
+        ok: true,
+        session: publicPlayerSession(),
+        promptId,
+        answers,
+        actions,
+        queuedActions,
+        participants: playerSession.participants
+      });
     }
 
     if (url.pathname === "/api/player-join" && req.method === "POST") {
@@ -809,11 +1157,47 @@ const server = http.createServer(async (req, res) => {
       if (!name) return sendJson(res, 400, { ok: false, error: "Missing player name" });
       if (playerSession.removedNames.includes(name.toLowerCase())) return sendJson(res, 403, { ok: false, error: "This player was removed from the room" });
       const existing = playerSession.participants.find((player) => player.name.toLowerCase() === name.toLowerCase());
-      const participant = existing || { id: `player-${Date.now()}-${Math.random().toString(16).slice(2)}`, name, joinedAt: Date.now(), lastActionAt: 0, simulated };
+      const usedClasses = new Set(playerSession.participants.map((player) => player.classId).filter(Boolean));
+      const simulatedClassId = simulated ? PLAYER_CLASS_IDS.find((classId) => !usedClasses.has(classId)) || "" : "";
+      const participant = existing || { id: `player-${Date.now()}-${Math.random().toString(16).slice(2)}`, name, classId: simulatedClassId, joinedAt: Date.now(), lastSeenAt: Date.now(), lastActionAt: 0, simulated };
       if (existing && !Number.isFinite(Number(existing.lastActionAt))) existing.lastActionAt = 0;
       if (existing && simulated) existing.simulated = true;
+      participant.lastSeenAt = Date.now();
       if (!existing) playerSession.participants.push(participant);
       playerSession.updatedAt = Date.now();
+      serverTrace(existing ? "player.rejoined" : "player.joined", {
+        roomCode,
+        playerId: participant.id,
+        playerName: participant.name,
+        simulated: Boolean(participant.simulated),
+        reconnect: Boolean(parsed.reconnect),
+        classId: participant.classId || "",
+        participants: playerSession.participants.length
+      });
+      return sendJson(res, 200, { ok: true, participant, session: publicPlayerSession() });
+    }
+
+    if (url.pathname === "/api/player-class" && req.method === "POST") {
+      const body = await readBody(req);
+      const parsed = body ? JSON.parse(body) : {};
+      const roomCode = String(parsed.roomCode || "").trim().toUpperCase();
+      const playerId = String(parsed.playerId || "").trim();
+      const classId = String(parsed.classId || "").trim().toLowerCase();
+      if (!roomCode || roomCode !== playerSession.roomCode) return sendJson(res, 400, { ok: false, error: "Invalid room code" });
+      if (playerSession.status !== "lobby") return sendJson(res, 409, { ok: false, error: "Class selection is closed" });
+      if (!PLAYER_CLASS_IDS.includes(classId)) return sendJson(res, 400, { ok: false, error: "Invalid class" });
+      const participant = playerSession.participants.find((player) => player.id === playerId);
+      if (!participant) return sendJson(res, 404, { ok: false, error: "Player not found" });
+      const reserved = playerSession.participants.find((player) => player.id !== playerId && player.classId === classId);
+      if (reserved) return sendJson(res, 409, { ok: false, error: `${classId} is already reserved` });
+      participant.classId = classId;
+      playerSession.updatedAt = Date.now();
+      serverTrace("player.class_selected", {
+        roomCode,
+        playerId,
+        playerName: participant.name,
+        classId
+      });
       return sendJson(res, 200, { ok: true, participant, session: publicPlayerSession() });
     }
 
@@ -851,6 +1235,13 @@ const server = http.createServer(async (req, res) => {
         return String(player || "").toLowerCase() !== name;
       });
       playerSession.updatedAt = Date.now();
+      serverTrace("player.removed", {
+        roomCode,
+        requestedPlayerId: playerId,
+        requestedName: name,
+        removed: before !== playerSession.participants.length,
+        participants: playerSession.participants.length
+      }, before !== playerSession.participants.length ? "info" : "warn");
       return sendJson(res, 200, { ok: true, removed: before !== playerSession.participants.length, session: playerSession });
     }
 
@@ -883,6 +1274,7 @@ const server = http.createServer(async (req, res) => {
       if (!answer) return sendJson(res, 400, { ok: false, error: "Missing answer" });
       const participant = playerSession.participants.find((player) => player.id === playerId);
       if (!participant) return sendJson(res, 403, { ok: false, error: "Player is not in this room" });
+      participant.lastSeenAt = Date.now();
       const playerName = participant.name || postedPlayerName;
       if (playerSession.prompt?.lockedPlayer && normalize(playerSession.prompt.lockedPlayer) !== normalize(playerName)) {
         return sendJson(res, 403, { ok: false, error: "Only the locked operator can answer this prompt" });
@@ -903,6 +1295,15 @@ const server = http.createServer(async (req, res) => {
       if (priorIndex >= 0) playerSession.answers[priorIndex] = entry;
       else playerSession.answers.push(entry);
       playerSession.updatedAt = Date.now();
+      serverTrace("answer.accepted", {
+        roomCode,
+        promptId,
+        playerId,
+        playerName,
+        replacedPrior: priorIndex >= 0,
+        clientToServerMs: entry.clientSentAt ? Math.max(0, entry.acceptedAt - entry.clientSentAt) : null,
+        answerCount: playerSession.answers.filter((answerEntry) => answerEntry.promptId === promptId).length
+      });
       return sendJson(res, 200, { ok: true, answer: entry });
     }
 
@@ -927,6 +1328,7 @@ const server = http.createServer(async (req, res) => {
       if (!action) return sendJson(res, 400, { ok: false, error: "Missing action" });
       const participant = playerSession.participants.find((player) => player.id === playerId);
       if (!participant) return sendJson(res, 403, { ok: false, error: "Player is not in this room" });
+      participant.lastSeenAt = Date.now();
       const playerName = participant.name || postedPlayerName;
       if (isSessionPlayerIncapacitated(playerName)) return sendJson(res, 403, { ok: false, error: "Incapacitated players cannot act" });
       const now = Date.now();
@@ -961,6 +1363,15 @@ const server = http.createServer(async (req, res) => {
       else playerSession.actions.push(entry);
       participant.lastActionAt = now;
       playerSession.updatedAt = Date.now();
+      serverTrace(queued ? "action.queued" : "action.accepted", {
+        roomCode,
+        promptId: entry.promptId,
+        playerId,
+        playerName,
+        queued,
+        actionCount: queued ? playerSession.queuedActions.length : playerSession.actions.filter((actionEntry) => actionEntry.promptId === entry.promptId).length,
+        cooldownMs
+      });
       return sendJson(res, 200, { ok: true, action: entry, cooldownUntil: now + cooldownMs, cooldownMs });
     }
 
@@ -973,18 +1384,24 @@ const server = http.createServer(async (req, res) => {
       const before = playerSession.queuedActions.length;
       playerSession.queuedActions = playerSession.queuedActions.filter((entry) => entry.id !== actionId);
       playerSession.updatedAt = Date.now();
+      serverTrace("action.consumed", {
+        roomCode,
+        actionId,
+        consumed: before !== playerSession.queuedActions.length,
+        remainingQueuedActions: playerSession.queuedActions.length
+      });
       return sendJson(res, 200, { ok: true, consumed: before !== playerSession.queuedActions.length });
     }
 
     if (url.pathname === "/api/ollama/tags" && req.method === "GET") {
-      const response = await fetch(`${ollamaHost}/api/tags`);
+      const response = await fetchWithTimeout(`${ollamaHost}/api/tags`, {}, STATUS_REQUEST_TIMEOUT_MS);
       const body = await response.text();
       if (!response.ok) throw new Error(body || `Ollama returned ${response.status}`);
       return sendJson(res, 200, JSON.parse(body));
     }
 
     if (url.pathname === "/api/lmstudio/tags" && req.method === "GET") {
-      const response = await fetch(`${lmStudioHost}/api/v0/models`);
+      const response = await fetchWithTimeout(`${lmStudioHost}/api/v0/models`, {}, STATUS_REQUEST_TIMEOUT_MS);
       const body = await response.text();
       if (!response.ok) throw new Error(body || `LM Studio returned ${response.status}`);
       const parsed = JSON.parse(body);
@@ -1053,9 +1470,22 @@ const server = http.createServer(async (req, res) => {
       const text = sanitizeText(parsed.text, { maxLength: 2500 });
       if (!text) return sendJson(res, 400, { ok: false, error: "Missing text" });
       const provider = parsed.provider === "kokoro" ? "kokoro" : "piper";
+      const ttsStartedAt = Date.now();
+      serverTrace("tts.started", {
+        provider,
+        textChars: text.length,
+        rate: Number(parsed.rate) || 1,
+        voiceId: parsed.voiceId ?? null
+      });
       const audio = provider === "kokoro"
         ? await generateKokoroSpeech(text, { rate: parsed.rate, voiceId: parsed.voiceId })
         : await generatePiperSpeech(text, { rate: parsed.rate });
+      serverTrace("tts.completed", {
+        provider,
+        durationMs: Date.now() - ttsStartedAt,
+        textChars: text.length,
+        audioBytes: audio.length
+      });
       res.writeHead(200, {
         "content-type": "audio/wav",
         "cache-control": "no-store",
@@ -1069,22 +1499,112 @@ const server = http.createServer(async (req, res) => {
     }
 
     const filePath = staticPath(url.pathname);
-    if (!filePath || !fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+    if (!filePath || !fs.existsSync(filePath)) {
       res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
       return res.end("Not found");
     }
 
+    const fileStats = fs.statSync(filePath);
+    if (fileStats.isDirectory()) {
+      res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      return res.end("Not found");
+    }
     const ext = path.extname(filePath).toLowerCase();
-    res.writeHead(200, {
+    const fileSize = fileStats.size;
+    const streamableMedia = streamableMediaExtensions.has(ext);
+    const etag = staticFileEtag(fileStats);
+    const commonHeaders = {
       "content-type": contentTypes[ext] || "application/octet-stream",
-      "cache-control": "no-store"
-    });
-    fs.createReadStream(filePath).pipe(res);
+      "cache-control": "no-cache",
+      "etag": etag,
+      "last-modified": fileStats.mtime.toUTCString()
+    };
+    if (streamableMedia) commonHeaders["accept-ranges"] = "bytes";
+
+    const requestedRange = streamableMedia && req.headers.range
+      ? parseByteRange(req.headers.range, fileSize)
+      : null;
+    if (!requestedRange && (req.method === "GET" || req.method === "HEAD") && staticRequestIsFresh(req, etag, fileStats.mtimeMs)) {
+      res.writeHead(304, commonHeaders);
+      return res.end();
+    }
+    if (requestedRange?.invalid) {
+      res.writeHead(416, {
+        ...commonHeaders,
+        "content-range": `bytes */${fileSize}`,
+        "content-length": 0
+      });
+      return res.end();
+    }
+
+    if (requestedRange) {
+      const chunkLength = requestedRange.end - requestedRange.start + 1;
+      res.writeHead(206, {
+        ...commonHeaders,
+        "content-range": `bytes ${requestedRange.start}-${requestedRange.end}/${fileSize}`,
+        "content-length": chunkLength
+      });
+      if (req.method === "HEAD") return res.end();
+      return fs.createReadStream(filePath, {
+        start: requestedRange.start,
+        end: requestedRange.end
+      }).pipe(res);
+    }
+
+    const acceptsGzip = /(?:^|,)\s*gzip\s*(?:;|,|$)/i.test(String(req.headers["accept-encoding"] || ""));
+    const useGzip = !streamableMedia && compressibleStaticExtensions.has(ext) && acceptsGzip;
+    const responseHeaders = useGzip
+      ? { ...commonHeaders, "content-encoding": "gzip", "vary": "Accept-Encoding" }
+      : { ...commonHeaders, "content-length": fileSize };
+    res.writeHead(200, responseHeaders);
+    if (req.method === "HEAD") return res.end();
+    const fileStream = fs.createReadStream(filePath);
+    if (useGzip) return fileStream.pipe(zlib.createGzip({ level: 6 })).pipe(res);
+    return fileStream.pipe(res);
   } catch (error) {
+    serverTrace("request.failed", {
+      requestId: res._traceRequestId || "",
+      method: req.method || "",
+      path: res._tracePath || req.url || "",
+      message: String(error?.message || error || "Unknown server error").slice(0, 1000),
+      stack: String(error?.stack || "").split(/\r?\n/).slice(0, 8).join("\n"),
+      ...sessionTraceSummary()
+    }, "error");
     sendJson(res, 500, { ok: false, error: error.message });
   }
 });
 
+server.on("clientError", (error, socket) => {
+  const code = String(error?.code || "");
+  serverTraceThrottled(`client-error:${code}`, 5_000, "http.client_error", {
+    code,
+    message: String(error?.message || error || "Client connection error").slice(0, 500)
+  }, code === "ECONNRESET" ? "info" : "warn");
+  if (socket.writable) socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
+});
+
+process.on("uncaughtExceptionMonitor", (error, origin) => {
+  serverTrace("process.uncaught_exception", {
+    origin,
+    message: String(error?.message || error || "Uncaught exception").slice(0, 1000),
+    stack: String(error?.stack || "").split(/\r?\n/).slice(0, 12).join("\n")
+  }, "error");
+});
+
+process.on("unhandledRejection", (reason) => {
+  serverTrace("process.unhandled_rejection", {
+    message: String(reason?.message || reason || "Unhandled rejection").slice(0, 1000),
+    stack: String(reason?.stack || "").split(/\r?\n/).slice(0, 12).join("\n")
+  }, "error");
+});
+
 server.listen(port, () => {
+  serverTrace("server.started", {
+    port,
+    root,
+    logPath: serverLogPath,
+    ollamaHost,
+    lmStudioHost
+  });
   console.log(`Mission console server running at http://localhost:${port}/`);
 });

@@ -1,5 +1,14 @@
 const sharedData = window.StudyAdventureShared || {};
+const combatSystem = window.StudyAdventureCombat || {};
 const profanitySubstitutions = sharedData.profanitySubstitutions || [];
+const PLAYER_NETWORK_TIMEOUT_MS = 8_000;
+
+function fetchWithTimeout(resource, options = {}, timeoutMs = PLAYER_NETWORK_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), Math.max(1, Number(timeoutMs) || PLAYER_NETWORK_TIMEOUT_MS));
+  return fetch(resource, { ...options, signal: controller.signal })
+    .finally(() => window.clearTimeout(timer));
+}
 
 const playerState = {
   roomCode: localStorage.getItem("studyAdventureRoomCode") || "",
@@ -12,6 +21,8 @@ const playerState = {
   queuedActionId: "",
   queuedActionSignature: "",
   pollTimer: null,
+  pollInFlight: false,
+  sessionRecoveryInFlight: false,
   promptTimer: null,
   actionCooldownTimer: null,
   renderedPromptSignature: "",
@@ -25,7 +36,9 @@ const playerState = {
   answerConfirmedTimer: null
 };
 
-const PLAYER_PROMPT_ARM_DELAY_MS = 1200;
+// The server already enforces a prompt arming window. A second client-side delay
+// made every prompt feel late and could leave controls disabled after a stale render.
+const PLAYER_PROMPT_ARM_DELAY_MS = 0;
 
 const playerEls = {
   joinCard: document.getElementById("joinCard"),
@@ -40,6 +53,7 @@ const playerEls = {
   playerHapticsToggle: document.getElementById("playerHapticsToggle"),
   playerHapticsNote: document.getElementById("playerHapticsNote"),
   playerVitals: document.getElementById("playerVitals"),
+  playerClassPanel: document.getElementById("playerClassPanel"),
   playerQueuedActionPanel: document.getElementById("playerQueuedActionPanel"),
   playerPromptArea: document.getElementById("playerPromptArea")
 };
@@ -99,7 +113,7 @@ function joinMission() {
     return;
   }
   playerEls.joinStatus.textContent = "Joining mission...";
-  fetch("/api/player-join", {
+  fetchWithTimeout("/api/player-join", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ roomCode, name })
@@ -136,13 +150,19 @@ function startPolling() {
 }
 
 function pollSession() {
-  fetch(`/api/player-session?ts=${Date.now()}`, { cache: "no-store" })
+  if (playerState.pollInFlight) return;
+  playerState.pollInFlight = true;
+  const playerId = encodeURIComponent(playerState.playerId || "");
+  fetchWithTimeout(`/api/player-session?playerId=${playerId}&ts=${Date.now()}`, { cache: "no-store" })
     .then((response) => response.ok ? response.json() : null)
     .then((session) => {
       if (!session) return;
       renderSession(session);
     })
-    .catch(() => renderWaiting("Connection lost. Waiting for Mission Control."));
+    .catch(() => renderWaiting("Connection lost. Waiting for Mission Control."))
+    .finally(() => {
+      playerState.pollInFlight = false;
+    });
 }
 
 function renderSession(session) {
@@ -151,12 +171,13 @@ function renderSession(session) {
     return;
   }
   if (playerState.playerId && Array.isArray(session.participants) && !session.participants.some((player) => player.id === playerState.playerId)) {
-    renderRemoved();
+    recoverMissingPlayerSession(session);
     return;
   }
   playerEls.playerMissionTitle.textContent = session.title || "Awaiting Mission";
   playerEls.playerRoomBadge.textContent = playerState.roomCode;
   renderVitals(session);
+  renderClassSelection(session);
   renderQueuedActionPanel(session);
   const prompt = session.prompt;
   syncPlayerAtmosphere(session, prompt);
@@ -190,6 +211,76 @@ function renderSession(session) {
     return;
   }
   renderPrompt(prompt, true, "", session);
+}
+
+function recoverMissingPlayerSession(session) {
+  if (playerState.sessionRecoveryInFlight || !playerState.roomCode || !playerState.playerName) return;
+  playerState.sessionRecoveryInFlight = true;
+  renderWaiting("Reconnecting this device to Mission Control...");
+  fetchWithTimeout("/api/player-join", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ roomCode: playerState.roomCode, name: playerState.playerName, reconnect: true })
+  })
+    .then((response) => response.json().then((payload) => ({ ok: response.ok, payload })))
+    .then(({ ok, payload }) => {
+      if (!ok || !payload?.ok) {
+        if (ok === false && /removed/i.test(String(payload?.error || ""))) renderRemoved();
+        else renderWaiting("Mission Control is rebuilding the room. Reconnecting shortly...");
+        return;
+      }
+      playerState.playerId = payload.participant.id;
+      localStorage.setItem("studyAdventurePlayerId", playerState.playerId);
+      renderSession(payload.session || session);
+    })
+    .catch(() => renderWaiting("Connection lost. Reconnecting shortly..."))
+    .finally(() => {
+      playerState.sessionRecoveryInFlight = false;
+    });
+}
+
+function renderClassSelection(session = {}) {
+  if (!playerEls.playerClassPanel) return;
+  const participant = (session.participants || []).find((entry) => entry.id === playerState.playerId);
+  const lobbyOpen = session.status === "lobby";
+  playerEls.playerClassPanel.hidden = !lobbyOpen;
+  if (!lobbyOpen) return;
+  const reserved = new Map((session.participants || [])
+    .filter((entry) => entry.classId && entry.id !== playerState.playerId)
+    .map((entry) => [entry.classId, entry.name]));
+  playerEls.playerClassPanel.innerHTML = `
+    <div class="player-class-heading"><span>Choose Class</span><strong>${participant?.classId ? escapeHtml(combatSystem.classDefinition?.(participant.classId)?.label || participant.classId) : "Required"}</strong></div>
+    <div class="player-class-grid">
+      ${(combatSystem.CLASS_IDS || []).map((classId) => {
+        const definition = combatSystem.classDefinition?.(classId) || { label: classId, gear: "", summary: "" };
+        const owner = reserved.get(classId);
+        const selected = participant?.classId === classId;
+        return `<button class="playerClassBtn ${selected ? "selected" : ""}" type="button" data-class-id="${escapeAttribute(classId)}" ${owner ? "disabled" : ""}>
+          <strong>${escapeHtml(definition.label)}</strong><span>${escapeHtml(definition.gear)}</span><small>${owner ? `Reserved by ${escapeHtml(owner)}` : escapeHtml(definition.summary)}</small>
+        </button>`;
+      }).join("")}
+    </div>`;
+  playerEls.playerClassPanel.querySelectorAll(".playerClassBtn").forEach((button) => {
+    button.addEventListener("click", () => selectPlayerClass(button.dataset.classId));
+  });
+}
+
+function selectPlayerClass(classId) {
+  if (!classId || !playerState.playerId) return;
+  playerEls.playerClassPanel.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+  fetchWithTimeout("/api/player-class", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ roomCode: playerState.roomCode, playerId: playerState.playerId, classId })
+  })
+    .then((response) => response.json().then((payload) => ({ ok: response.ok, payload })))
+    .then(({ ok, payload }) => {
+      if (!ok || !payload.ok) throw new Error(payload.error || "Could not reserve class.");
+      renderSession(payload.session);
+    })
+    .catch((error) => {
+      playerEls.playerClassPanel.innerHTML = `<p class="field-note">${escapeHtml(error.message || "Could not reserve class.")}</p>`;
+    });
 }
 
 function renderWaiting(message) {
@@ -324,6 +415,8 @@ function renderPrompt(prompt, enabled, note, session = {}) {
     boss: prompt.boss,
     bossStep: prompt.bossStep,
     bossTotal: prompt.bossTotal,
+    combat: prompt.combat,
+    classHint: prompt.classHint,
     mode: prompt.mode,
     question: prompt.question,
     choices: prompt.choices,
@@ -359,6 +452,13 @@ function renderPrompt(prompt, enabled, note, session = {}) {
       </div>
     </section>
   ` : "";
+  const combatHtml = prompt.combat ? `
+    <section class="player-combat-status ${prompt.combat.boss ? "boss" : ""}">
+      <div><span>${prompt.combat.boss ? "Boss" : "Hostiles"}</span><strong>${Number(prompt.combat.enemyCount) || 0} active · Round ${Number(prompt.combat.round) || 1}</strong></div>
+      <div class="combat-health-track"><i style="width:${Math.max(0, Math.min(100, (Number(prompt.combat.hp) || 0) / Math.max(1, Number(prompt.combat.maxHp) || 1) * 100))}%"></i></div>
+      <p>${Number(prompt.combat.hp) || 0} / ${Number(prompt.combat.maxHp) || 0} shared integrity</p>
+      <p class="combat-intent">${escapeHtml(prompt.combat.intent || "Enemy intent pending.")}</p>
+    </section>` : "";
   playerState.promptId = prompt.id;
   if (isNewPrompt) {
     playerState.lastTimerBuzzKey = "";
@@ -369,7 +469,9 @@ function renderPrompt(prompt, enabled, note, session = {}) {
     <section class="player-prompt ${prompt.boss ? "boss-prompt" : ""}">
       <span>${escapeHtml(prompt.challengeLabel || "Challenge")}</span>
       <h2>${escapeHtml(prompt.areaName || "Active Area")}</h2>
-      ${prompt.boss ? `<div class="player-boss-alert">Critical sequence ${Number(prompt.bossStep) || 1} / ${Number(prompt.bossTotal) || 1}</div>` : ""}
+      ${prompt.boss && !prompt.combat ? `<div class="player-boss-alert">Critical sequence ${Number(prompt.bossStep) || 1} / ${Number(prompt.bossTotal) || 1}</div>` : ""}
+      ${combatHtml}
+      ${prompt.classHint ? `<div class="player-class-hint">${escapeHtml(prompt.classHint)}</div>` : ""}
       ${timerHtml}
       <p>${escapeHtml(prompt.question || "")}</p>
       ${choices}
@@ -437,7 +539,7 @@ function startPromptTimer(timer) {
   if (!timer) return;
   const tick = () => updatePromptTimer(timer);
   tick();
-  playerState.promptTimer = window.setInterval(tick, 100);
+  playerState.promptTimer = window.setInterval(tick, 200);
 }
 
 function stopPromptTimer() {
@@ -567,13 +669,17 @@ function renderVitals(session) {
   const classNames = ["player-vitals"];
 
   if (incapacitated) classNames.push("downed");
-  else if (hp <= 2) classNames.push("low");
+  else if (hp <= Math.max(2, Math.ceil((Number(vitals.maxHp) || 10) * 0.25))) classNames.push("low");
   for (const status of statuses) classNames.push(`has-${normalize(status).trim().replace(/\s+/g, "-")}`);
 
   if (playerEls.playerVitals) {
     playerEls.playerVitals.className = classNames.join(" ");
     const points = Math.max(0, Math.round(Number(vitals.points) || 0));
-    playerEls.playerVitals.innerHTML = `<strong>${hp} HP</strong><span>${escapeHtml(statusText)}</span><b class="player-vitals-points">${points} PTS</b>`;
+    const maxHp = Math.max(10, Number(vitals.maxHp) || 10);
+    const level = Math.max(1, Number(vitals.level) || 1);
+    const xp = Math.max(0, Number(vitals.xp) || 0);
+    const streak = Math.max(0, Number(vitals.answerStreak) || 0);
+    playerEls.playerVitals.innerHTML = `<strong>${hp} / ${maxHp} HP</strong><span>${escapeHtml(statusText)}</span><b class="player-vitals-class">${escapeHtml(vitals.classLabel || "Operator")} · LV ${level}</b><b class="player-vitals-xp">${xp} XP · ${streak} STK</b><b class="player-vitals-points">${points} PTS</b>`;
     if (tookDamage) {
       playerEls.playerVitals.classList.remove("damage-flash");
       void playerEls.playerVitals.offsetWidth;
@@ -584,7 +690,7 @@ function renderVitals(session) {
   }
 
   if (incapacitated) document.body.classList.add("player-status-downed");
-  else if (hp <= 2) document.body.classList.add("player-status-low");
+  else if (hp <= Math.max(2, Math.ceil((Number(vitals.maxHp) || 10) * 0.25))) document.body.classList.add("player-status-low");
   else if (statuses.includes("Burned")) document.body.classList.add("player-status-burned");
   else if (statuses.includes("Bleeding")) document.body.classList.add("player-status-bleeding");
   else if (statuses.includes("Shocked")) document.body.classList.add("player-status-shocked");
@@ -592,7 +698,7 @@ function renderVitals(session) {
   else document.body.classList.add("player-status-ok");
 
   if (becameIncapacitated) vibratePlayer("downed");
-  else if (tookDamage) vibratePlayer(hp <= 2 ? "critical-damage" : "damage");
+  else if (tookDamage) vibratePlayer(hp <= Math.max(2, Math.ceil((Number(vitals.maxHp) || 10) * 0.25)) ? "critical-damage" : "damage");
   else if (gainedStatus) vibratePlayer("status");
 
   playerState.lastVitals = { hp, statuses: [...statuses], incapacitated };
@@ -672,7 +778,7 @@ function submitAnswer(answer, expectedPromptId = playerState.promptId) {
   }
   if (!cleanAnswer || !playerState.promptId) return;
   if (status) status.textContent = "Sending answer...";
-  fetch("/api/player-answer", {
+  fetchWithTimeout("/api/player-answer", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -717,7 +823,7 @@ function submitAction(action, expectedPromptId = playerState.promptId) {
     return;
   }
   if (status) status.textContent = "Sending action...";
-  fetch("/api/player-action", {
+  fetchWithTimeout("/api/player-action", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -778,7 +884,7 @@ function submitQueuedAction(action) {
     return;
   }
   if (status) status.textContent = "Queueing action...";
-  fetch("/api/player-action", {
+  fetchWithTimeout("/api/player-action", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({

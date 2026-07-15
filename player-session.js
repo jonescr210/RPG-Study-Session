@@ -7,6 +7,15 @@
     root.StudyAdventurePlayerSession = playerSession;
   }
 })(typeof globalThis !== "undefined" ? globalThis : this, function buildStudyAdventurePlayerSession() {
+  const DEFAULT_REQUEST_TIMEOUT_MS = 8_000;
+
+  function fetchWithTimeout(resource, options = {}, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Math.max(1, Number(timeoutMs) || DEFAULT_REQUEST_TIMEOUT_MS));
+    return fetch(resource, { ...options, signal: controller.signal })
+      .finally(() => clearTimeout(timer));
+  }
+
   function safeJoinProtocol(location = window.location) {
     return location.protocol === "https:" ? "https:" : "http:";
   }
@@ -58,30 +67,35 @@
   }
 
   function fetchHostInfo() {
-    return fetch("/api/host-info", { cache: "no-store" })
+    return fetchWithTimeout("/api/host-info", { cache: "no-store" })
       .then((response) => response.ok ? response.json() : null);
   }
 
   function publishSession(payload) {
-    return fetch("/api/player-session", {
+    return fetchWithTimeout("/api/player-session", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload)
-    }).catch(() => null);
+    }).then((response) => response.json().catch(() => null)).catch(() => null);
   }
 
   function fetchSession() {
-    return fetch(`/api/player-session?ts=${Date.now()}`, { cache: "no-store" })
+    return fetchWithTimeout(`/api/player-session?ts=${Date.now()}`, { cache: "no-store" })
       .then((response) => response.ok ? response.json() : null);
   }
 
   function fetchAnswers(roomCode, promptId) {
-    return fetch(`/api/player-answers?roomCode=${encodeURIComponent(roomCode)}&promptId=${encodeURIComponent(promptId || "")}&ts=${Date.now()}`, { cache: "no-store" })
+    return fetchWithTimeout(`/api/player-answers?roomCode=${encodeURIComponent(roomCode)}&promptId=${encodeURIComponent(promptId || "")}&ts=${Date.now()}`, { cache: "no-store" })
+      .then((response) => response.ok ? response.json() : null);
+  }
+
+  function fetchSync(roomCode, promptId) {
+    return fetchWithTimeout(`/api/player-sync?roomCode=${encodeURIComponent(roomCode || "")}&promptId=${encodeURIComponent(promptId || "")}&ts=${Date.now()}`, { cache: "no-store" })
       .then((response) => response.ok ? response.json() : null);
   }
 
   function joinPlayer(roomCode, name, options = {}) {
-    return fetch("/api/player-join", {
+    return fetchWithTimeout("/api/player-join", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -93,7 +107,7 @@
   }
 
   function submitAnswer(payload) {
-    return fetch("/api/player-answer", {
+    return fetchWithTimeout("/api/player-answer", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload)
@@ -101,7 +115,7 @@
   }
 
   function submitAction(payload) {
-    return fetch("/api/player-action", {
+    return fetchWithTimeout("/api/player-action", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload)
@@ -119,6 +133,7 @@
     publishSession,
     fetchSession,
     fetchAnswers,
+    fetchSync,
     joinPlayer,
     submitAnswer,
     submitAction

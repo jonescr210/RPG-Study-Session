@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Study Adventure Player</title>
+    <link rel="stylesheet" href="styles.css?v=boss-swipe-3">
+  </head>
+  <body class="player-body">
+    <div class="player-signal-field" aria-hidden="true">
+      <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+    </div>
+    <div class="player-impact-overlay" aria-hidden="true"></div>
+    <main class="player-shell">
+      <section class="player-card" id="joinCard">
+        <p class="eyebrow">Study Adventure</p>
+        <h1>Join Mission</h1>
+        <label>
+          Room Code
+          <input id="joinRoomCode" type="text" maxlength="8" autocomplete="off" placeholder="ABCD">
+        </label>
+        <label>
+          Player Name
+          <input id="joinPlayerName" type="text" autocomplete="name" placeholder="Chris">
+        </label>
+        <button id="joinMissionBtn" type="button">Join</button>
+        <p id="joinStatus" class="field-note">Use the code shown on Mission Control.</p>
+      </section>
+
+      <section class="player-card" id="missionCard" hidden>
+        <div class="player-topline">
+          <div>
+            <p class="eyebrow">Mission Channel</p>
+            <h1 id="playerMissionTitle">Awaiting Mission</h1>
+          </div>
+          <strong id="playerRoomBadge">----</strong>
+        </div>
+        <p id="playerIdentity" class="field-note"></p>
+        <label class="player-haptics-toggle">
+          <input id="playerHapticsToggle" type="checkbox">
+          <span>Phone vibration alerts</span>
+        </label>
+        <p id="playerHapticsNote" class="player-haptics-note"></p>
+        <div id="playerVitals" class="player-vitals" aria-live="polite">
+          <strong>HP --</strong>
+          <span>Awaiting squad telemetry</span>
+        </div>
+        <section id="playerClassPanel" class="player-class-panel" hidden></section>
+        <section id="playerQueuedActionPanel" class="player-queued-action-panel" hidden></section>
+        <div id="playerPromptArea" class="player-prompt-area">
+          <div class="player-waiting">
+            <span class="signal-bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+            <p>Waiting for Mission Control.</p>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script src="shared-data.js?v=cleanup-1"></script>
+    <script src="combat-system.js?v=classes-1"></script>
+    <script src="player.js?v=performance-pass-1"></script>
+  </body>
+</html>

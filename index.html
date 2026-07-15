@@ -4,7 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Study Adventure Mission Console</title>
-    <link rel="stylesheet" href="styles.css?v=map-discovery-1">
+    <link rel="preload" as="image" href="assets/boss-swipe-sprite.webp?v=2" type="image/webp">
+    <link rel="stylesheet" href="styles.css?v=boss-swipe-3">
   </head>
   <body>
     <div class="app-shell">
@@ -109,6 +110,7 @@
                   Squad Roster
                   <textarea id="playersInput" rows="6" placeholder="Single Device: enter one player per line. Multi Device: players join in the lobby."></textarea>
                 </label>
+                <div id="singleDeviceClassAssignments" class="single-device-class-assignments" hidden></div>
                 <p id="playerCountNote" class="field-note">Players join after mission setup.</p>
               </section>
             </div>
@@ -144,6 +146,14 @@
                   <span>
                     Boss test start
                     <small>Start one encounter before the final boss to test readiness, phase plans, and boss flow.</small>
+                  </span>
+                </label>
+
+                <label class="toggle-field">
+                  <input id="combatTestMode" type="checkbox">
+                  <span>
+                    Combat test loop
+                    <small>Turn every route stop into a combat room so combat flow, classes, damage, and enemy scaling can be tested repeatedly.</small>
                   </span>
                 </label>
 
@@ -470,10 +480,39 @@ Generate [NUMBER] questions.</textarea>
               <p class="eyebrow">Visual Dungeon Map</p>
               <h2 id="mapTitle">Awaiting Mission</h2>
             </div>
-            <div class="progress-pill" id="progressPill">0 / 0</div>
+            <div class="map-header-status">
+              <div class="last-answer-panel map-last-answer" id="lastAnswerPanel">
+                <div class="last-answer-heading">
+                  <span>Previous Response</span>
+                  <strong id="lastAnswerResult">Awaiting</strong>
+                </div>
+                <div class="last-answer-grid">
+                  <div>
+                    <span>Submitted</span>
+                    <strong id="lastSubmittedDisplay">—</strong>
+                  </div>
+                  <div>
+                    <span>Required</span>
+                    <strong id="lastCorrectDisplay">—</strong>
+                  </div>
+                </div>
+              </div>
+              <div class="progress-pill" id="progressPill">0 / 0</div>
+            </div>
           </div>
           <div class="map-wrap">
             <svg id="missionMap" viewBox="0 0 900 560" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Mission route map"></svg>
+            <section id="combatStage" class="combat-stage" hidden aria-label="Combat visualization">
+              <div class="combat-stage-wipe" aria-hidden="true"><i></i><i></i><i></i></div>
+              <div class="combat-stage-header">
+                <span id="combatStageLabel">HOSTILE CONTACT</span>
+                <strong id="combatStageRound">ROUND 1</strong>
+              </div>
+              <div id="combatEnemyFormation" class="combat-enemy-formation"></div>
+              <div id="combatActionBanner" class="combat-action-banner">Awaiting combat telemetry</div>
+              <div id="combatPartyFormation" class="combat-party-formation"></div>
+              <div class="combat-stage-scanlines" aria-hidden="true"></div>
+            </section>
             <div class="map-hud-corners" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
             <div class="map-question-overlay" id="mapQuestionOverlay" hidden></div>
             <div class="map-radar-sweep" aria-hidden="true"></div>
@@ -487,8 +526,6 @@ Generate [NUMBER] questions.</textarea>
             <div class="map-impact-cracks" aria-hidden="true"></div>
             <div class="map-failure-overlay" id="mapFailureOverlay" hidden aria-label="Mission failed">
               <span class="map-failure-short" aria-hidden="true"></span>
-              <span class="map-failure-skull" aria-hidden="true">&#9760;</span>
-              <strong>MISSION FAILED</strong>
             </div>
           </div>
           <div class="map-control-dock" id="mapControlDock" aria-label="Single-device answer controls"></div>
@@ -511,6 +548,7 @@ Generate [NUMBER] questions.</textarea>
               <span><i class="node-dot current"></i> Current</span>
               <span><i class="node-dot correct"></i> Correct</span>
               <span><i class="node-dot incorrect"></i> Incorrect</span>
+              <span><i class="node-dot combat"></i> Combat</span>
               <span><i class="node-dot boss"></i> Boss</span>
               <span><i class="node-dot recovery"></i> Recovery</span>
             </div>
@@ -521,22 +559,6 @@ Generate [NUMBER] questions.</textarea>
           <div class="mission-progress" id="missionProgress">
             <span>Mission Progress</span>
             <strong id="progressSummary">0 / 0 questions resolved</strong>
-          </div>
-          <div class="last-answer-panel" id="lastAnswerPanel" hidden>
-            <div class="last-answer-heading">
-              <span>Previous Response</span>
-              <strong id="lastAnswerResult"></strong>
-            </div>
-            <div class="last-answer-grid">
-              <div>
-                <span>Submitted</span>
-                <strong id="lastSubmittedDisplay"></strong>
-              </div>
-              <div>
-                <span>Required</span>
-                <strong id="lastCorrectDisplay"></strong>
-              </div>
-            </div>
           </div>
           <div class="status-grid" id="statusGrid" aria-label="Player-facing status"></div>
           <div class="inventory-actions" id="inventoryActions" aria-label="Shared supplies"></div>
@@ -688,6 +710,19 @@ Generate [NUMBER] questions.</textarea>
       </main>
     </div>
 
+    <section id="resetConfirmOverlay" class="reset-confirm-overlay" role="dialog" aria-modal="true" aria-labelledby="resetConfirmTitle" aria-describedby="resetConfirmMessage" hidden>
+      <div class="reset-confirm-dialog" tabindex="-1">
+        <div class="reset-confirm-signal" aria-hidden="true"><i></i><i></i><i></i></div>
+        <p class="eyebrow">Mission Control Safeguard</p>
+        <h2 id="resetConfirmTitle">Confirm Reset</h2>
+        <p id="resetConfirmMessage">Reset this mission and return to preflight? Current mission progress will be cleared.</p>
+        <div class="reset-confirm-actions">
+          <button id="resetConfirmCancelBtn" class="secondary" type="button">Cancel</button>
+          <button id="resetConfirmAcceptBtn" class="danger" type="button">Confirm Reset</button>
+        </div>
+      </div>
+    </section>
+
     <div class="setup-transition-blackout" id="setupTransitionBlackout" aria-hidden="true" hidden>
       <div class="setup-transition-shutter setup-transition-shutter-top"></div>
       <div class="setup-transition-shutter setup-transition-shutter-bottom"></div>
@@ -747,9 +782,10 @@ Generate [NUMBER] questions.</textarea>
   <script src="shared-data.js?v=cleanup-2"></script>
   <script src="question-bank.js?v=fill-blanks-1"></script>
   <script src="local-dm-prompts.js?v=cleanup-2"></script>
-  <script src="player-session.js?v=cleanup-1"></script>
+  <script src="player-session.js?v=stall-guard-1"></script>
   <script src="action-rooms.js?v=cleanup-1"></script>
-  <script src="tts-manager.js?v=effects-prefetch-1"></script>
-  <script src="app.js?v=map-discovery-1"></script>
+  <script src="combat-system.js?v=classes-1"></script>
+  <script src="tts-manager.js?v=stall-guard-1"></script>
+  <script src="app.js?v=boss-swipe-3"></script>
 </body>
 </html>

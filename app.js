@@ -1,32 +1,48 @@
 const sharedData = window.StudyAdventureShared || {};
 const dmPrompts = window.StudyAdventurePrompts || {};
 const actionRooms = window.StudyAdventureActionRooms || {};
+const combatSystem = window.StudyAdventureCombat || {};
+const singleDeviceClassAssignments = new Map();
 const ttsModule = window.StudyAdventureTts || {};
+const DEFAULT_NETWORK_TIMEOUT_MS = 8_000;
+const LOCAL_DM_REQUEST_TIMEOUT_MS = 65_000;
+const COMBAT_GATE_MAX_WAIT_MS = 30_000;
+const PLAYER_HEARTBEAT_STALE_MS = 15_000;
+const PLAYER_PROMPT_PUBLICATION_RETRY_MS = 1_500;
+const PLAYER_PROMPT_PUBLICATION_MAX_RETRIES = 5;
+
+function fetchWithTimeout(resource, options = {}, timeoutMs = DEFAULT_NETWORK_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), Math.max(1, Number(timeoutMs) || DEFAULT_NETWORK_TIMEOUT_MS));
+  return fetch(resource, { ...options, signal: controller.signal })
+    .finally(() => window.clearTimeout(timer));
+}
+
 const playerSessionApi = {
-  fetchHostInfo: () => fetch("/api/host-info", { cache: "no-store" }).then((response) => response.ok ? response.json() : null),
-  publishSession: (payload) => fetch("/api/player-session", {
+  fetchHostInfo: () => fetchWithTimeout("/api/host-info", { cache: "no-store" }).then((response) => response.ok ? response.json() : null),
+  publishSession: (payload) => fetchWithTimeout("/api/player-session", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload)
   }).catch(() => null),
-  fetchSession: () => fetch(`/api/player-session?ts=${Date.now()}`, { cache: "no-store" }).then((response) => response.ok ? response.json() : null),
-  fetchAnswers: (roomCode, promptId) => fetch(`/api/player-answers?roomCode=${encodeURIComponent(roomCode)}&promptId=${encodeURIComponent(promptId || "")}&ts=${Date.now()}`, { cache: "no-store" }).then((response) => response.ok ? response.json() : null),
-  joinPlayer: (roomCode, name, options = {}) => fetch("/api/player-join", {
+  fetchSession: () => fetchWithTimeout(`/api/player-session?ts=${Date.now()}`, { cache: "no-store" }).then((response) => response.ok ? response.json() : null),
+  fetchAnswers: (roomCode, promptId) => fetchWithTimeout(`/api/player-answers?roomCode=${encodeURIComponent(roomCode)}&promptId=${encodeURIComponent(promptId || "")}&ts=${Date.now()}`, { cache: "no-store" }).then((response) => response.ok ? response.json() : null),
+  joinPlayer: (roomCode, name, options = {}) => fetchWithTimeout("/api/player-join", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ roomCode, name, simulated: Boolean(options.simulated) })
   }).then((response) => response.json()).catch(() => null),
-  submitAnswer: (payload) => fetch("/api/player-answer", {
+  submitAnswer: (payload) => fetchWithTimeout("/api/player-answer", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload)
   }).then((response) => response.json()).catch(() => null),
-  submitAction: (payload) => fetch("/api/player-action", {
+  submitAction: (payload) => fetchWithTimeout("/api/player-action", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload)
   }).then((response) => response.json()).catch(() => null),
-  consumeQueuedAction: (payload) => fetch("/api/player-action-consume", {
+  consumeQueuedAction: (payload) => fetchWithTimeout("/api/player-action-consume", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload)
@@ -89,6 +105,7 @@ const state = {
   bossPhasePlanRequests: {},
   bossTestMode: false,
   bossTestPromptStarted: false,
+  combatTestMode: false,
   actionDrivenMode: false,
   actionRooms: [],
   actionThreatPressure: 0,
@@ -96,6 +113,15 @@ const state = {
   actionReceiptLogKey: "",
   actionTurnOrder: [],
   actionResolutionQueue: null,
+  combatEncounters: {},
+  combatPresentationRunId: 0,
+  combatPresentationTimers: [],
+  combatStageEnteredNodes: new Set(),
+  combatDisplayedHp: {},
+  combatNextNodeTimer: null,
+  combatNextNodeWaitStartedAt: 0,
+  combatMountBlocked: false,
+  combatXpBaseline: [],
   actionContinueGateTimer: null,
   activeObstacles: {},
   nodeResults: {},
@@ -110,6 +136,8 @@ const state = {
   secondWindPendingPlayerName: "",
   challengeHistory: [],
   typeTimers: [],
+  typeTimerResolvers: new Map(),
+  typewriterGeneration: 0,
   autoScrollTimers: [],
   chatMode: false,
   localDmMode: false,
@@ -119,10 +147,19 @@ const state = {
   feedLastId: "",
   feedPollTimer: null,
   playerPollTimer: null,
+  playerSyncInFlight: false,
+  playerHostRevision: 0,
+  playerServerRevision: 0,
+  playerServerPromptId: "",
+  playerSyncFailureCount: 0,
+  playerPromptPublicationRetryTimer: null,
+  playerPromptPublicationRetryId: "",
+  playerPromptPublicationRetryAttempt: 0,
   roomCode: "",
   playerPromptId: "",
   playerPromptRequiredIds: [],
   playerPromptRequiredNames: [],
+  playerPromptRequiredAt: 0,
   playerAnswers: [],
   playerActions: [],
   queuedPlayerActions: [],
@@ -130,6 +167,8 @@ const state = {
   resolutionDelayPending: false,
   resolutionDelayPromptId: "",
   resolutionDelayTimer: null,
+  resolutionDelayStartedAt: 0,
+  resolutionDelayCallback: null,
   processedPlayerActionIds: new Set(),
   processedQueuedActionIds: new Set(),
   scoredPromptIds: new Set(),
@@ -138,8 +177,10 @@ const state = {
   questionPauseStartedAt: 0,
   questionPausedTotalMs: 0,
   simulatorAutoAnswer: window.localStorage.getItem("studyAdventureSimulatorAutoAnswer") === "true",
+  simulatorAutoAnswerAccuracy: Math.max(0, Math.min(100, Number(window.localStorage.getItem("studyAdventureSimulatorAutoAnswerAccuracy") ?? 50))),
   simulatorAutoAnswerPromptId: "",
   simulatorAutoAnswerTimers: [],
+  simulatorPromptRepairPromise: null,
   playerParticipants: [],
   playerJoinUrl: "",
   playerJoinUrlReady: false,
@@ -171,6 +212,7 @@ const state = {
   sideActionPending: false,
   sideActionWaitingId: "",
   narrowedChoices: {},
+  classHints: {},
   sideActionGuard: false,
   previousAnswer: null,
   emergencyTimerEnabled: true,
@@ -278,9 +320,12 @@ const state = {
 
 const TIMEOUT_ANSWER = "player failed to submit";
 const TWO_BOSS_MIN_QUESTIONS = 18;
-const MID_BOSS_QUESTIONS = 4;
-const FINAL_BOSS_QUESTIONS = 6;
-const ROUTE_TRAVEL_MS = 4600;
+const COMBAT_QUESTION_POOL_SIZE = 5;
+const MID_BOSS_QUESTIONS = COMBAT_QUESTION_POOL_SIZE;
+const FINAL_BOSS_QUESTIONS = COMBAT_QUESTION_POOL_SIZE;
+const ROUTE_TRAVEL_MS = 3600;
+const COMBAT_FORMATION_READY_MS = 4300;
+const COMBAT_ENTRY_COMPLETE_MS = 4550;
 const QUESTION_SET_STORAGE_KEY = "studyAdventureQuestionSets";
 const SELECTED_QUESTION_SETS_KEY = "studyAdventureSelectedQuestionSets";
 const MUSIC_PRESET_STORAGE_KEY = "studyAdventureMusicPresets";
@@ -306,11 +351,11 @@ function narrationSentenceRange(normalRange, fastRange) {
 }
 
 function questionAlertDelayMs() {
-  return isFastMode() ? 900 : 3000;
+  return isFastMode() ? 550 : 1000;
 }
 
 function questionRevealDelayMs() {
-  return 1800;
+  return 1100;
 }
 
 function queryAlertDurationMs() {
@@ -319,9 +364,19 @@ function queryAlertDurationMs() {
 
 function waitForQueryAlert() {
   return new Promise((resolve) => {
-    const timer = window.setTimeout(resolve, questionRevealDelayMs());
-    state.typeTimers.push(timer);
+    trackTypeTimer(resolve, questionRevealDelayMs(), resolve);
   });
+}
+
+function trackTypeTimer(callback, delay, onCancel = null) {
+  let timer = null;
+  timer = window.setTimeout(() => {
+    state.typeTimerResolvers.delete(timer);
+    callback();
+  }, Math.max(0, Number(delay) || 0));
+  state.typeTimers.push(timer);
+  if (typeof onCancel === "function") state.typeTimerResolvers.set(timer, onCancel);
+  return timer;
 }
 
 function continueCountdownSeconds() {
@@ -354,11 +409,13 @@ const els = {
   generateEnvironmentBtn: document.getElementById("generateEnvironmentBtn"),
   generatedEnvironmentNote: document.getElementById("generatedEnvironmentNote"),
   playersInput: document.getElementById("playersInput"),
+  singleDeviceClassAssignments: document.getElementById("singleDeviceClassAssignments"),
   deviceModeSingle: document.getElementById("deviceModeSingle"),
   deviceModeMulti: document.getElementById("deviceModeMulti"),
   dmEngine: document.getElementById("dmEngine"),
   questionSource: document.getElementById("questionSource"),
   bossTestMode: document.getElementById("bossTestMode"),
+  combatTestMode: document.getElementById("combatTestMode"),
   actionDrivenMode: document.getElementById("actionDrivenMode"),
   playerCountNote: document.getElementById("playerCountNote"),
   questionCountNote: document.getElementById("questionCountNote"),
@@ -427,6 +484,10 @@ const els = {
   cancelLobbyBtn: document.getElementById("cancelLobbyBtn"),
   launchFromLobbyBtn: document.getElementById("launchFromLobbyBtn"),
   resetBtn: document.getElementById("resetBtn"),
+  resetConfirmOverlay: document.getElementById("resetConfirmOverlay"),
+  resetConfirmMessage: document.getElementById("resetConfirmMessage"),
+  resetConfirmCancelBtn: document.getElementById("resetConfirmCancelBtn"),
+  resetConfirmAcceptBtn: document.getElementById("resetConfirmAcceptBtn"),
   copyScriptBtn: document.getElementById("copyScriptBtn"),
   setupPanel: document.getElementById("setupPanel"),
   briefingCard: document.getElementById("briefingCard"),
@@ -457,6 +518,12 @@ const els = {
   mapControlDock: document.getElementById("mapControlDock"),
   playControlDock: document.getElementById("playControlDock"),
   missionMap: document.getElementById("missionMap"),
+  combatStage: document.getElementById("combatStage"),
+  combatStageLabel: document.getElementById("combatStageLabel"),
+  combatStageRound: document.getElementById("combatStageRound"),
+  combatEnemyFormation: document.getElementById("combatEnemyFormation"),
+  combatPartyFormation: document.getElementById("combatPartyFormation"),
+  combatActionBanner: document.getElementById("combatActionBanner"),
   mapTitle: document.getElementById("mapTitle"),
   progressPill: document.getElementById("progressPill"),
   progressSummary: document.getElementById("progressSummary"),
@@ -514,6 +581,7 @@ const els = {
 };
 
 let ttsManager = null;
+let resetConfirmationReturnFocus = null;
 
 const questionBank = window.StudyAdventureQuestions || {};
 const sampleQuestions = questionBank.sampleQuestions || "";
@@ -554,6 +622,14 @@ els.playerDeviceToggleBtn?.addEventListener("click", () => {
   renderPlayerSessionPanel();
 });
 els.resetBtn.addEventListener("click", resetMission);
+els.resetConfirmCancelBtn?.addEventListener("click", () => closeResetConfirmation());
+els.resetConfirmAcceptBtn?.addEventListener("click", confirmMissionReset);
+els.resetConfirmOverlay?.addEventListener("click", (event) => {
+  if (event.target === els.resetConfirmOverlay) closeResetConfirmation();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !els.resetConfirmOverlay?.hidden) closeResetConfirmation();
+});
 els.copyScriptBtn.addEventListener("click", copyDmScript);
 els.recheckSystemsBtn?.addEventListener("click", checkMissionSystems);
 els.sfxPreset?.addEventListener("change", () => {
@@ -617,14 +693,26 @@ els.questionSource.addEventListener("change", () => {
   delete els.missionLength.dataset.manual;
   syncSetupMode();
 });
-els.bossTestMode?.addEventListener("change", updateSetupSummary);
+els.bossTestMode?.addEventListener("change", () => {
+  if (els.bossTestMode.checked && els.combatTestMode) els.combatTestMode.checked = false;
+  updateSetupSummary();
+});
+els.combatTestMode?.addEventListener("change", () => {
+  if (els.combatTestMode.checked && els.actionDrivenMode) els.actionDrivenMode.checked = false;
+  if (els.combatTestMode.checked && els.bossTestMode) els.bossTestMode.checked = false;
+  updateSetupSummary();
+});
 els.actionDrivenMode?.addEventListener("change", () => {
+  if (els.actionDrivenMode.checked && els.combatTestMode) els.combatTestMode.checked = false;
   delete els.missionLength.dataset.manual;
   syncSetupMode();
 });
 els.deviceModeSingle.addEventListener("change", syncSetupMode);
 els.deviceModeMulti.addEventListener("change", syncSetupMode);
-els.playersInput.addEventListener("input", updateSetupSummary);
+els.playersInput.addEventListener("input", () => {
+  renderSingleDeviceClassAssignments();
+  updateSetupSummary();
+});
 els.questionsInput.addEventListener("input", updateSetupSummary);
 els.missionLength.addEventListener("input", () => {
   els.missionLength.dataset.manual = "true";
@@ -654,6 +742,8 @@ if (els.fastModeEnabled) {
   });
 }
 applyTeacherTextSize();
+syncPerformanceVisibilityState();
+document.addEventListener("visibilitychange", syncPerformanceVisibilityState, { passive: true });
 initGameAudioControls();
 renderSavedMusicPresets();
 loadSavedMusicPresetsFromServer();
@@ -718,7 +808,11 @@ function initGameAudioControls() {
   if (els.useYoutubeBossMusic) els.useYoutubeBossMusic.checked = state.useYoutubeBossMusic;
   if (els.youtubeMusicRandomStart) els.youtubeMusicRandomStart.checked = state.youtubeMusicRandomStart;
   syncMusicSourceControls();
-  loadAudioEffectManifest();
+  if (typeof window.requestIdleCallback === "function") {
+    window.requestIdleCallback(loadAudioEffectManifest, { timeout: 1_200 });
+  } else {
+    window.setTimeout(loadAudioEffectManifest, 0);
+  }
 }
 
 function syncMusicSourceControls() {
@@ -727,6 +821,10 @@ function syncMusicSourceControls() {
   if (els.youtubeMusicUrlGroup) els.youtubeMusicUrlGroup.hidden = !state.useYoutubeMusic;
   if (els.youtubeBossMusicUrlGroup) els.youtubeBossMusicUrlGroup.hidden = !state.useYoutubeBossMusic;
   if (els.youtubeMusicRandomStartGroup) els.youtubeMusicRandomStartGroup.hidden = !state.useYoutubeMusic;
+}
+
+function syncPerformanceVisibilityState() {
+  document.documentElement.classList.toggle("app-tab-hidden", document.hidden);
 }
 
 function normalizeSfxPreset(value) {
@@ -768,7 +866,7 @@ function mergeMusicPresets(primary = [], secondary = []) {
 
 function loadSavedMusicPresetsFromServer() {
   state.savedMusicPresetsCache = readLocalSavedMusicPresets();
-  return fetch("/api/music-presets", { cache: "no-store" })
+  return fetchWithTimeout("/api/music-presets", { cache: "no-store" })
     .then((response) => response.ok ? response.json() : null)
     .then((payload) => {
       if (!payload?.ok) return;
@@ -797,7 +895,7 @@ function loadSavedMusicPresetsFromServer() {
 }
 
 function persistMusicPresetsToServer() {
-  fetch("/api/music-presets", {
+  fetchWithTimeout("/api/music-presets", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ presets: state.savedMusicPresetsCache })
@@ -961,7 +1059,7 @@ function loadAudioEffectManifest() {
   if (els.sfxMappingGrid) {
     els.sfxMappingGrid.innerHTML = `<p class="field-note">Loading custom sound effect list...</p>`;
   }
-  fetch(`audio-effects.json?ts=${Date.now()}`, { cache: "no-store" })
+  fetchWithTimeout("audio-effects.json", { cache: "no-cache" })
     .then((response) => {
       if (!response.ok) throw new Error("audio-effects.json not found");
       return response.json();
@@ -1029,6 +1127,17 @@ function audioEffectForEvent(eventName) {
   return state.audioEffects.find((effect) => effect.id === selectedId) || null;
 }
 
+function releaseLocalMediaElement(media) {
+  if (!media || media.tagName !== "AUDIO") return;
+  try {
+    media.pause();
+    media.removeAttribute("src");
+    media.load();
+  } catch {
+    // Media cleanup must never interrupt mission flow.
+  }
+}
+
 function playGameSfx(eventName, options = {}) {
   if (state.sfxPreset === "off") return null;
   if (eventName === "ending") stopBackgroundMusic();
@@ -1040,9 +1149,13 @@ function playGameSfx(eventName, options = {}) {
   state.lastSfxAt[eventName] = nowMs;
   try {
     const key = `${effect.id}:${effect.src}`;
-    const audio = state.audioEffectPlayers[key] || new Audio(effect.src);
-    state.audioEffectPlayers[key] = audio;
-    audio.preload = "auto";
+    let audio = state.audioEffectPlayers[key];
+    if (!audio) {
+      audio = new Audio();
+      audio.preload = "metadata";
+      audio.src = effect.src;
+      state.audioEffectPlayers[key] = audio;
+    }
     if (audio.studyAdventureFadeTimer) window.clearInterval(audio.studyAdventureFadeTimer);
     audio.studyAdventureFadeTimer = null;
     audio.pause();
@@ -1142,6 +1255,8 @@ function stopGameSfx(eventName) {
     audio.studyAdventureFadeTimer = null;
     audio.pause();
     audio.currentTime = 0;
+    releaseLocalMediaElement(audio);
+    delete state.audioEffectPlayers[key];
   } catch {
     // Custom SFX should never interrupt the game loop.
   }
@@ -1166,6 +1281,8 @@ function fadeOutGameSfx(eventName, durationMs = 450) {
       audio.pause();
       audio.currentTime = 0;
       audio.volume = startingVolume;
+      releaseLocalMediaElement(audio);
+      delete state.audioEffectPlayers[key];
     } catch {
       // Custom SFX should never interrupt the game loop.
     }
@@ -1179,10 +1296,12 @@ function stopAllGameSfx() {
       audio.studyAdventureFadeTimer = null;
       audio.pause();
       audio.currentTime = 0;
+      releaseLocalMediaElement(audio);
     } catch {
       // Audio cleanup must not interrupt a reset or a new mission.
     }
   });
+  state.audioEffectPlayers = {};
   state.lastSfxAt = {};
 }
 
@@ -1195,7 +1314,9 @@ function startIntroSequenceAudio() {
 
   const playSource = (index) => {
     if (runId !== state.introSequenceAudioRunId || state.teamReady || index >= sources.length) return;
-    const audio = new Audio(sources[index]);
+    const audio = new Audio();
+    audio.preload = "metadata";
+    audio.src = sources[index];
     let advanced = false;
     const tryNextSource = () => {
       if (advanced) return;
@@ -1204,7 +1325,6 @@ function startIntroSequenceAudio() {
       playSource(index + 1);
     };
     audio.loop = true;
-    audio.preload = "auto";
     audio.studyAdventureBaseVolume = state.sfxPreset === "cinematic" ? 0.72 : 0.42;
     audio.volume = effectiveGameSfxVolume(audio);
     setNarrationLowPass(audio, state.ttsPlaybackActive);
@@ -1229,6 +1349,7 @@ function stopIntroSequenceAudio() {
     try {
       audio.pause();
       audio.currentTime = 0;
+      releaseLocalMediaElement(audio);
     } catch {
       // Intro audio should never interrupt the mission flow.
     }
@@ -1254,6 +1375,7 @@ function fadeOutIntroSequenceAudio(durationMs = 1400) {
     try {
       audio.pause();
       audio.currentTime = 0;
+      releaseLocalMediaElement(audio);
     } catch {
       // Intro audio should never interrupt the mission flow.
     }
@@ -1278,7 +1400,9 @@ function playMissionFailureAudio() {
 
   const playSource = (index) => {
     if (runId !== state.failureAudioRunId || index >= sources.length) return;
-    const audio = new Audio(sources[index]);
+    const audio = new Audio();
+    audio.preload = "metadata";
+    audio.src = sources[index];
     let advanced = false;
     const tryNextSource = () => {
       if (advanced) return;
@@ -1286,7 +1410,6 @@ function playMissionFailureAudio() {
       if (state.failureAudio === audio) state.failureAudio = null;
       playSource(index + 1);
     };
-    audio.preload = "auto";
     audio.studyAdventureBaseVolume = state.sfxPreset === "cinematic" ? 0.96 : 0.58;
     audio.volume = effectiveGameSfxVolume(audio);
     setNarrationLowPass(audio, state.ttsPlaybackActive);
@@ -1305,14 +1428,7 @@ function stopMissionFailureAudio() {
   const audio = state.failureAudio;
   state.failureAudio = null;
   if (!audio) return;
-  try {
-    audio.pause();
-    audio.currentTime = 0;
-    audio.removeAttribute("src");
-    audio.load();
-  } catch {
-    // Failure audio should never interrupt the mission flow.
-  }
+  releaseLocalMediaElement(audio);
 }
 
 function startNormalBackgroundMusicAfterReady() {
@@ -1393,16 +1509,17 @@ function backgroundMusicPlayer() {
   return els.backgroundMusicEmbed?.querySelector("iframe, audio") || null;
 }
 
-function setBackgroundMusicPlayerVolume(player, volume) {
+function setBackgroundMusicPlayerVolume(player, volume, options = {}) {
   if (!player) return;
+  const ensurePlayback = options.ensurePlayback !== false;
   if (player.tagName === "AUDIO") {
     player.volume = Math.max(0, Math.min(1, volume / 100));
     setNarrationLowPass(player, state.ttsPlaybackActive);
-    player.play().catch(() => {});
+    if (ensurePlayback) player.play().catch(() => {});
     return;
   }
   sendYouTubePlayerCommand(player, "setVolume", [Math.round(volume)]);
-  sendYouTubePlayerCommand(player, "playVideo");
+  if (ensurePlayback) sendYouTubePlayerCommand(player, "playVideo");
 }
 
 function rampBackgroundMusic(player, fromVolume, toVolume, durationMs, onComplete) {
@@ -1417,7 +1534,7 @@ function rampBackgroundMusic(player, fromVolume, toVolume, durationMs, onComplet
     const eased = 1 - ((1 - progress) ** 3);
     const volume = fromVolume + ((toVolume - fromVolume) * eased);
     state.backgroundMusicCurrentVolume = volume;
-    setBackgroundMusicPlayerVolume(player, volume);
+    setBackgroundMusicPlayerVolume(player, volume, { ensurePlayback: false });
     if (progress >= 1) {
       window.clearInterval(state.backgroundMusicFadeTimer);
       state.backgroundMusicFadeTimer = null;
@@ -1532,7 +1649,7 @@ function loadBackgroundMusic(mode = desiredBackgroundMusicMode(), options = {}) 
         }
       }, { once: true });
     } else {
-      els.backgroundMusicEmbed.innerHTML = `<audio title="Bundled ${escapeAttribute(requestedMode)} background music" src="${localSrc}" loop preload="auto" controls></audio>`;
+      els.backgroundMusicEmbed.innerHTML = `<audio title="Bundled ${escapeAttribute(requestedMode)} background music" src="${localSrc}" loop preload="metadata" controls></audio>`;
       const audio = els.backgroundMusicEmbed.querySelector("audio");
       let localStarted = false;
       if (audio) audio.volume = Math.max(0, Math.min(1, state.backgroundMusicCurrentVolume / 100));
@@ -1561,7 +1678,10 @@ function loadBackgroundMusic(mode = desiredBackgroundMusicMode(), options = {}) 
   };
 
   if (previousPlayer && options.transition) {
-    rampBackgroundMusic(previousPlayer, state.backgroundMusicCurrentVolume, 0, 900, () => mountTrack(true));
+    rampBackgroundMusic(previousPlayer, state.backgroundMusicCurrentVolume, 0, 900, () => {
+      releaseLocalMediaElement(previousPlayer);
+      mountTrack(true);
+    });
   } else {
     mountTrack(Boolean(options.fadeIn));
   }
@@ -1574,8 +1694,7 @@ function stopBackgroundMusic() {
   state.backgroundMusicFadeTimer = null;
   const player = backgroundMusicPlayer();
   if (player?.tagName === "AUDIO") {
-    player.pause();
-    player.currentTime = 0;
+    releaseLocalMediaElement(player);
   }
   if (els.backgroundMusicEmbed) els.backgroundMusicEmbed.innerHTML = "";
   state.backgroundMusicLoaded = false;
@@ -1686,6 +1805,7 @@ function triggerBossDamageImpact(effects = []) {
 function desiredBackgroundMusicMode() {
   const node = state.nodes[state.currentNode];
   const bossActive = node?.type === "boss" || Boolean(currentBossProgress());
+  if (isCombatNode(node)) return "boss";
   if (bossActive && state.bossMusicStartedNodes.has(state.currentNode)) return "boss";
   return "normal";
 }
@@ -1823,8 +1943,7 @@ function delayPresentation(ms) {
   const delay = Math.max(0, Number(ms) || 0);
   if (!delay) return Promise.resolve();
   return new Promise((resolve) => {
-    const timer = window.setTimeout(resolve, delay);
-    state.typeTimers.push(timer);
+    trackTypeTimer(resolve, delay, resolve);
   });
 }
 
@@ -1888,6 +2007,43 @@ function setupRosterPlayers() {
     .filter(Boolean);
 }
 
+function renderSingleDeviceClassAssignments() {
+  const container = els.singleDeviceClassAssignments;
+  if (!container) return;
+  const players = setupRosterPlayers();
+  const singleDevice = selectedDeviceMode() === "single";
+  container.hidden = !singleDevice || !players.length;
+  if (container.hidden) return;
+  const validNames = new Set(players.map(normalize));
+  for (const key of [...singleDeviceClassAssignments.keys()]) {
+    if (!validNames.has(key)) singleDeviceClassAssignments.delete(key);
+  }
+  const claimed = new Set();
+  players.forEach((name, index) => {
+    const key = normalize(name);
+    const current = singleDeviceClassAssignments.get(key);
+    if (combatSystem.classDefinition?.(current) && !claimed.has(current)) claimed.add(current);
+    else {
+      const fallback = combatSystem.CLASS_IDS?.find((classId) => !claimed.has(classId)) || "";
+      singleDeviceClassAssignments.set(key, fallback);
+      if (fallback) claimed.add(fallback);
+    }
+  });
+  container.innerHTML = `<strong>Class Assignments</strong>${players.map((name) => {
+    const key = normalize(name);
+    const selected = singleDeviceClassAssignments.get(key) || "";
+    return `<label><span>${escapeHtml(name)}</span><select class="singleClassSelect" data-player-key="${escapeAttribute(key)}">${(combatSystem.CLASS_IDS || []).map((classId) => {
+      const definition = combatSystem.classDefinition?.(classId) || { label: classId, gear: "" };
+      const taken = players.some((other) => normalize(other) !== key && singleDeviceClassAssignments.get(normalize(other)) === classId);
+      return `<option value="${escapeAttribute(classId)}" ${selected === classId ? "selected" : ""} ${taken ? "disabled" : ""}>${escapeHtml(definition.label)} · ${escapeHtml(definition.gear)}</option>`;
+    }).join("")}</select></label>`;
+  }).join("")}`;
+  container.querySelectorAll(".singleClassSelect").forEach((select) => select.addEventListener("change", () => {
+    singleDeviceClassAssignments.set(select.dataset.playerKey, select.value);
+    renderSingleDeviceClassAssignments();
+  }));
+}
+
 function startTestSessionFromUrl() {
   const params = new URLSearchParams(window.location.search);
   const requested = params.get("test");
@@ -1936,8 +2092,14 @@ function startMission() {
       alert("Add at least one player name for Single Device mode.");
       return;
     }
+    if (players.length > (combatSystem.CLASS_IDS?.length || 6)) {
+      setLaunchStatus("Class missions currently support up to six players.", true);
+      return;
+    }
+    renderSingleDeviceClassAssignments();
+    const playerClasses = Object.fromEntries(players.map((name) => [normalize(name), singleDeviceClassAssignments.get(normalize(name))]));
     setLaunchStatus("Launching single-device mission...");
-    launchMission(players, config);
+    launchMission(players, { ...config, playerClasses });
   } catch (error) {
     setLaunchStatus(`Launch error: ${error.message || error}`, true);
   }
@@ -1988,6 +2150,7 @@ function readMissionConfig() {
     useYoutubeBossMusic: Boolean(els.useYoutubeBossMusic?.checked),
     youtubeMusicRandomStart: Boolean(els.youtubeMusicRandomStart?.checked),
     bossTestMode: Boolean(els.bossTestMode?.checked),
+    combatTestMode: Boolean(els.combatTestMode?.checked),
     actionDrivenMode
   };
 }
@@ -2112,17 +2275,26 @@ function positionMissionForBossTest() {
   const groups = bossQuestionGroups(state.questions.length);
   const targetGroup = groups.find((group) => group.phase === "final") || groups.at(-1);
   if (!targetGroup) return;
+  const bossNodeIndex = state.nodes.findIndex((node) => node.type === "boss" && node.questionIndex === targetGroup.start);
+  if (bossNodeIndex < 0) return;
   const preBossQuestion = Math.max(0, targetGroup.start - 1);
-  const preBossNodeIndex = state.nodes.findIndex((node) => node.type === "challenge" && node.questionIndex === preBossQuestion);
-  if (preBossNodeIndex >= 0) {
+  const preBossNodeIndex = bossNodeIndex - 1;
+  if (targetGroup.start > 0 && preBossNodeIndex >= 0) {
+    const existingNode = state.nodes[preBossNodeIndex] || {};
+    state.nodes[preBossNodeIndex] = {
+      ...existingNode,
+      type: "challenge",
+      roomKind: "obstacle",
+      questionIndex: preBossQuestion,
+      questionIndexes: [preBossQuestion],
+      label: "Staging",
+      bossTestStaging: true
+    };
     state.currentQuestion = preBossQuestion;
     state.currentNode = preBossNodeIndex;
   } else {
-    const bossNodeIndex = state.nodes.findIndex((node) => node.type === "boss" && node.questionIndex === targetGroup.start);
-    if (bossNodeIndex >= 0) {
-      state.currentQuestion = targetGroup.start;
-      state.currentNode = bossNodeIndex;
-    }
+    state.currentQuestion = targetGroup.start;
+    state.currentNode = bossNodeIndex;
   }
   state.challengeHistory = Array.from({ length: state.currentQuestion }, (_, index) => ({
     correct: true,
@@ -2135,7 +2307,9 @@ function positionMissionForBossTest() {
   logDebugEvent({
     kind: "response",
     label: "Boss test start armed",
-    detail: `Starting at question ${state.currentQuestion + 1} near ${targetGroup.phase} boss`
+    detail: preBossNodeIndex >= 0 && targetGroup.start > 0
+      ? `Starting in staging room ${preBossNodeIndex + 1}; boss room ${bossNodeIndex + 1} remains locked behind critical contact`
+      : `No pre-boss question available; starting at the ${targetGroup.phase} boss readiness gate`
   });
 }
 
@@ -2158,7 +2332,18 @@ function launchMission(players, config) {
     state.localDmProvider = config.localDmProvider || selectedLocalDmProvider();
     state.ollamaModel = config.ollamaModel;
     state.resolved = false;
-    state.players = cleanPlayers.map((name) => ({ name, hp: 5, status: [], incapacitated: false, points: 0 }));
+    state.players = cleanPlayers.map((name, index) => combatSystem.normalizePlayer
+      ? combatSystem.normalizePlayer({
+          name,
+          hp: 10,
+          status: [],
+          incapacitated: false,
+          points: 0,
+          xp: 0,
+          answerStreak: 0,
+          classId: config.playerClasses?.[normalize(name)] || combatSystem.CLASS_IDS?.[index % combatSystem.CLASS_IDS.length]
+        })
+      : { name, hp: 10, maxHp: 10, status: [], incapacitated: false, points: 0, xp: 0, level: 1, answerStreak: 0 });
     state.inventory = { medkits: 2, ems: 0 };
     state.missionType = config.missionType;
     state.environment = config.environment;
@@ -2170,9 +2355,13 @@ function launchMission(players, config) {
     state.currentQuestion = 0;
     state.currentNode = 0;
     state.actionDrivenMode = Boolean(config.actionDrivenMode);
-    state.challengeTypes = buildChallengePlan(config.questions.length);
-    state.questions = state.actionDrivenMode ? config.questions : config.localDmMode || !config.chatMode ? prepareQuestions(config.questions, state.challengeTypes) : config.questions;
-    state.nodes = buildNodes(state.questions.length);
+    state.combatTestMode = Boolean(config.combatTestMode && !state.actionDrivenMode);
+    const missionQuestions = state.combatTestMode && config.questions.length === 1
+      ? [config.questions[0], { ...config.questions[0] }]
+      : config.questions;
+    state.challengeTypes = buildChallengePlan(missionQuestions.length);
+    state.questions = state.actionDrivenMode ? missionQuestions : config.localDmMode || !config.chatMode ? prepareQuestions(missionQuestions, state.challengeTypes) : missionQuestions;
+    state.nodes = state.combatTestMode ? buildCombatTestNodes(state.questions.length) : buildNodes(state.questions.length);
     state.mapLayoutSeed = seedFrom(`${state.title}|${cleanPlayers.join(",")}|${config.questions.length}|${Date.now()}|${Math.random()}`);
     state.mapPositions = generateSprawledRoutePositions(state.nodes.length, state.mapLayoutSeed);
     state.mapRevealedNodes = new Set();
@@ -2181,7 +2370,7 @@ function launchMission(players, config) {
     applyGeneratedBossAreas(config.generatedMission?.bossAreas);
     state.bossPhasePlans = {};
     state.bossPhasePlanRequests = {};
-    state.bossTestMode = Boolean(config.bossTestMode);
+    state.bossTestMode = Boolean(config.bossTestMode && !state.combatTestMode);
     state.bossTestPromptStarted = false;
     state.actionRooms = state.actionDrivenMode ? buildActionRooms(config.questions.length) : [];
     state.actionThreatPressure = 0;
@@ -2189,6 +2378,9 @@ function launchMission(players, config) {
     state.actionReceiptLogKey = "";
     state.actionTurnOrder = shuffleForSession(cleanPlayers);
     state.actionResolutionQueue = null;
+    state.combatEncounters = {};
+    clearCombatPresentation();
+    state.combatStageEnteredNodes = new Set();
     state.activeObstacles = {};
     state.nodeResults = {};
     state.recoveryUsed = new Set();
@@ -2200,8 +2392,14 @@ function launchMission(players, config) {
     state.challengeHistory = [];
     state.feedLastId = "";
     state.playerPromptId = "";
+    state.playerSyncInFlight = false;
+    state.playerHostRevision = 0;
+    state.playerServerRevision = 0;
+    state.playerServerPromptId = "";
+    state.playerSyncFailureCount = 0;
     state.playerPromptRequiredIds = [];
     state.playerPromptRequiredNames = [];
+    state.playerPromptRequiredAt = 0;
     state.playerAnswers = [];
     state.playerActions = [];
     state.queuedPlayerActions = [];
@@ -2241,6 +2439,7 @@ function launchMission(players, config) {
     state.sideActionPending = false;
     state.sideActionWaitingId = "";
     state.narrowedChoices = {};
+    state.classHints = {};
     state.sideActionGuard = false;
     state.previousAnswer = null;
     state.emergencyTimerEnabled = config.emergencyTimerEnabled;
@@ -2278,7 +2477,7 @@ function launchMission(players, config) {
     state.joinLobbyActive = false;
     state.pendingMissionConfig = null;
 
-    if (config.bossTestMode && !state.actionDrivenMode) positionMissionForBossTest();
+    if (state.bossTestMode && !state.actionDrivenMode) positionMissionForBossTest();
 
     if (state.teamReady || !state.chatMode) startNormalBackgroundMusicAfterReady();
     else startIntroSequenceAudio();
@@ -2310,7 +2509,40 @@ function launchMission(players, config) {
 
 function resetMission() {
   if (document.body.classList.contains("dashboard-exiting")) return;
-  if (document.body.classList.contains("mission-active")) {
+  const message = document.body.classList.contains("mission-active")
+    ? "Reset this mission and return to preflight? Current mission progress will be cleared."
+    : "Reset the current preflight setup? Unsaved settings will be cleared.";
+  if (!els.resetConfirmOverlay) return;
+  resetConfirmationReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : els.resetBtn;
+  if (els.resetConfirmMessage) els.resetConfirmMessage.textContent = message;
+  els.resetConfirmOverlay.hidden = false;
+  document.body.classList.add("reset-confirm-open");
+  window.requestAnimationFrame(() => {
+    els.resetConfirmOverlay?.classList.add("visible");
+    els.resetConfirmCancelBtn?.focus();
+  });
+  playGameSfx("ui");
+}
+
+function closeResetConfirmation({ restoreFocus = true, immediate = false } = {}) {
+  if (!els.resetConfirmOverlay) return;
+  els.resetConfirmOverlay.classList.remove("visible");
+  document.body.classList.remove("reset-confirm-open");
+  const finish = () => {
+    if (!els.resetConfirmOverlay?.classList.contains("visible")) els.resetConfirmOverlay.hidden = true;
+    if (restoreFocus && resetConfirmationReturnFocus?.isConnected) resetConfirmationReturnFocus.focus();
+    resetConfirmationReturnFocus = null;
+  };
+  if (immediate) finish();
+  else window.setTimeout(finish, 180);
+}
+
+function confirmMissionReset() {
+  if (!els.resetConfirmOverlay || els.resetConfirmOverlay.hidden) return;
+  const missionActive = document.body.classList.contains("mission-active");
+  closeResetConfirmation({ restoreFocus: false, immediate: true });
+  playGameSfx("ui");
+  if (missionActive) {
     startDashboardToSetupTransition();
     return;
   }
@@ -2357,8 +2589,12 @@ function performMissionReset({ preserveTransition = false } = {}) {
   state.bossPhasePlanRequests = {};
   state.bossTestMode = false;
   state.bossTestPromptStarted = false;
+  state.combatTestMode = false;
   state.actionDrivenMode = false;
   state.actionRooms = [];
+  state.combatEncounters = {};
+  clearCombatPresentation();
+  state.combatStageEnteredNodes = new Set();
   state.actionThreatPressure = 0;
   state.actionRoomAttempts = {};
   state.actionReceiptLogKey = "";
@@ -2378,6 +2614,7 @@ function performMissionReset({ preserveTransition = false } = {}) {
   state.playerPromptId = "";
   state.playerPromptRequiredIds = [];
   state.playerPromptRequiredNames = [];
+  state.playerPromptRequiredAt = 0;
   state.playerAnswers = [];
   state.playerActions = [];
   state.queuedPlayerActions = [];
@@ -2420,6 +2657,7 @@ function performMissionReset({ preserveTransition = false } = {}) {
   state.sideActionPending = false;
   state.sideActionWaitingId = "";
   state.narrowedChoices = {};
+  state.classHints = {};
   state.sideActionGuard = false;
   state.previousAnswer = null;
   state.emergencyTimer = null;
@@ -2455,7 +2693,16 @@ function performMissionReset({ preserveTransition = false } = {}) {
   stopOpeningWaitCounter();
   els.setupPanel.style.display = "";
   els.joinLobby.hidden = true;
+  els.playersInput.value = "";
+  singleDeviceClassAssignments.clear();
   els.startBtn.disabled = false;
+  els.launchFromLobbyBtn.textContent = "Launch Mission";
+  els.launchFromLobbyBtn.disabled = true;
+  if (els.addSimPlayersBtn) {
+    els.addSimPlayersBtn.disabled = false;
+    els.addSimPlayersBtn.textContent = "Add 3 Sim Players";
+  }
+  setLaunchStatus("");
   syncSetupMode();
   els.briefingCard.classList.remove("briefing-collapsed");
   els.briefingCard.innerHTML = `<p class="eyebrow">Briefing</p><h2>Ready for orders</h2><p>Start a mission to generate the briefing, player state, dungeon route, and first challenge.</p>`;
@@ -2494,8 +2741,14 @@ function openJoinLobby(config) {
   state.started = false;
   state.roomCode = "";
   state.playerPromptId = "";
+  state.playerSyncInFlight = false;
+  state.playerHostRevision = 0;
+  state.playerServerRevision = 0;
+  state.playerServerPromptId = "";
+  state.playerSyncFailureCount = 0;
   state.playerPromptRequiredIds = [];
   state.playerPromptRequiredNames = [];
+  state.playerPromptRequiredAt = 0;
   state.playerAnswers = [];
   state.playerActions = [];
   state.processedPlayerActionIds = new Set();
@@ -2560,8 +2813,32 @@ function launchMissionFromLobby() {
         setLaunchStatus(players.length < 1 ? "No connected players found in this room." : "Mission setup is incomplete.", true);
         return;
       }
+      const missingClasses = state.playerParticipants.filter((player) => !combatSystem.classDefinition?.(player.classId));
+      const selectedClasses = state.playerParticipants.map((player) => player.classId).filter(Boolean);
+      if (players.length > (combatSystem.CLASS_IDS?.length || 6) || missingClasses.length || new Set(selectedClasses).size !== selectedClasses.length) {
+        els.launchFromLobbyBtn.textContent = "Launch Mission";
+        els.launchFromLobbyBtn.disabled = false;
+        els.lobbyJoinHelp.textContent = players.length > 6
+          ? "Class missions currently support up to six players."
+          : "Every player must reserve a unique class before launch.";
+        setLaunchStatus(els.lobbyJoinHelp.textContent, true);
+        return;
+      }
+      const playerClasses = Object.fromEntries(state.playerParticipants.map((player) => [normalize(player.name), player.classId]));
       setLaunchStatus(`Launching mission with ${players.length} player${players.length === 1 ? "" : "s"}...`);
-      launchMission(players, { ...config, deviceMode: "multi" });
+      launchMission(players, { ...config, deviceMode: "multi", playerClasses });
+    })
+    .catch((error) => {
+      logDebugEvent({
+        kind: "error",
+        label: "Lobby launch recovered",
+        detail: String(error?.message || error || "mission launch failed").slice(0, 500)
+      });
+      state.started = false;
+      els.launchFromLobbyBtn.textContent = "Launch Mission";
+      els.launchFromLobbyBtn.disabled = false;
+      setLaunchStatus(`Launch failed: ${error?.message || error || "try again"}`, true);
+      if (state.joinLobbyActive) renderJoinLobby();
     });
 }
 
@@ -2702,13 +2979,17 @@ function renderJoinLobby() {
       <div class="lobby-player">
           <strong class="player-colored-name" style="--player-color:${playerColor(player.name, state.playerParticipants.indexOf(player))}">${escapeHtml(player.name)}</strong>
         <div class="lobby-player-actions">
-          <span>Connected</span>
+          <span>${escapeHtml(combatSystem.classDefinition?.(player.classId)?.label || "Choose class")}</span>
           <button class="secondary removePlayerBtn" type="button" data-player-id="${escapeAttribute(player.id)}" data-player-name="${escapeAttribute(player.name)}">Remove</button>
         </div>
       </div>
     `).join("")
     : "<p class=\"muted-small\">No players have joined yet.</p>";
-  els.launchFromLobbyBtn.disabled = false;
+  const classesReady = state.playerParticipants.length > 0
+    && state.playerParticipants.length <= (combatSystem.CLASS_IDS?.length || 6)
+    && state.playerParticipants.every((player) => combatSystem.classDefinition?.(player.classId))
+    && new Set(state.playerParticipants.map((player) => player.classId)).size === state.playerParticipants.length;
+  els.launchFromLobbyBtn.disabled = !classesReady;
   bindRemovePlayerButtons();
 }
 
@@ -2752,8 +3033,9 @@ function randomSimulatorNames(count) {
 
 function stopPlayerSession() {
   stopPlayerPolling();
+  clearPromptPublicationRetry();
   cancelSimulatorAutoAnswerTimers();
-  if (state.roomCode) publishPlayerSession({ status: "ended", prompt: null, resetAnswers: true, resetQueuedActions: true });
+  if (state.roomCode) publishPlayerSession({ status: "ended", prompt: null, resetAnswers: true, resetQueuedActions: true, resetParticipants: true });
   state.playerAnswers = [];
   state.playerActions = [];
   state.queuedPlayerActions = [];
@@ -2768,10 +3050,19 @@ function stopPlayerPolling() {
     window.clearInterval(state.playerPollTimer);
     state.playerPollTimer = null;
   }
+  state.playerSyncInFlight = false;
+}
+
+function ensurePlayerAnswerPolling() {
+  if (!state.started || state.deviceMode !== "multi" || !state.roomCode || state.playerPollTimer) return;
+  state.playerPollTimer = window.setInterval(pollPlayerAnswers, 900);
+  window.setTimeout(pollPlayerAnswers, 0);
 }
 
 function publishPlayerSession(extra = {}) {
   if (!state.roomCode) return Promise.resolve(null);
+  state.playerHostRevision += 1;
+  const requestedPrompt = extra.prompt === undefined ? buildPlayerPrompt() : extra.prompt;
   const payload = {
     roomCode: state.roomCode,
     status: extra.status || (state.questionPresentationReady ? "open" : "waiting"),
@@ -2780,20 +3071,59 @@ function publishPlayerSession(extra = {}) {
     playerStates: extra.playerStates || playerStatePayload(),
     actionCooldownMs: state.actionDrivenMode ? 0 : PLAYER_ACTION_COOLDOWN_MS,
     allowQueuedPlayerActions: Boolean(state.started && state.teamReady && state.localDmMode && state.deviceMode === "multi" && !state.actionDrivenMode),
-    prompt: extra.prompt === undefined ? buildPlayerPrompt() : extra.prompt,
+    prompt: requestedPrompt,
     resetAnswers: Boolean(extra.resetAnswers),
-    resetQueuedActions: Boolean(extra.resetQueuedActions)
+    resetQueuedActions: Boolean(extra.resetQueuedActions),
+    resetParticipants: Boolean(extra.resetParticipants),
+    hostRevision: state.playerHostRevision,
+    expectedPromptId: requestedPrompt === null ? String(extra.expectedPromptId || state.playerPromptId || state.playerServerPromptId || "") : ""
   };
-  return playerSessionApi.publishSession(payload);
+  return playerSessionApi.publishSession(payload).then((result) => {
+    const session = result?.session;
+    if (session) {
+      state.playerServerRevision = Math.max(state.playerServerRevision, Number(session.revision) || 0);
+      state.playerServerPromptId = session.prompt?.id || "";
+      state.playerHostRevision = Math.max(state.playerHostRevision, Number(session.hostRevision) || 0);
+    }
+    return result;
+  });
 }
 
 function publishPlayerVitals() {
   if (!state.roomCode || state.joinLobbyActive || !state.started || state.deviceMode !== "multi") return;
-  playerSessionApi.publishSession({
-    roomCode: state.roomCode,
-    playerStates: playerStatePayload(),
-    resetAnswers: false
-  });
+  publishPlayerSession({ playerStates: playerStatePayload(), resetAnswers: false });
+}
+
+function clearPromptPublicationRetry(promptId = "") {
+  if (promptId && state.playerPromptPublicationRetryId && state.playerPromptPublicationRetryId !== promptId) return;
+  if (state.playerPromptPublicationRetryTimer) window.clearTimeout(state.playerPromptPublicationRetryTimer);
+  state.playerPromptPublicationRetryTimer = null;
+  state.playerPromptPublicationRetryId = "";
+  state.playerPromptPublicationRetryAttempt = 0;
+}
+
+function schedulePromptPublicationRepair(promptId, attempt = 0) {
+  if (!promptId || promptId !== state.playerPromptId || state.resolved || attempt > PLAYER_PROMPT_PUBLICATION_MAX_RETRIES) return;
+  if (state.playerPromptPublicationRetryTimer
+    && state.playerPromptPublicationRetryId === promptId
+    && state.playerPromptPublicationRetryAttempt <= attempt) return;
+  if (state.playerPromptPublicationRetryTimer) window.clearTimeout(state.playerPromptPublicationRetryTimer);
+  state.playerPromptPublicationRetryId = promptId;
+  state.playerPromptPublicationRetryAttempt = attempt;
+  state.playerPromptPublicationRetryTimer = window.setTimeout(() => {
+    state.playerPromptPublicationRetryTimer = null;
+    repairCurrentPromptPublication(promptId).then((result) => {
+      const session = result?.session;
+      const synchronized = session?.status === "open" && session?.prompt?.id === promptId;
+      if (synchronized) {
+        clearPromptPublicationRetry(promptId);
+        return;
+      }
+      if (promptId === state.playerPromptId && !state.resolved) {
+        schedulePromptPublicationRepair(promptId, attempt + 1);
+      }
+    });
+  }, PLAYER_PROMPT_PUBLICATION_RETRY_MS + attempt * 500);
 }
 
 function playerTimerPayload() {
@@ -2819,10 +3149,39 @@ function playerStatePayload() {
   return state.players.map((player) => ({
     name: player.name,
     hp: Math.max(0, player.hp),
+    maxHp: Math.max(10, Number(player.maxHp) || 10),
     status: [...player.status],
     incapacitated: Boolean(player.incapacitated),
-    points: Math.max(0, Math.round(Number(player.points) || 0))
+    points: Math.max(0, Math.round(Number(player.points) || 0)),
+    xp: Math.max(0, Math.round(Number(player.xp) || 0)),
+    level: Math.max(1, Math.round(Number(player.level) || 1)),
+    answerStreak: Math.max(0, Math.round(Number(player.answerStreak) || 0)),
+    classId: player.classId || "",
+    classLabel: combatSystem.classDefinition?.(player.classId)?.label || "Operator",
+    classGear: player.classGear || combatSystem.classDefinition?.(player.classId)?.gear || "",
+    equippedItem: player.equippedItem || null
   }));
+}
+
+function activateScoutHintForPrompt(info) {
+  if (!info?.question || state.classHints[state.currentQuestion]) return;
+  const scout = activePlayers().find((player) => player.classId === "scout" && combatCooldownReady(player, "spectrum-analyzer", 5));
+  if (!scout) return;
+  let hint = "";
+  if (info.question.mode === "multiple") {
+    const removable = info.question.choices?.filter((choice) => choice.key !== info.question.answerKey) || [];
+    const removed = removable[Math.floor(state.rng() * removable.length)];
+    if (removed) {
+      state.narrowedChoices[state.currentQuestion] = [...new Set([...(state.narrowedChoices[state.currentQuestion] || []), removed.key])];
+      hint = `${scout.name}'s Spectrum Analyzer eliminates option ${removed.key}.`;
+    }
+  } else {
+    const answer = String(info.question.answerText || "").trim();
+    if (answer) hint = `${scout.name}'s Spectrum Analyzer reveals that the answer begins with “${answer[0].toUpperCase()}”.`;
+  }
+  if (!hint) return;
+  state.classHints[state.currentQuestion] = hint;
+  markCombatCooldown(scout, "spectrum-analyzer");
 }
 
 function buildPlayerPrompt() {
@@ -2855,7 +3214,9 @@ function buildPlayerPrompt() {
   }
   const info = currentQuestionInfo();
   if (!info.question) return null;
-  const promptId = `${state.currentQuestion}-${state.currentNode}-${info.question.mode}-${info.type.kind}`;
+  activateScoutHintForPrompt(info);
+  const combatEncounter = isCombatNode(node) ? currentCombatEncounter() : null;
+  const promptId = `${state.currentQuestion}-${state.currentNode}-${info.question.mode}-${info.type.kind}${combatEncounter ? `-r${combatEncounter.round}` : ""}`;
   state.playerPromptId = promptId;
   return {
     id: promptId,
@@ -2870,6 +3231,15 @@ function buildPlayerPrompt() {
     bossStep: info.type.bossStep || 0,
     bossTotal: info.type.bossTotal || 0,
     bossPhase: info.type.bossPhase || "",
+    combat: combatEncounter ? {
+      hp: combatEncounter.hp,
+      maxHp: combatEncounter.maxHp,
+      enemyCount: combatEncounter.enemies.filter((enemy) => !enemy.defeated).length,
+      round: combatEncounter.round + 1,
+      boss: node?.type === "boss",
+      intent: combatIntentText(info.type, info.operator)
+    } : null,
+    classHint: state.classHints[state.currentQuestion] || "",
     lockedPlayer: info.operator?.name || "",
     allowPlayerActions: actionsAllowedThisEncounter(),
     accepting: state.questionPresentationReady && !state.answerPending && !state.resolutionDelayPending && !sideActionBlocksPlayerAnswers() && !state.resolved,
@@ -2886,16 +3256,26 @@ function buildPlayerPrompt() {
 
 function publishCurrentPlayerPrompt(options = {}) {
   if (!state.started || !state.teamReady && state.chatMode) return;
+  ensurePlayerAnswerPolling();
   clearFinalSubmissionDelay();
   cancelSimulatorAutoAnswerTimers();
   const prompt = buildPlayerPrompt();
+  clearPromptPublicationRetry();
   state.playerSubmissionLogKey = `${prompt?.id || ""}|reset`;
   state.playerAnswers = [];
   state.playerActions = [];
   snapshotPromptRequiredResponders(prompt);
   const publication = publishPlayerSession({ status: "open", prompt, resetAnswers: true });
   if (state.deviceMode === "multi" && state.roomCode) {
-    Promise.resolve(publication).then(() => startBossQuestionMusic()).catch(() => {});
+    Promise.resolve(publication).then((result) => {
+      const synchronized = result?.session?.status === "open" && result?.session?.prompt?.id === prompt?.id;
+      if (!synchronized && prompt?.id === state.playerPromptId && !state.resolved) {
+        schedulePromptPublicationRepair(prompt.id);
+      }
+      startBossQuestionMusic();
+    }).catch(() => {
+      if (prompt?.id === state.playerPromptId && !state.resolved) schedulePromptPublicationRepair(prompt.id);
+    });
   } else {
     startBossQuestionMusic();
   }
@@ -2908,7 +3288,38 @@ function clearFinalSubmissionDelay() {
   state.resolutionDelayTimer = null;
   state.resolutionDelayPending = false;
   state.resolutionDelayPromptId = "";
+  state.resolutionDelayStartedAt = 0;
+  state.resolutionDelayCallback = null;
   document.body.classList.remove("answer-resolution-queued");
+}
+
+function completeFinalSubmissionResolution(promptId) {
+  if (!state.resolutionDelayPending || state.resolutionDelayPromptId !== promptId) return false;
+  const callback = state.resolutionDelayCallback;
+  const stillCurrent = state.started
+    && state.playerPromptId === promptId
+    && !state.answerPending
+    && !state.resolved;
+  if (state.resolutionDelayTimer) window.clearTimeout(state.resolutionDelayTimer);
+  state.resolutionDelayTimer = null;
+  state.resolutionDelayPending = false;
+  state.resolutionDelayPromptId = "";
+  state.resolutionDelayStartedAt = 0;
+  state.resolutionDelayCallback = null;
+  document.body.classList.remove("answer-resolution-queued");
+  if (stillCurrent && typeof callback === "function") callback();
+  return stillCurrent;
+}
+
+function recoverOverdueSubmissionResolution() {
+  if (!state.resolutionDelayPending || !state.resolutionDelayPromptId || !state.resolutionDelayStartedAt) return;
+  if (Date.now() - state.resolutionDelayStartedAt < FINAL_SUBMISSION_HOLD_MS + 1_500) return;
+  logDebugEvent({
+    kind: "state",
+    label: "Submission hold recovered by sync watchdog",
+    detail: state.resolutionDelayPromptId
+  });
+  completeFinalSubmissionResolution(state.resolutionDelayPromptId);
 }
 
 function queueFinalSubmissionResolution(callback, label = "required responses complete") {
@@ -2917,6 +3328,8 @@ function queueFinalSubmissionResolution(callback, label = "required responses co
 
   state.resolutionDelayPending = true;
   state.resolutionDelayPromptId = promptId;
+  state.resolutionDelayStartedAt = Date.now();
+  state.resolutionDelayCallback = callback;
   stopTts();
   stopEmergencyTimer();
   document.body.classList.add("answer-resolution-queued");
@@ -2931,22 +3344,14 @@ function queueFinalSubmissionResolution(callback, label = "required responses co
   });
 
   state.resolutionDelayTimer = window.setTimeout(() => {
-    state.resolutionDelayTimer = null;
-    const stillCurrent = state.started
-      && state.playerPromptId === promptId
-      && state.resolutionDelayPromptId === promptId
-      && !state.answerPending
-      && !state.resolved;
-    state.resolutionDelayPending = false;
-    state.resolutionDelayPromptId = "";
-    document.body.classList.remove("answer-resolution-queued");
-    if (stillCurrent) callback();
+    completeFinalSubmissionResolution(promptId);
   }, FINAL_SUBMISSION_HOLD_MS);
   return true;
 }
 
 function clearPendingPlayerPromptState(options = {}) {
   clearFinalSubmissionDelay();
+  clearPromptPublicationRetry();
   cancelSimulatorAutoAnswerTimers();
   state.playerAnswers = [];
   state.playerActions = [];
@@ -2965,22 +3370,70 @@ function publishPlayerWaiting(status = "waiting") {
 
 function pollPlayerAnswers() {
   if (!state.roomCode) return;
+  if (state.playerSyncInFlight) return;
   if (state.joinLobbyActive) {
+    state.playerSyncInFlight = true;
     playerSessionApi.fetchSession()
       .then((session) => {
         state.playerParticipants = session?.participants || [];
         renderJoinLobby();
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        state.playerSyncInFlight = false;
+      });
     return;
   }
   if (!state.started) return;
   const promptId = state.playerPromptId || buildPlayerPrompt()?.id || "";
-  playerSessionApi.fetchAnswers(state.roomCode, promptId)
+  const syncRoomCode = state.roomCode;
+  state.playerSyncInFlight = true;
+  const syncRequest = typeof playerSessionApi.fetchSync === "function"
+    ? playerSessionApi.fetchSync(state.roomCode, promptId)
+    : Promise.all([
+        playerSessionApi.fetchAnswers(state.roomCode, promptId),
+        playerSessionApi.fetchSession().catch(() => null)
+      ]).then(([payload, session]) => ({ ...payload, session }));
+  syncRequest
     .then((payload) => {
+      if (!state.started || state.roomCode !== syncRoomCode) return;
+      if (state.playerSyncFailureCount >= 3) {
+        logDebugEvent({
+          kind: "state",
+          label: "Player synchronization restored",
+          detail: `${syncRoomCode} reconnected after ${state.playerSyncFailureCount} failed polls`
+        });
+      }
+      state.playerSyncFailureCount = 0;
+      const session = payload?.session || null;
+      if (session) {
+        state.playerServerRevision = Math.max(state.playerServerRevision, Number(session.revision) || 0);
+        state.playerServerPromptId = session.prompt?.id || "";
+        state.playerHostRevision = Math.max(state.playerHostRevision, Number(session.hostRevision) || 0);
+      }
+      const questionVisible = Boolean(els.mapQuestionOverlay && !els.mapQuestionOverlay.hidden);
+      const localPromptActive = Boolean(promptId && !state.answerPending && !state.resolutionDelayPending && !state.resolved
+        && (state.questionPresentationReady || questionVisible));
+      const serverPromptAccepting = Boolean(session?.status === "open" && session?.prompt?.accepting);
+      if (localPromptActive && (session?.prompt?.id !== promptId || !serverPromptAccepting)) {
+        repairCurrentPromptPublication(promptId);
+      }
       handlePlayerAnswersPayload(payload, promptId);
+      recoverOverdueSubmissionResolution();
     })
-    .catch(() => {});
+    .catch((error) => {
+      state.playerSyncFailureCount += 1;
+      if (state.playerSyncFailureCount === 3 || state.playerSyncFailureCount % 10 === 0) {
+        logDebugEvent({
+          kind: "error",
+          label: "Player synchronization interrupted",
+          detail: `${state.playerSyncFailureCount} consecutive failed polls | ${String(error?.message || error || "unknown polling error").slice(0, 500)}`
+        });
+      }
+    })
+    .finally(() => {
+      state.playerSyncInFlight = false;
+    });
 }
 
 function handlePlayerAnswersPayload(payload, requestedPromptId = "") {
@@ -3001,6 +3454,13 @@ function handlePlayerAnswersPayload(payload, requestedPromptId = "") {
   state.playerActions = (payload.actions || []).filter((action) => !currentPromptId || action.promptId === currentPromptId);
   state.queuedPlayerActions = Array.isArray(payload.queuedActions) ? payload.queuedActions : [];
   state.playerParticipants = payload.participants || [];
+
+  // Resolve accepted submissions before optional UI work. A rendering exception must
+  // never strand valid player answers on the server with the encounter still open.
+  maybeAutoResolveEmergencyAnswer();
+  maybeResolveQueuedPlayerAction();
+  maybeResolvePlayerAction();
+
   const visibleSubmissions = state.actionDrivenMode ? state.playerActions : state.playerAnswers;
   const newlySubmittedNames = [...new Set(visibleSubmissions
     .map((entry) => entry.playerName || state.playerParticipants.find((player) => String(player.id || "") === String(entry.playerId || ""))?.name || "")
@@ -3042,9 +3502,6 @@ function handlePlayerAnswersPayload(payload, requestedPromptId = "") {
       queueFinalSubmissionResolution(() => resolveActionRoomTurn(), "all operator actions received");
     }
   }
-  maybeAutoResolveEmergencyAnswer();
-  maybeResolveQueuedPlayerAction();
-  maybeResolvePlayerAction();
 }
 
 function maybeResolvePlayerAction() {
@@ -4593,6 +5050,31 @@ function maybeAutoResolveEmergencyAnswer() {
   if (!state.questionPresentationReady || state.answerPending || state.resolutionDelayPending || state.resolved) return;
   const info = currentQuestionInfo();
   const answers = [...state.playerAnswers].sort((a, b) => a.submittedAt - b.submittedAt);
+  const hadRequiredSnapshot = Boolean(state.playerPromptRequiredIds?.length || state.playerPromptRequiredNames?.length);
+  const noAvailableResponders = hadRequiredSnapshot
+    && promptResponderGraceElapsed()
+    && !requiredDeviceAnswerIds(info).size
+    && !requiredDeviceAnswerNames(info).size;
+  if (noAvailableResponders) {
+    logDebugEvent({
+      kind: "state",
+      label: "Disconnected responders timed out",
+      detail: `${state.playerPromptId || "current prompt"} continued after ${PLAYER_HEARTBEAT_STALE_MS}ms without a heartbeat`
+    });
+    if (usesIndividualTeamDeviceScoring(info)) {
+      const timedOutAnswers = deviceAnswersWithTimeouts(answers);
+      queueFinalSubmissionResolution(
+        () => resolveLocalDeviceTeamAnswers(timedOutAnswers),
+        "unavailable operators timed out"
+      );
+    } else {
+      queueFinalSubmissionResolution(
+        () => submitDeviceAnswer(TIMEOUT_ANSWER),
+        info.type.locked ? "locked operator disconnected" : "required operators disconnected"
+      );
+    }
+    return;
+  }
   if (!answers.length) return;
   if (info.type.kind === "emergency") {
     const entries = deviceAnswerEntries([answers[0]], info.question);
@@ -4665,16 +5147,19 @@ function snapshotPromptRequiredResponders(prompt = null) {
   if (!prompt || prompt.kind === "recovery" || prompt.actionOnly) {
     state.playerPromptRequiredIds = [];
     state.playerPromptRequiredNames = [];
+    state.playerPromptRequiredAt = 0;
     return;
   }
   const info = currentQuestionInfo();
   if (!info?.question || info.type?.kind === "emergency") {
     state.playerPromptRequiredIds = [];
     state.playerPromptRequiredNames = [];
+    state.playerPromptRequiredAt = 0;
     return;
   }
   state.playerPromptRequiredIds = [...requiredDeviceAnswerIds(info, { live: true })];
   state.playerPromptRequiredNames = [...requiredDeviceAnswerNames(info, { live: true })];
+  state.playerPromptRequiredAt = Date.now();
   logDebugEvent({
     kind: "state",
     label: "Required responders locked",
@@ -4694,14 +5179,19 @@ function everyoneActiveSubmitted(answers) {
     return [...requiredIds].every((id) => submittedIds.has(id));
   }
   const activeNames = requiredDeviceAnswerNames(info);
-  if (!activeNames.size) return false;
+  if (!activeNames.size) {
+    const hadRequiredSnapshot = Boolean(state.playerPromptRequiredIds?.length || state.playerPromptRequiredNames?.length);
+    return hadRequiredSnapshot && answers.length > 0;
+  }
   const submitted = new Set(answers.map((answer) => normalize(answer.playerName)));
   return [...activeNames].every((name) => submitted.has(name));
 }
 
 function requiredDeviceAnswerIds(info = currentQuestionInfo(), options = {}) {
   if (info?.type?.kind === "emergency") return new Set();
-  if (!options.live && state.playerPromptRequiredIds?.length) return new Set(state.playerPromptRequiredIds);
+  if (!options.live && state.playerPromptRequiredIds?.length) {
+    return new Set(state.playerPromptRequiredIds.filter((id) => promptResponderIdAvailable(id)));
+  }
   const activeRoster = new Set(activePlayers().map((player) => normalize(player.name)));
   if (info?.type?.locked && info.operator) {
     const participant = state.playerParticipants.find((player) => sameName(player.name, info.operator.name));
@@ -4716,13 +5206,38 @@ function requiredDeviceAnswerIds(info = currentQuestionInfo(), options = {}) {
 
 function requiredDeviceAnswerNames(info = currentQuestionInfo(), options = {}) {
   if (info?.type?.kind === "emergency") return new Set();
-  if (!options.live && state.playerPromptRequiredNames?.length) return new Set(state.playerPromptRequiredNames);
+  if (!options.live && state.playerPromptRequiredNames?.length) {
+    return new Set(state.playerPromptRequiredNames.filter((name) => promptResponderNameAvailable(name)));
+  }
   if (info?.type?.locked && info.operator) return new Set([normalize(info.operator.name)]);
   const activeRoster = new Set(activePlayers().map((player) => normalize(player.name)));
   const connected = state.playerParticipants
     .map((player) => normalize(player.name))
     .filter((name) => activeRoster.has(name));
   return new Set(connected.length ? connected : [...activeRoster]);
+}
+
+function promptResponderGraceElapsed() {
+  return Boolean(state.playerPromptRequiredAt && Date.now() - state.playerPromptRequiredAt >= PLAYER_HEARTBEAT_STALE_MS);
+}
+
+function participantHeartbeatActive(participant) {
+  if (!participant) return false;
+  if (participant.simulated) return true;
+  const lastSeenAt = Number(participant.lastSeenAt) || 0;
+  return !lastSeenAt || Date.now() - lastSeenAt < PLAYER_HEARTBEAT_STALE_MS;
+}
+
+function promptResponderIdAvailable(id) {
+  if (!promptResponderGraceElapsed()) return true;
+  if (state.playerAnswers.some((answer) => String(answer.playerId || "") === String(id))) return true;
+  return participantHeartbeatActive(state.playerParticipants.find((participant) => String(participant.id || "") === String(id)));
+}
+
+function promptResponderNameAvailable(name) {
+  if (!promptResponderGraceElapsed()) return true;
+  if (state.playerAnswers.some((answer) => normalize(answer.playerName) === normalize(name))) return true;
+  return participantHeartbeatActive(state.playerParticipants.find((participant) => sameName(participant.name, name)));
 }
 
 function canUseIndividualPlayerAnswer() {
@@ -4823,7 +5338,16 @@ function awardPointsToPlayer(player, question, submittedAt) {
   if (!player) return null;
   const award = calculateAnswerPoints(question, submittedAt);
   player.points = Math.max(0, Math.round(Number(player.points) || 0)) + award.points;
-  return { player, ...award, total: player.points };
+  const durationMs = Math.max(1_000, Number(state.questionDurationMs) || questionScoringDurationMs());
+  const fast = award.elapsedMs <= durationMs * 0.25;
+  const xpAmount = combatSystem.xpForCorrectAnswer?.({ fast, difficulty: questionDifficulty(question), streak: player.answerStreak }) || 5;
+  const encounter = isCombatNode(state.nodes[state.currentNode]) ? currentCombatEncounter() : null;
+  if (encounter && !encounter.cleared) {
+    bankCombatXp(encounter, player, xpAmount);
+    return { player, ...award, total: player.points, xpAmount: 0, bankedXp: xpAmount, leveledUp: false };
+  }
+  const xpResult = combatSystem.addXp?.(player, xpAmount) || { amount: 0, leveledUp: false };
+  return { player, ...award, total: player.points, xpAmount: xpResult.amount, bankedXp: 0, leveledUp: xpResult.leveledUp };
 }
 
 function scoringPromptId() {
@@ -4844,26 +5368,48 @@ function awardDeviceAnswerPointsOnce(entries, question) {
   const promptId = scoringPromptId();
   if (state.scoredPromptIds.has(promptId)) return;
   state.scoredPromptIds.add(promptId);
+  captureCombatXpBaseline();
+  entries.forEach((entry) => combatSystem.recordAnswer?.(entry.player, Boolean(entry.correct)));
   const awards = entries
     .filter((entry) => entry?.correct && entry.player)
     .map((entry) => awardPointsToPlayer(entry.player, question, entry.submittedAt))
     .filter(Boolean);
   logPointAwards(awards, question);
+  if (!awards.length) {
+    renderStatus();
+    publishPlayerVitals();
+  }
 }
 
 function awardSharedAnswerPointsOnce({ correct, question, type = {}, operator = null, submittedAt = Date.now(), scoringPlayer = null, source = "" }) {
   const promptId = scoringPromptId();
   if (state.scoredPromptIds.has(promptId)) return;
   state.scoredPromptIds.add(promptId);
-  if (!correct || state.actionDrivenMode) return;
+  captureCombatXpBaseline();
+  if (state.actionDrivenMode) return;
   if (state.deviceMode === "multi" && !scoringPlayer) return;
   let recipients = [];
   if (scoringPlayer) recipients = [scoringPlayer];
   else if (type.locked && operator) recipients = [operator];
   else if (type.kind === "emergency" && type.emergencyAnswerPlayer) recipients = [type.emergencyAnswerPlayer];
   else recipients = activePlayers();
+  recipients.forEach((player) => combatSystem.recordAnswer?.(player, Boolean(correct)));
+  if (!correct) {
+    renderStatus();
+    publishPlayerVitals();
+    return;
+  }
   const awards = recipients.map((player) => awardPointsToPlayer(player, question, submittedAt)).filter(Boolean);
   logPointAwards(awards, question);
+}
+
+function captureCombatXpBaseline() {
+  if (!isCombatNode(state.nodes[state.currentNode]) || state.combatXpBaseline.length) return;
+  state.combatXpBaseline = state.players.map((player) => ({
+    name: player.name,
+    xp: Math.max(0, Number(player.xp) || 0),
+    level: Math.max(1, Number(player.level) || 1)
+  }));
 }
 
 function deviceChallengeSucceeded(entries, type) {
@@ -4974,12 +5520,19 @@ function renderSimulatorPanel() {
   }
   const info = currentQuestionInfo();
   const boss = currentBossProgress();
+  const combatPresentationReady = !isCombatNode(state.nodes[state.currentNode]) || (
+    state.combatStageEnteredNodes.has(state.currentNode)
+    && !els.combatStage?.classList.contains("entering")
+    && !els.combatStage?.classList.contains("exiting")
+    && !els.combatStage?.classList.contains("resolving")
+  );
   const canSimulate = state.started
     && state.deviceMode === "multi"
     && state.questionPresentationReady
     && !state.answerPending
     && !state.resolved
     && !state.bossReadyPending
+    && combatPresentationReady
     && state.nodes[state.currentNode]?.type !== "recovery"
     && Boolean(info.question);
   const autoAvailable = canSimulate && !state.actionDrivenMode;
@@ -4990,6 +5543,7 @@ function renderSimulatorPanel() {
       <input id="simAutoAnswerToggle" type="checkbox" ${state.simulatorAutoAnswer ? "checked" : ""} ${state.actionDrivenMode ? "disabled" : ""}>
       <span>Auto-Answer</span>
     </label>
+    <p>Automatic accuracy: ${state.simulatorAutoAnswerAccuracy}%</p>
     <div class="sim-tool-actions">
       <button class="secondary simAnswerBtn" type="button" data-mode="correct" ${canSimulate ? "" : "disabled"}>${state.actionDrivenMode ? "Helpful" : "All Correct"}</button>
       <button class="secondary simAnswerBtn" type="button" data-mode="mixed" ${canSimulate ? "" : "disabled"}>Mixed</button>
@@ -5019,6 +5573,7 @@ function cancelSimulatorAutoAnswerTimers() {
 function scheduleSimulatorAutoAnswers(info = currentQuestionInfo()) {
   if (!state.simulatorAutoAnswer || state.actionDrivenMode || !info.question || !state.playerPromptId) return;
   if (!state.started || state.deviceMode !== "multi" || !state.questionPresentationReady || state.answerPending || state.resolutionDelayPending || state.resolved) return;
+  if (isCombatNode(state.nodes[state.currentNode]) && els.combatStage?.classList.contains("entering")) return;
   const promptId = state.playerPromptId;
   if (state.simulatorAutoAnswerPromptId === promptId) return;
   cancelSimulatorAutoAnswerTimers();
@@ -5037,21 +5592,23 @@ function scheduleSimulatorAutoAnswers(info = currentQuestionInfo()) {
     : 9_000;
   if (status) status.textContent = `Auto-Answer armed for ${pendingParticipants.length} sim player${pendingParticipants.length === 1 ? "" : "s"}.`;
   pendingParticipants.forEach((participant, index) => {
-    const minimumDelay = Math.min(maxDelay, 450 + index * 160);
+    const minimumDelay = Math.min(maxDelay, 2_250 + index * 180);
     const spread = Math.max(220, maxDelay - minimumDelay);
     const delay = Math.min(maxDelay, minimumDelay + Math.floor(Math.random() * spread));
     const timerId = window.setTimeout(() => {
-      submitSimulatorAutoAnswer(participant, promptId, info);
+      submitSimulatorAutoAnswer(participant, promptId, info, 0);
     }, delay);
     state.simulatorAutoAnswerTimers.push(timerId);
   });
 }
 
-function submitSimulatorAutoAnswer(participant, promptId, info) {
+function submitSimulatorAutoAnswer(participant, promptId, info, attempt = 0, accuracyDecision = null) {
   if (!state.simulatorAutoAnswer || state.actionDrivenMode) return;
   if (promptId !== state.playerPromptId || !state.questionPresentationReady || state.answerPending || state.resolutionDelayPending || state.resolved) return;
   if (participantHasCurrentSubmission(participant)) return;
-  const shouldBeCorrect = Math.random() < 0.5;
+  const shouldBeCorrect = typeof accuracyDecision === "boolean"
+    ? accuracyDecision
+    : Math.random() * 100 < state.simulatorAutoAnswerAccuracy;
   playerSessionApi.submitAnswer({
     roomCode: state.roomCode,
     playerId: participant.id,
@@ -5059,9 +5616,86 @@ function submitSimulatorAutoAnswer(participant, promptId, info) {
     promptId,
     answer: simulatedAnswerFor(info.question, shouldBeCorrect)
   })
-    .then(() => playerSessionApi.fetchAnswers(state.roomCode, promptId))
-    .then((payload) => handlePlayerAnswersPayload(payload, promptId))
+    .then((result) => {
+      if (result?.ok) return playerSessionApi.fetchAnswers(state.roomCode, promptId);
+      const retryable = !result || /locking|not accepting|no longer active/i.test(String(result?.error || ""));
+      if (retryable && attempt < 4 && promptId === state.playerPromptId && !state.resolved) {
+        repairCurrentPromptPublication(promptId).then(() => {
+          const timerId = window.setTimeout(() => submitSimulatorAutoAnswer(participant, promptId, info, attempt + 1, shouldBeCorrect), 2_150 + attempt * 250);
+          state.simulatorAutoAnswerTimers.push(timerId);
+        });
+        return null;
+      }
+      throw new Error(result?.error || "Simulator answer rejected");
+    })
+    .then((payload) => {
+      if (payload) handlePlayerAnswersPayload(payload, promptId);
+    })
     .catch(() => pollPlayerAnswers());
+}
+
+function simulatorAccuracyControlHtml() {
+  return `
+    <section class="sim-accuracy-control" aria-labelledby="simAccuracyLabel">
+      <div>
+        <strong id="simAccuracyLabel">Bot Auto-Answer Accuracy</strong>
+        <output id="simAccuracyValue" for="simAccuracySlider">${state.simulatorAutoAnswerAccuracy}%</output>
+      </div>
+      <input id="simAccuracySlider" type="range" min="0" max="100" step="5" value="${state.simulatorAutoAnswerAccuracy}" aria-label="Bot auto-answer accuracy">
+      <p>Each simulated player independently uses this chance of answering correctly.</p>
+    </section>
+  `;
+}
+
+function bindSimulatorAccuracyControl() {
+  const slider = document.getElementById("simAccuracySlider");
+  const value = document.getElementById("simAccuracyValue");
+  if (!slider) return;
+  slider.addEventListener("input", () => {
+    state.simulatorAutoAnswerAccuracy = Math.max(0, Math.min(100, Number(slider.value) || 0));
+    if (value) value.textContent = `${state.simulatorAutoAnswerAccuracy}%`;
+    window.localStorage.setItem("studyAdventureSimulatorAutoAnswerAccuracy", String(state.simulatorAutoAnswerAccuracy));
+  });
+}
+
+function submitSimulatorAnswerWithRetry(participant, promptId, answer, attempt = 0) {
+  if (promptId !== state.playerPromptId || state.resolved) return Promise.resolve(null);
+  return playerSessionApi.submitAnswer({
+    roomCode: state.roomCode,
+    playerId: participant.id,
+    playerName: participant.name,
+    promptId,
+    answer
+  }).then((result) => {
+    if (result?.ok) return result;
+    const retryable = !result || /locking|not accepting|no longer active/i.test(String(result?.error || ""));
+    if (!retryable || attempt >= 5 || promptId !== state.playerPromptId || state.resolved) return result;
+    return new Promise((resolve) => {
+      repairCurrentPromptPublication(promptId).then(() => {
+        window.setTimeout(() => resolve(submitSimulatorAnswerWithRetry(participant, promptId, answer, attempt + 1)), 2_150 + attempt * 200);
+      });
+    });
+  });
+}
+
+function repairCurrentPromptPublication(promptId) {
+  if (!promptId || promptId !== state.playerPromptId || state.resolved) return Promise.resolve(null);
+  if (state.simulatorPromptRepairPromise) return state.simulatorPromptRepairPromise;
+  const prompt = buildPlayerPrompt();
+  if (!prompt || prompt.id !== promptId) return Promise.resolve(null);
+  state.simulatorPromptRepairPromise = Promise.resolve(publishPlayerSession({
+    status: "open",
+    prompt,
+    resetAnswers: false
+  })).then((result) => {
+    if (result?.session?.status === "open" && result?.session?.prompt?.id === promptId) {
+      clearPromptPublicationRetry(promptId);
+    }
+    return result;
+  }).finally(() => {
+    state.simulatorPromptRepairPromise = null;
+  });
+  return state.simulatorPromptRepairPromise;
 }
 
 function simulateDeviceAnswers(mode) {
@@ -5079,17 +5713,10 @@ function simulateDeviceAnswers(mode) {
     return;
   }
   if (status) status.textContent = `Submitting ${participants.length} simulated answer${participants.length === 1 ? "" : "s"}...`;
-  const requests = participants.map((participant, index) => {
+  repairCurrentPromptPublication(promptId).then(() => Promise.all(participants.map((participant, index) => {
     const shouldBeCorrect = mode === "correct" || mode === "mixed" && index % 2 === 0;
-    return playerSessionApi.submitAnswer({
-      roomCode: state.roomCode,
-      playerId: participant.id,
-      playerName: participant.name,
-      promptId,
-      answer: simulatedAnswerFor(info.question, shouldBeCorrect)
-    });
-  });
-  Promise.all(requests).then((results) => {
+    return submitSimulatorAnswerWithRetry(participant, promptId, simulatedAnswerFor(info.question, shouldBeCorrect));
+  }))).then((results) => {
     const accepted = results.filter((result) => result?.ok).length;
     const rejected = results.length - accepted;
     if (status) {
@@ -5278,7 +5905,7 @@ function removePlayerFromSession(player) {
     if (button.dataset.playerId === player.id || button.dataset.playerName === player.name) button.disabled = true;
   });
 
-  fetch("/api/player-remove", {
+  fetchWithTimeout("/api/player-remove", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -5300,6 +5927,8 @@ function removePlayerFromSession(player) {
 
 function applyRemovedPlayer(player, session) {
   const removedName = normalize(player.name);
+  if (player.id) state.playerPromptRequiredIds = state.playerPromptRequiredIds.filter((id) => String(id) !== String(player.id));
+  if (removedName) state.playerPromptRequiredNames = state.playerPromptRequiredNames.filter((name) => normalize(name) !== removedName);
   state.playerParticipants = session?.participants || state.playerParticipants.filter((participant) => {
     if (player.id && participant.id === player.id) return false;
     return normalize(participant.name) !== removedName;
@@ -5314,6 +5943,12 @@ function applyRemovedPlayer(player, session) {
     renderStatus();
     renderMap();
     updateActiveLocalQuestionDisplay();
+    const info = currentQuestionInfo();
+    if (state.questionPresentationReady && info?.type?.locked && sameName(info.operator?.name, player.name)) {
+      queueFinalSubmissionResolution(() => submitDeviceAnswer(TIMEOUT_ANSWER), "locked operator removed");
+    } else {
+      maybeAutoResolveEmergencyAnswer();
+    }
   }
   renderJoinLobby();
   renderPlayerSessionPanel();
@@ -5551,9 +6186,9 @@ function checkDmFeed() {
 }
 
 function fetchFeed() {
-  return fetch(`/api/feed?ts=${Date.now()}`, { cache: "no-store" })
-    .then((response) => response.ok ? response : fetch(`dm-feed.json?ts=${Date.now()}`, { cache: "no-store" }))
-    .catch(() => fetch(`dm-feed.json?ts=${Date.now()}`, { cache: "no-store" }));
+  return fetchWithTimeout(`/api/feed?ts=${Date.now()}`, { cache: "no-store" })
+    .then((response) => response.ok ? response : fetchWithTimeout(`dm-feed.json?ts=${Date.now()}`, { cache: "no-store" }))
+    .catch(() => fetchWithTimeout(`dm-feed.json?ts=${Date.now()}`, { cache: "no-store" }));
 }
 
 function syncSetupMode() {
@@ -5577,6 +6212,7 @@ function syncSetupMode() {
   els.playersInput.placeholder = deviceMode === "single"
     ? "Chris\nDavis\nMorgan\nLee\nTaylor\nJordan"
     : "Optional notes. Players will scan the QR code in the join lobby.";
+  renderSingleDeviceClassAssignments();
   els.startBtn.textContent = localDmMode ? "Start Local Mission" : els.dmEngine.value === "manual" ? "Start Live Mission" : "Start Mission";
   if (!state.joinLobbyActive) els.startBtn.disabled = false;
   if (savedQuestions) renderSavedQuestionSets();
@@ -5650,7 +6286,7 @@ function populateLocalDmModels(options = {}) {
   const currentSelection = els.ollamaModel?.value || state.ollamaModel || "";
   const savedModel = window.localStorage.getItem(localDmModelStorageKey(provider));
   if (els.ollamaModelStatus) els.ollamaModelStatus.textContent = `Checking ${localDmProviderLabel(provider)} models...`;
-  return fetch(localDmTagsEndpoint(provider), { cache: "no-store" })
+  return fetchWithTimeout(localDmTagsEndpoint(provider), { cache: "no-store" })
     .then((response) => response.json().then((body) => ({ response, body })))
     .then(({ response, body }) => {
       if (!response.ok) throw new Error(body.error || `${localDmProviderLabel(provider)} is unavailable`);
@@ -5743,11 +6379,11 @@ function loadSelectedLmStudioModel(model) {
   if (!endpoint) return;
   els.ollamaModel.disabled = true;
   if (els.ollamaModelStatus) els.ollamaModelStatus.textContent = `Loading ${model} in LM Studio...`;
-  fetch(endpoint, {
+  fetchWithTimeout(endpoint, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ model })
-  })
+  }, 90_000)
     .then((response) => response.json().then((body) => ({ response, body })))
     .then(({ response, body }) => {
       if (!response.ok || !body.ok) throw new Error(body.error || `LM Studio returned ${response.status}`);
@@ -5794,11 +6430,11 @@ function checkMissionSystems() {
   if (els.recheckSystemsBtn) els.recheckSystemsBtn.disabled = true;
 
   const checks = [
-    fetch("/api/health", { cache: "no-store" })
+    fetchWithTimeout("/api/health", { cache: "no-store" })
       .then((response) => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)))
       .then(() => ({ label: "Game Server", state: "ok", detail: "Linked" }))
       .catch(() => ({ label: "Game Server", state: "bad", detail: "Offline" })),
-    fetch(localDmTagsEndpoint(), { cache: "no-store" })
+    fetchWithTimeout(localDmTagsEndpoint(), { cache: "no-store" })
       .then((response) => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)))
       .then((body) => {
         const provider = selectedLocalDmProvider();
@@ -5812,7 +6448,7 @@ function checkMissionSystems() {
         const available = Boolean(window.speechSynthesis);
         return Promise.resolve({ label: "Voice System", state: available ? "ok" : "warn", detail: available ? "Browser voice ready" : "Browser voice unavailable" });
       }
-      return fetch(`/api/tts/status?provider=${encodeURIComponent(provider)}`, { cache: "no-store" })
+      return fetchWithTimeout(`/api/tts/status?provider=${encodeURIComponent(provider)}`, { cache: "no-store" })
         .then((response) => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)))
         .then((body) => ({ label: "Voice System", state: body.available ? "ok" : "warn", detail: body.available ? `${provider === "kokoro" ? "Kokoro" : "Piper"} ready` : `${provider === "kokoro" ? "Kokoro" : "Piper"} unavailable` }))
         .catch(() => ({ label: "Voice System", state: "warn", detail: `${provider === "kokoro" ? "Kokoro" : "Piper"} unavailable` }));
@@ -5911,7 +6547,7 @@ function mergeQuestionSets(primary = [], secondary = []) {
 function loadSavedQuestionSetsFromServer() {
   state.savedQuestionSetsCache = readLocalSavedQuestionSets();
   state.selectedQuestionSetIdsCache = [...readLocalSelectedQuestionSetIds()];
-  return fetch("/api/question-sets", { cache: "no-store" })
+  return fetchWithTimeout("/api/question-sets", { cache: "no-store" })
     .then((response) => response.ok ? response.json() : null)
     .then((payload) => {
       if (!payload?.ok) return;
@@ -5946,7 +6582,7 @@ function loadSavedQuestionSetsFromServer() {
 }
 
 function persistQuestionSetsToServer() {
-  fetch("/api/question-sets", {
+  fetchWithTimeout("/api/question-sets", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -6214,16 +6850,16 @@ function missionStructureSummary(questionCount) {
   }
   const groups = bossQuestionGroups(questionCount);
   const bossQuestions = groups.reduce((sum, group) => sum + group.questionIndexes.length, 0);
-  const normalRooms = Math.max(0, questionCount - bossQuestions);
-  const challengeRooms = normalRooms + groups.length;
   const mapNodes = buildNodes(questionCount);
+  const normalRooms = mapNodes.filter((node) => node.type === "challenge" || node.type === "combat").length;
+  const challengeRooms = mapNodes.filter((node) => node.type === "challenge" || node.type === "combat" || node.type === "boss").length;
   const recoveryRooms = mapNodes.filter((node) => node.type === "recovery").length;
   const hasMid = groups.some((group) => group.phase === "mid");
   const hasFinal = groups.some((group) => group.phase === "final");
   const bossText = hasMid && hasFinal
-    ? `midpoint ${MID_BOSS_QUESTIONS}-question boss + final ${FINAL_BOSS_QUESTIONS}-question boss`
+    ? "health-based midpoint boss + health-based final boss"
     : hasFinal
-    ? `final ${Math.min(FINAL_BOSS_QUESTIONS, questionCount)}-question boss only`
+    ? "health-based final boss only"
     : "No boss rooms";
   const warning = questionCount < TWO_BOSS_MIN_QUESTIONS
     ? `Use ${TWO_BOSS_MIN_QUESTIONS}+ questions to include both midpoint and final bosses.`
@@ -6257,8 +6893,9 @@ function updateSetupSummary() {
   const engine = els.dmEngine.options[els.dmEngine.selectedIndex]?.text || "Local Auto DM";
   const structure = missionStructureSummary(length);
   const bossTest = Boolean(els.bossTestMode?.checked);
+  const combatTest = Boolean(els.combatTestMode?.checked);
   if (els.setupModeStatus) els.setupModeStatus.textContent = deviceMode === "single" ? "Single Device" : "Device Lobby";
-  if (els.setupRouteStatus) els.setupRouteStatus.textContent = actionDrivenMode ? `${length} Action Rooms` : total ? `${length} ${bossTest ? "Boss Test" : "Randomized"}` : "Awaiting Bank";
+  if (els.setupRouteStatus) els.setupRouteStatus.textContent = actionDrivenMode ? `${length} Action Rooms` : total ? `${length} ${combatTest ? "Combat Loop" : bossTest ? "Boss Test" : "Randomized"}` : "Awaiting Bank";
   if (els.setupDmStatus) els.setupDmStatus.textContent = `${engine.replace(" Auto", "")}${state.fastMode ? " Fast" : ""}`;
 
   els.playerCountNote.textContent = deviceMode === "single"
@@ -6284,6 +6921,8 @@ function updateSetupSummary() {
     : "";
   els.questionCountNote.textContent = actionDrivenMode
     ? `Action-driven mission enabled. The route will use ${length} room${length === 1 ? "" : "s"} and resolve progress from player actions instead of study questions.`
+    : combatTest && total
+    ? `${setPrefix}${total} question${total === 1 ? "" : "s"} parsed. Combat Test Loop will begin with one normal staging room, then create ${Math.ceil(Math.max(1, length - 1) / COMBAT_QUESTION_POOL_SIZE)} consecutive combat room${Math.ceil(Math.max(1, length - 1) / COMBAT_QUESTION_POOL_SIZE) === 1 ? "" : "s"} with up to ${COMBAT_QUESTION_POOL_SIZE} questions each.`
     : total
     ? `${setPrefix}${total} question${total === 1 ? "" : "s"} parsed. Mission will use ${length} question${length === 1 ? "" : "s"} across ${structure.challengeRooms} encounter room${structure.challengeRooms === 1 ? "" : "s"} plus ${structure.recoveryRooms} recovery room${structure.recoveryRooms === 1 ? "" : "s"}. Boss plan: ${structure.bossText}.${structure.warning ? ` ${structure.warning}` : ""}${rejected ? ` ${rejected} block${rejected === 1 ? "" : "s"} could not be parsed.` : ""}`
     : `${setPrefix}No questions parsed yet.`;
@@ -6296,7 +6935,7 @@ function updateSetupSummary() {
   els.preflightSummary.textContent = actionDrivenMode
     ? `${deviceMode === "single" ? `${roster.length || 0} players` : "Device join lobby"} - ${length} action rooms - ${engine}${state.fastMode ? " - Fast pacing" : ""}`
     : total
-    ? `${deviceMode === "single" ? `${roster.length || 0} players` : "Device join lobby"} - ${length} questions - ${structure.challengeRooms} encounter rooms - ${engine}${bossTest ? " - Boss test start" : ""}${state.fastMode ? " - Fast pacing" : ""}`
+    ? `${deviceMode === "single" ? `${roster.length || 0} players` : "Device join lobby"} - ${length} questions - ${combatTest ? "Combat test loop" : `${structure.challengeRooms} encounter rooms`} - ${engine}${bossTest && !combatTest ? " - Boss test start" : ""}${state.fastMode ? " - Fast pacing" : ""}`
     : "Add study questions to begin.";
   if (!lengthValidation.valid) els.preflightSummary.textContent = "Mission length needs attention before launch.";
 }
@@ -6515,6 +7154,7 @@ function buildNodes(questionCount) {
   const bossIndexes = new Set(bossGroups.flatMap((group) => group.questionIndexes));
   const hasMidBoss = bossGroups.some((group) => group.phase === "mid");
   let postBossRecoveryInserted = false;
+  let normalRoomOrdinal = 0;
 
   for (let i = 0; i < questionCount;) {
     const bossGroup = bossByStart.get(i);
@@ -6540,8 +7180,48 @@ function buildNodes(questionCount) {
     }
     if (!bossIndexes.has(i) && i === firstRecovery) nodes.push({ type: "recovery", tier: 1, label: "Aid" });
     if (!hasMidBoss && !postBossRecoveryInserted && !bossIndexes.has(i) && i === secondRecovery) nodes.push({ type: "recovery", tier: 2, label: "Hub" });
-    nodes.push({ type: "challenge", questionIndex: i, label: String(i + 1) });
-    i += 1;
+    const combatRoom = normalRoomOrdinal % 3 === 1;
+    const desiredRounds = COMBAT_QUESTION_POOL_SIZE;
+    const boundaryIndexes = [firstRecovery, !hasMidBoss ? secondRecovery : -1, ...bossGroups.map((group) => group.start)]
+      .filter((index) => index > i);
+    const nextBoundary = boundaryIndexes.length ? Math.min(...boundaryIndexes) : questionCount;
+    const roomEnd = combatRoom ? Math.min(nextBoundary, i + desiredRounds) : i + 1;
+    const questionIndexes = range(i, Math.max(i, roomEnd - 1));
+    nodes.push({
+      type: combatRoom ? "combat" : "challenge",
+      roomKind: combatRoom ? "combat" : "obstacle",
+      questionIndex: i,
+      questionIndexes,
+      label: combatRoom ? "Contact" : String(i + 1)
+    });
+    i = roomEnd;
+    normalRoomOrdinal += 1;
+  }
+  return nodes;
+}
+
+function buildCombatTestNodes(questionCount) {
+  const total = Math.max(1, Number(questionCount) || 1);
+  const nodes = [{
+    type: "challenge",
+    roomKind: "obstacle",
+    combatTestStaging: true,
+    questionIndex: 0,
+    questionIndexes: [0],
+    label: "Staging"
+  }];
+  const questionsPerRoom = COMBAT_QUESTION_POOL_SIZE;
+  const combatStart = total > 1 ? 1 : 0;
+  for (let index = combatStart; index < total; index += questionsPerRoom) {
+    const questionIndexes = range(index, Math.min(total - 1, index + questionsPerRoom - 1));
+    nodes.push({
+      type: "combat",
+      roomKind: "combat",
+      combatTest: true,
+      questionIndex: index,
+      questionIndexes,
+      label: `Test ${nodes.length}`
+    });
   }
   return nodes;
 }
@@ -6574,6 +7254,333 @@ function buildActionRooms(count) {
       pressureSpotlight: pressureEligible && state.rng() < 0.18
     };
   });
+}
+
+function isCombatNode(node = state.nodes[state.currentNode]) {
+  return Boolean(node && (node.type === "combat" || node.type === "boss"));
+}
+
+function combatQuestionIndexes(node = state.nodes[state.currentNode]) {
+  if (!node) return [];
+  const indexes = Array.isArray(node.questionIndexes) && node.questionIndexes.length
+    ? node.questionIndexes
+    : [Number(node.questionIndex) || 0];
+  return indexes.slice(0, COMBAT_QUESTION_POOL_SIZE);
+}
+
+function combatTierPlan(node, nodeIndex = state.currentNode) {
+  if (node?.type === "boss") return ["heavy"];
+  const ratio = state.nodes.length > 1 ? nodeIndex / (state.nodes.length - 1) : 0;
+  if (ratio < 0.3) return state.rng() < 0.5 ? ["light", "light"] : ["light", "light", "light"];
+  if (ratio < 0.68) return state.rng() < 0.5 ? ["medium", "light"] : ["medium", "light", "light"];
+  return state.rng() < 0.55 ? ["heavy", "light"] : ["medium", "medium", "light"];
+}
+
+function ensureCombatEncounter(nodeIndex = state.currentNode) {
+  const node = state.nodes[nodeIndex];
+  if (!isCombatNode(node) || !combatSystem.createEnemyGroup) return null;
+  if (state.combatEncounters[nodeIndex]) return state.combatEncounters[nodeIndex];
+  const group = combatSystem.createEnemyGroup(combatTierPlan(node, nodeIndex), state.rng);
+  const playerScale = 0.6 + activePlayers().length * 0.3;
+  for (const enemy of group.enemies) {
+    enemy.hp = Math.max(1, Math.round(enemy.hp * playerScale));
+    enemy.maxHp = enemy.hp;
+  }
+  if (node.type === "boss") {
+    const finalBoss = node.bossPhase === "final";
+    const targetHp = Math.max(finalBoss ? 36 : 28, activePlayers().length * (finalBoss ? 26 : 20));
+    group.enemies[0].label = finalBoss ? state.threat || "Final Hostile" : `${state.threat || "Hostile"} Vanguard`;
+    group.enemies[0].hp = targetHp;
+    group.enemies[0].maxHp = targetHp;
+    group.enemies[0].boss = true;
+    group.enemies[0].activations = finalBoss ? 3 : 2;
+  }
+  group.hp = group.enemies.reduce((sum, enemy) => sum + enemy.hp, 0);
+  group.maxHp = group.hp;
+  const encounter = {
+    ...group,
+    nodeIndex,
+    roomType: node.type === "boss" ? "boss" : "combat",
+    round: 0,
+    cleared: false,
+    lastRound: null
+  };
+  state.combatEncounters[nodeIndex] = encounter;
+  return encounter;
+}
+
+function currentCombatEncounter() {
+  return ensureCombatEncounter(state.currentNode);
+}
+
+function preserveUnusedCombatQuestions(node, encounter) {
+  if (!node || node.type !== "combat" || !encounter?.cleared) return;
+  const indexes = combatQuestionIndexes(node);
+  const unused = indexes.filter((index) => index > state.currentQuestion);
+  if (!unused.length) return;
+  node.questionIndexes = indexes.filter((index) => index <= state.currentQuestion);
+  const inserted = unused.map((questionIndex) => ({
+    type: "challenge",
+    roomKind: "obstacle",
+    questionIndex,
+    questionIndexes: [questionIndex],
+    label: String(questionIndex + 1),
+    recoveredFromCombat: true
+  }));
+  state.nodes.splice(state.currentNode + 1, 0, ...inserted);
+  const oldPositions = [...state.mapPositions];
+  const regenerated = generateSprawledRoutePositions(state.nodes.length, state.mapLayoutSeed + unused.length * 97);
+  for (let index = 0; index <= state.currentNode && oldPositions[index]; index += 1) regenerated[index] = oldPositions[index];
+  state.mapPositions = stabilizeRoutePositions(regenerated, { lockedCount: state.currentNode + 1 });
+  for (const key of Object.keys(state.roomNames).map(Number).filter((index) => index > state.currentNode).sort((a, b) => b - a)) {
+    state.roomNames[key + inserted.length] = state.roomNames[key];
+    delete state.roomNames[key];
+  }
+  logDebugEvent({
+    kind: "state",
+    label: "Combat cleared early",
+    detail: `${unused.length} unused study question${unused.length === 1 ? "" : "s"} returned as obstacle rooms`
+  });
+}
+
+function combatCooldownReady(player, ability, turns) {
+  const last = Number(player?.classCooldowns?.[ability]);
+  return !Number.isFinite(last) || state.currentQuestion - last >= turns;
+}
+
+function markCombatCooldown(player, ability) {
+  player.classCooldowns = { ...(player.classCooldowns || {}), [ability]: state.currentQuestion };
+}
+
+function combatAnswerElapsedMs(submittedAt) {
+  const submitted = pointTimestamp(submittedAt);
+  const activePauseMs = state.questionPauseStartedAt ? Math.max(0, submitted - state.questionPauseStartedAt) : 0;
+  return Math.max(0, submitted - (Number(state.questionOpenedAt) || submitted) - state.questionPausedTotalMs - activePauseMs);
+}
+
+function combatPlayerDamage(entry, question, type) {
+  if (!entry?.correct || !entry.player) return 0;
+  const duration = Math.max(1_000, Number(state.questionDurationMs) || questionScoringDurationMs({ type }));
+  let elapsed = combatAnswerElapsedMs(entry.submittedAt || Date.now());
+  if (entry.player.classId === "scout") elapsed *= 0.9;
+  let damage = combatSystem.answerDamage?.(elapsed, duration, questionDifficulty(question)) || 2;
+  damage += combatSystem.classCombatDamage?.(entry.player) || 0;
+  if (entry.player.classId === "tactician") damage += 2;
+  if (type.kind === "emergency") damage += 2;
+  return Math.max(1, Math.round(damage));
+}
+
+function enforcerReduction(player) {
+  if (player?.classId !== "enforcer") return 0;
+  const streak = Math.max(0, Number(player.answerStreak) || 0);
+  return streak >= 5 ? 3 : streak >= 3 ? 2 : streak >= 1 ? 1 : 0;
+}
+
+function applyCombatDamage(player, amount, source, notes, facts) {
+  if (!player || player.incapacitated) return 0;
+  let incoming = Math.max(0, Math.round(Number(amount) || 0));
+  const passive = enforcerReduction(player);
+  incoming = Math.max(0, incoming - passive);
+  if (incoming > 0 && player.classId === "enforcer" && combatCooldownReady(player, "shield", 5) && incoming >= player.hp) {
+    markCombatCooldown(player, "shield");
+    facts.push(`${player.name}'s Ballistic Shield blocks all incoming damage`);
+    addEventNote(notes, player.name, `${player.name}'s Ballistic Shield catches the attack before it lands.`);
+    return 0;
+  }
+  const before = player.hp;
+  applyDamage(player, incoming, source);
+  const dealt = Math.max(0, before - player.hp);
+  if (dealt) addEventNote(notes, player.name, `${player.name} is hit during the enemy counterattack.`);
+  return dealt;
+}
+
+function combatTargetsForActivation(entries, type, operator) {
+  const active = activePlayers();
+  if (!active.length) return [];
+  const wrong = entries.filter((entry) => !entry.correct && entry.player && !entry.player.incapacitated).map((entry) => entry.player);
+  if (type.locked && operator && !operator.incapacitated) return [operator];
+  if (type.kind === "team") return active;
+  if (type.kind === "emergency" && wrong.length) return [wrong[0]];
+  if ((type.kind === "individual" || type.kind === "truefalse") && wrong.length) return [wrong[Math.floor(state.rng() * wrong.length)]];
+  return [active[Math.floor(state.rng() * active.length)]];
+}
+
+function combatIntentText(type = null, operator = null) {
+  if (!type) type = combatRoundChallengeType(state.currentQuestion);
+  if (!operator && type.locked) operator = selectOperator(state.currentQuestion);
+  const encounter = isCombatNode(state.nodes[state.currentNode]) ? currentCombatEncounter() : null;
+  const count = encounter?.enemies.filter((enemy) => !enemy.defeated).reduce((sum, enemy) => sum + Math.max(1, Number(enemy.activations) || 1), 0) || 0;
+  if (type.locked && operator) return `${count} incoming activation${count === 1 ? "" : "s"} focused on ${operator.name}.`;
+  if (type.kind === "team") return `${count} team-wide attack${count === 1 ? "" : "s"}; correct responders automatically brace.`;
+  if (type.kind === "emergency") return `${count} rapid activation${count === 1 ? "" : "s"}; an incorrect first responder becomes the priority target.`;
+  return `${count} targeted activation${count === 1 ? "" : "s"}; incorrect responders are prioritized.`;
+}
+
+function maybeActivateCombatSupport(entries, encounter, notes, facts) {
+  const correctPlayers = entries.filter((entry) => entry.correct).map((entry) => entry.player).filter(Boolean);
+  const medic = correctPlayers.find((player) => player.classId === "medic" && combatCooldownReady(player, "surgical-kit", 2));
+  const wounded = activePlayers().filter((player) => player.hp < player.maxHp).sort((a, b) => a.hp - b.hp)[0];
+  if (medic && wounded) {
+    const amount = Math.min(8, 4 + Math.min(4, Math.max(0, Number(medic.answerStreak) || 0)));
+    const before = wounded.hp;
+    healPlayer(wounded, amount);
+    markCombatCooldown(medic, "surgical-kit");
+    const healed = wounded.hp - before;
+    if (healed) {
+      facts.push(`${medic.name}'s Surgical Kit restores ${wounded.name}`);
+      addEventNote(notes, wounded.name, `${medic.name} stabilizes ${wounded.name} with the Surgical Kit.`);
+    }
+  }
+  const engineer = correctPlayers.find((player) => player.classId === "engineer" && combatCooldownReady(player, "arc-disrupt", 3));
+  if (engineer && encounter.enemies.some((enemy) => !enemy.defeated)) {
+    markCombatCooldown(engineer, "arc-disrupt");
+    facts.push(`${engineer.name}'s Arc Toolkit disrupts one enemy activation`);
+    return 1;
+  }
+  return 0;
+}
+
+function bankCombatXp(encounter, player, amount) {
+  if (!encounter || !player || amount <= 0) return;
+  encounter.pendingXp = encounter.pendingXp || {};
+  const key = normalize(player.name);
+  encounter.pendingXp[key] = Math.max(0, Number(encounter.pendingXp[key]) || 0) + amount;
+}
+
+function applyCombatVictoryXp(encounter) {
+  if (!encounter?.cleared || encounter.xpApplied) return;
+  encounter.xpApplied = true;
+  for (const player of state.players) {
+    const amount = Math.max(0, Number(encounter.pendingXp?.[normalize(player.name)]) || 0);
+    if (amount) combatSystem.addXp?.(player, amount);
+  }
+  encounter.pendingXp = {};
+}
+
+function applyCombatEncounter(entries, type, operator, question) {
+  const encounter = currentCombatEncounter();
+  if (!encounter) return applyDeviceTeamEncounter(entries, type);
+  const roundStartPlayers = state.combatXpBaseline.length
+    ? state.combatXpBaseline.map((player) => ({ ...player }))
+    : state.players.map((player) => ({ name: player.name, xp: player.xp, level: player.level }));
+  state.combatXpBaseline = [];
+  encounter.round += 1;
+  const roundStartEnemies = encounter.enemies.map((enemy) => ({ id: enemy.id, hp: enemy.hp, maxHp: enemy.maxHp, defeated: enemy.defeated }));
+  const notes = bleedTick();
+  const facts = [];
+  const attacks = entries.filter((entry) => entry.correct && entry.player && !entry.player.incapacitated)
+    .sort((a, b) => pointTimestamp(a.submittedAt) - pointTimestamp(b.submittedAt));
+  const attackResults = [];
+  for (const entry of attacks) {
+    const damage = combatPlayerDamage(entry, question, type);
+    const target = encounter.enemies.find((enemy) => !enemy.defeated) || null;
+    const targetHpBefore = target?.hp || 0;
+    const groupHpBefore = encounter.hp;
+    const enemyStatesBefore = encounter.enemies.map((enemy) => ({ id: enemy.id, hp: enemy.hp }));
+    const applied = combatSystem.applyGroupDamage(encounter, damage);
+    attackResults.push({
+      player: entry.player,
+      damage: applied.damage,
+      aoe: Boolean(type.locked),
+      defeated: applied.defeated,
+      targetId: target?.id || "",
+      targetLabel: target?.label || "hostile line",
+      targetMaxHp: target?.maxHp || 1,
+      targetHpBefore,
+      targetHpAfter: target?.hp || 0,
+      enemyStatesBefore,
+      enemyStatesAfter: encounter.enemies.map((enemy) => ({ id: enemy.id, hp: enemy.hp, maxHp: enemy.maxHp, defeated: enemy.defeated })),
+      groupHpBefore,
+      groupHpAfter: encounter.hp
+    });
+    if (applied.defeated.length) bankCombatXp(encounter, entry.player, 2 * applied.defeated.length);
+    if (applied.cleared) break;
+  }
+  encounter.cleared = encounter.hp <= 0;
+  if (encounter.cleared && encounter.roomType === "boss" && !encounter.victoryXpAwarded) {
+    encounter.victoryXpAwarded = true;
+    for (const player of activePlayers()) bankCombatXp(encounter, player, 5);
+    facts.push("Boss-victory experience is banked until the combat is fully resolved");
+  }
+  preserveUnusedCombatQuestions(state.nodes[state.currentNode], encounter);
+  let disrupted = maybeActivateCombatSupport(entries, encounter, notes, facts);
+  let totalDamage = 0;
+  const enemyActions = [];
+  const lockedSuppression = Boolean(type.locked && operator && entries.some((entry) => entry.player === operator && entry.correct));
+  if (!encounter.cleared && lockedSuppression) {
+    facts.push(`${operator.name}'s locked-operator sweep suppresses the entire hostile counterattack`);
+  } else if (!encounter.cleared && !state.selectedEMS) {
+    enemyPhase:
+    for (const enemy of encounter.enemies.filter((entry) => !entry.defeated)) {
+      const tier = combatSystem.enemyTiers?.[enemy.tier] || combatSystem.enemyTiers?.light;
+      const activations = Math.max(1, Number(enemy.activations) || 1);
+      for (let activation = 0; activation < activations; activation += 1) {
+        if (!activePlayers().length) break enemyPhase;
+        if (disrupted > 0) {
+          disrupted -= 1;
+          enemyActions.push({ enemy, disrupted: true, targets: [] });
+          continue;
+        }
+        const targets = combatTargetsForActivation(entries, type, operator);
+        const aoe = type.kind === "team";
+        const amount = combatSystem.rollRange?.(aoe ? tier.aoeDamage : tier.damage, state.rng) || 1;
+        const hits = targets.map((target) => {
+          const braced = aoe && entries.some((entry) => entry.correct && entry.player === target);
+          const blocked = braced && state.rng() < 0.25;
+          const targetAmount = blocked ? 0 : Math.max(0, amount - (braced ? 1 : 0));
+          if (blocked) facts.push(`${target.name} braces and blocks the area attack`);
+          const hpBefore = target.hp;
+          const damage = applyCombatDamage(target, targetAmount, "combat", notes, facts);
+          return { target, braced, blocked, damage, hpBefore, hpAfter: target.hp };
+        });
+        totalDamage += hits.reduce((sum, hit) => sum + hit.damage, 0);
+        enemyActions.push({ enemy, aoe, amount, targets: hits });
+      }
+    }
+  } else if (!encounter.cleared && state.selectedEMS) {
+    facts.push("The armed EMS field absorbs the enemy phase");
+  }
+  state.selectedEMS = false;
+  const defeatedCount = attackResults.reduce((sum, attack) => sum + attack.defeated.length, 0);
+  const attackSummary = attackResults.length
+    ? `${attackResults.map((attack) => attack.player.name).join(", ")} drive fire into the hostile line${defeatedCount ? ` and drop ${defeatedCount} attacker${defeatedCount === 1 ? "" : "s"}` : ""}`
+    : "The squad fails to break the hostile line";
+  const hostileCountered = enemyActions.some((action) => !action.disrupted);
+  const narration = encounter.cleared
+    ? `${attackSummary}. The last hostile signal collapses and the route clears.`
+    : `${attackSummary}. ${hostileCountered ? "The surviving hostiles answer with a coordinated counterattack." : "The enemy counterattack is completely disrupted."}`;
+  const down = state.players.filter((player) => player.incapacitated);
+  const combatStatusLines = [
+    ...attackResults.map((attack) => `${attack.player.name} attacks ${attack.targetLabel} for ${attack.damage} damage${attack.defeated.length ? ` — KILLING BLOW (${attack.defeated.map((enemy) => enemy.label).join(", ")})` : ""}.`),
+    ...(lockedSuppression ? [`${operator.name}'s area attack suppresses every enemy activation.`] : []),
+    ...enemyActions.flatMap((action) => action.disrupted
+      ? [`${action.enemy.label}'s attack is disrupted.`]
+      : action.targets.map((hit) => hit.blocked
+        ? `${hit.target.name} braces and blocks ${action.enemy.label}'s attack.`
+        : `${action.enemy.label} attacks ${hit.target.name} for ${hit.damage} damage${hit.braced ? " after bracing" : ""}.`))
+  ];
+  encounter.lastRound = { attackResults, enemyActions, totalDamage, defeatedCount, roundStartEnemies, combatStatusLines, challengeKind: type.kind };
+  facts.push(`Private mechanics: combat round ${encounter.round}; hostile pool ${encounter.hp}/${encounter.maxHp}; player attacks ${attackResults.map((attack) => `${attack.player.name} ${attack.damage}`).join(", ") || "none"}; enemy damage ${totalDamage}. Narrate physical outcomes without numbers.`);
+  return {
+    narration,
+    loot: "",
+    lootStatus: "",
+    lootFact: "",
+    incapacitated: down.length ? `${down.map((player) => player.name).join(", ")} cannot answer until revived.` : "",
+    eventNotes: notes,
+    factSeed: facts.join("; "),
+    combat: true,
+    combatCleared: encounter.cleared,
+    teamDefeated: !activePlayers().length,
+    encounter,
+    attackResults,
+    enemyActions,
+    lockedSuppression,
+    roundStartEnemies,
+    roundStartPlayers,
+    combatPlayerResults: entries.map((entry) => ({ name: entry.player.name, correct: Boolean(entry.correct) })),
+    combatStatusLog: combatStatusLines.join("\n")
+  };
 }
 
 function fallbackActionRoomEntities(room, index = state.currentNode) {
@@ -6684,6 +7691,22 @@ function range(start, end) {
 }
 
 function beginNextNode() {
+  if (!els.combatStage?.hidden && (els.combatStage.classList.contains("resolving") || els.combatStage.classList.contains("exiting"))) {
+    if (!state.combatNextNodeWaitStartedAt) state.combatNextNodeWaitStartedAt = Date.now();
+    if (Date.now() - state.combatNextNodeWaitStartedAt >= COMBAT_GATE_MAX_WAIT_MS) {
+      recoverCombatPresentationGate("next-room transition");
+    } else {
+      if (!state.combatNextNodeTimer) {
+        state.combatNextNodeTimer = window.setTimeout(() => {
+          state.combatNextNodeTimer = null;
+          beginNextNode();
+        }, 400);
+      }
+      return;
+    }
+  }
+  state.combatNextNodeWaitStartedAt = 0;
+  state.combatMountBlocked = false;
   renderMap();
   renderStatus();
 
@@ -6895,7 +7918,7 @@ function cleanBriefingField(value) {
 }
 
 function loadDmBriefing() {
-  return fetch(`dm-briefing.json?ts=${Date.now()}`, { cache: "no-store" })
+  return fetchWithTimeout(`dm-briefing.json?ts=${Date.now()}`, { cache: "no-store" })
     .then((response) => response.ok ? response.json() : fallbackBriefing())
     .catch(fallbackBriefing);
 }
@@ -7470,7 +8493,7 @@ function updateDeploymentSequence() {
 
 function renderDeploymentRoster() {
   els.deploymentRoster.innerHTML = state.players
-    .map((player, index) => `<div class="deployment-player" style="--roster-delay:${index * 0.16}s"><strong>${escapeHtml(player.name)}</strong><span>5 HP · READY</span></div>`)
+    .map((player, index) => `<div class="deployment-player" style="--roster-delay:${index * 0.16}s"><strong>${escapeHtml(player.name)}</strong><span>${Math.max(10, Number(player.maxHp) || 10)} HP · ${escapeHtml(combatSystem.classDefinition?.(player.classId)?.label || "OPERATOR")} · READY</span></div>`)
     .join("");
 }
 
@@ -7510,8 +8533,8 @@ function applyDashboardAtmosphere() {
   const actionPressure = Boolean(state.actionDrivenMode && currentQuestionInfo()?.actionRoom?.pressureSpotlight);
   const roster = state.players.filter(Boolean);
   const partySize = roster.length;
-  const lowCount = roster.filter((player) => player.incapacitated || Number(player.hp) <= 2).length;
-  const woundedCount = roster.filter((player) => player.incapacitated || Number(player.hp) <= 3).length;
+  const lowCount = roster.filter((player) => player.incapacitated || playerLowHealth(player)).length;
+  const woundedCount = roster.filter((player) => player.incapacitated || Number(player.hp) <= Math.ceil((Number(player.maxHp) || 10) * 0.5)).length;
   const averageHp = partySize
     ? roster.reduce((total, player) => total + Math.max(0, Number(player.hp) || 0), 0) / partySize
     : 5;
@@ -7566,8 +8589,14 @@ function collapseMissionBriefing() {
 }
 
 function renderStatus() {
-  const playerCards = state.players.map((player, index) => `
-    <div class="status-card ${playerStatusClasses(player)} ${playerPromptStatusClasses(player)}" style="--player-color:${playerColor(player.name)}; --turn-rank:${actionTurnRank(player)}; --operator-boot-index:${index}" data-player-index="${index}" data-player-name="${escapeAttribute(player.name)}">
+  const combatStatus = "";
+  const playerCards = state.players.map((player, index) => {
+    const displayedHp = state.combatDisplayedHp[normalize(player.name)];
+    const displayedPlayer = Number.isFinite(displayedHp)
+      ? { ...player, hp: displayedHp, incapacitated: displayedHp <= 0 }
+      : player;
+    return `
+    <div class="status-card ${playerStatusClasses(displayedPlayer)} ${playerPromptStatusClasses(player)}" style="--player-color:${playerColor(player.name)}; --turn-rank:${actionTurnRank(player)}; --operator-boot-index:${index}" data-player-index="${index}" data-player-name="${escapeAttribute(player.name)}">
       <div class="status-card-heading">
         <strong title="${escapeAttribute(player.name)}"><span class="player-colored-name">${escapeHtml(displayPlayerName(player.name))}</span></strong>
         ${actionTurnBadge(player)}
@@ -7577,15 +8606,16 @@ function renderStatus() {
         ${secondWindBadge(player)}
       </div>
       <div class="status-vitals">
-        <strong>${Math.max(0, player.hp)} HP</strong>
-        <span class="${statusCodeClass(player)}" title="${escapeAttribute(player.status.length ? player.status.join(", ") : "No status effects")}">${escapeHtml(statusCodeText(player))}</span>
-        <span class="player-points" title="Study points">${Math.max(0, Math.round(Number(player.points) || 0))} PTS</span>
-        ${playerBonusBadge(player)}
+        <strong>${Math.max(0, displayedPlayer.hp)} / ${Math.max(10, Number(player.maxHp) || 10)} HP</strong>
+        <span class="${statusCodeClass(displayedPlayer)}" title="${escapeAttribute(player.status.length ? player.status.join(", ") : "No status effects")}">${escapeHtml(statusCodeText(displayedPlayer))}</span>
+        <span class="player-class-badge" title="${escapeAttribute(player.classGear || "Class gear")}">${escapeHtml(combatSystem.classDefinition?.(player.classId)?.label || "Operator")} <b>LV ${Math.max(1, Number(player.level) || 1)}</b></span>
       </div>
     </div>
-  `).join("");
+  `;
+  }).join("");
 
   els.statusGrid.innerHTML = `
+    ${combatStatus}
     ${playerCards}
   `;
   syncEmsFieldVisual();
@@ -7614,6 +8644,20 @@ function renderStatus() {
   renderRouteTelemetry();
   renderMapEmergencyTimer();
   publishPlayerVitals();
+}
+
+function combatEncounterStatusHtml() {
+  if (!isCombatNode(state.nodes[state.currentNode])) return "";
+  const encounter = currentCombatEncounter();
+  if (!encounter) return "";
+  const activeEnemies = encounter.enemies.filter((enemy) => !enemy.defeated);
+  const percent = encounter.maxHp ? Math.max(0, Math.min(100, encounter.hp / encounter.maxHp * 100)) : 0;
+  return `<section class="combat-status-card ${encounter.roomType === "boss" ? "boss" : ""}">
+    <div><span>${encounter.roomType === "boss" ? "Boss Contact" : "Hostile Group"}</span><strong>${activeEnemies.length} ACTIVE · ROUND ${encounter.round + 1}</strong></div>
+    <div class="combat-health-track"><i style="width:${percent}%"></i></div>
+    <p><strong>${encounter.hp} / ${encounter.maxHp}</strong> shared integrity · ${activeEnemies.map((enemy) => escapeHtml(enemy.label)).join(", ") || "Threat neutralized"}</p>
+    ${encounter.cleared ? "" : `<p class="combat-intent">${escapeHtml(combatIntentText())}</p>`}
+  </section>`;
 }
 
 function actionTurnRank(player) {
@@ -7672,7 +8716,7 @@ function statusCodeText(player) {
 
 function statusCodeClass(player) {
   if (player.incapacitated || Number(player.hp) <= 0) return "status-code-down";
-  if (player.hp <= 2) return "status-code-low";
+  if (playerLowHealth(player)) return "status-code-low";
   if (player.status.includes("Burned")) return "status-code-burned";
   if (player.status.includes("Bleeding")) return "status-code-bleeding";
   if (player.status.includes("Shocked")) return "status-code-shocked";
@@ -7689,8 +8733,14 @@ function answerResultBadge(player) {
 
 function renderPreviousAnswer() {
   const previous = state.previousAnswer;
-  els.lastAnswerPanel.hidden = !previous;
-  if (!previous) return;
+  els.lastAnswerPanel.hidden = false;
+  if (!previous) {
+    els.lastAnswerPanel.classList.remove("accepted", "rejected", "feedback-flash");
+    els.lastAnswerResult.textContent = "Awaiting";
+    els.lastSubmittedDisplay.textContent = "—";
+    els.lastCorrectDisplay.textContent = "—";
+    return;
+  }
 
   els.lastAnswerPanel.classList.toggle("accepted", previous.correct);
   els.lastAnswerPanel.classList.toggle("rejected", !previous.correct);
@@ -7816,7 +8866,7 @@ function playerStatusClasses(player) {
     if (rank === 1) classes.push("action-turn-next");
   }
   if (player.incapacitated) classes.push("incapacitated");
-  else if (player.hp <= 2) classes.push("low-health");
+  else if (playerLowHealth(player)) classes.push("low-health");
   if (state.selectedEMS && !player.incapacitated) classes.push("ems-protected");
   if (state.secondWindUsed && sameName(player.name, state.secondWindPlayerName)) classes.push("second-wind-used");
 
@@ -7884,7 +8934,7 @@ function renderMap() {
     const resultClass = discovered && node.type !== "recovery" && state.nodeResults[index] !== undefined
       ? state.nodeResults[index] ? "correct" : "incorrect"
       : "";
-    const typeClass = resultClass || (discovered && node.type === "boss" ? "boss" : discovered && node.type === "recovery" ? "recovery" : "");
+    const typeClass = resultClass || (discovered && node.type === "boss" ? "boss" : discovered && node.type === "combat" ? "combat" : discovered && node.type === "recovery" ? "recovery" : "");
     const radius = discovered && node.type === "boss" ? 28 : discovered && node.type === "recovery" ? 24 : 21;
     group.appendChild(svg("circle", { cx: pos.x, cy: pos.y, r: radius, class: `map-node ${typeClass || status} ${status}` }));
     group.appendChild(svg("text", { x: pos.x, y: pos.y + 6, class: "map-label" }, discovered ? node.label : "?"));
@@ -7905,7 +8955,425 @@ function renderMap() {
   els.mapPanel.classList.toggle("boss-encounter", state.nodes[state.currentNode]?.type === "boss");
   syncBossEyesVisual();
   renderRouteTelemetry();
+  syncCombatStage();
   renderMapQuestionOverlay();
+}
+
+function clearCombatPresentation() {
+  state.combatPresentationRunId += 1;
+  for (const timer of state.combatPresentationTimers || []) window.clearTimeout(timer);
+  state.combatPresentationTimers = [];
+  window.clearTimeout(state.combatNextNodeTimer);
+  state.combatNextNodeTimer = null;
+  state.combatNextNodeWaitStartedAt = 0;
+  state.combatMountBlocked = false;
+  state.combatDisplayedHp = {};
+  if (els?.combatStage) {
+    els.combatStage.classList.remove("entering", "resolving", "combat-cleared", "exiting", "boss-fight", "boss-eyes-attacking", "boss-eyes-hit");
+    els.combatStage.hidden = true;
+    delete els.combatStage.dataset.nodeIndex;
+  }
+}
+
+function recoverCombatPresentationGate(reason = "combat transition") {
+  state.combatPresentationRunId += 1;
+  for (const timer of state.combatPresentationTimers || []) window.clearTimeout(timer);
+  state.combatPresentationTimers = [];
+  window.clearTimeout(state.combatNextNodeTimer);
+  state.combatNextNodeTimer = null;
+  state.combatNextNodeWaitStartedAt = 0;
+  state.combatMountBlocked = false;
+  els.mapPanel?.classList.remove("combat-map-zooming");
+  if (els.combatStage) {
+    els.combatStage.classList.remove("entering", "resolving", "exiting");
+    const currentNode = state.nodes[state.currentNode];
+    const bossLocked = currentNode?.type === "boss" && !state.bossReadyChecks.has(state.currentNode);
+    const encounter = isCombatNode(currentNode) && !bossLocked ? currentCombatEncounter() : null;
+    if (encounter) {
+      state.combatStageEnteredNodes.add(state.currentNode);
+      renderCombatStage(encounter);
+    } else {
+      els.combatStage.hidden = true;
+    }
+  }
+  logDebugEvent({
+    kind: "state",
+    label: "Combat presentation watchdog recovered",
+    detail: `${reason} exceeded ${COMBAT_GATE_MAX_WAIT_MS}ms`
+  });
+}
+
+function combatEnemyGlyph(enemy) {
+  if (enemy.boss) return "◆";
+  if (enemy.tier === "heavy") return "⬢";
+  if (enemy.tier === "medium") return "⬟";
+  return "▲";
+}
+
+function renderCombatStage(encounter, options = {}) {
+  if (!els.combatStage || !encounter) return;
+  const enemyStates = new Map((options.enemyStates || []).map((entry) => [entry.id, entry]));
+  const playerStates = new Map((options.playerStates || []).map((entry) => [normalize(entry.name), entry]));
+  const playerResults = new Map((options.playerResults || []).map((entry) => [normalize(entry.name), entry.correct]));
+  els.combatStage.hidden = false;
+  els.combatStage.classList.toggle("boss-fight", encounter.roomType === "boss");
+  els.combatStage.dataset.nodeIndex = String(state.currentNode);
+  els.combatStageLabel.textContent = encounter.roomType === "boss" ? "CRITICAL HOSTILE" : "HOSTILE CONTACT";
+  els.combatStageRound.textContent = `ROUND ${Math.max(1, encounter.round + (options.beforeRound ? 0 : 1))}`;
+  els.combatEnemyFormation.innerHTML = encounter.enemies.filter((enemy) => {
+    const snapshot = enemyStates.get(enemy.id);
+    return !(snapshot ? snapshot.defeated : enemy.defeated);
+  }).map((enemy) => {
+    const snapshot = enemyStates.get(enemy.id);
+    const hp = snapshot ? snapshot.hp : enemy.hp;
+    const defeated = snapshot ? snapshot.defeated : enemy.defeated;
+    const percent = enemy.maxHp ? Math.max(0, Math.min(100, hp / enemy.maxHp * 100)) : 0;
+    const sprite = enemy.boss
+      ? `<div class="combat-unit-sprite combat-boss-eyes-target" aria-hidden="true"><span class="combat-hit-ring"></span></div>`
+      : `<div class="combat-unit-sprite"><i>${combatEnemyGlyph(enemy)}</i><span class="combat-hit-ring"></span></div>`;
+    return `<article class="combat-enemy-unit ${enemy.tier} ${enemy.boss ? "boss" : ""} ${defeated ? "defeated" : ""}" data-enemy-id="${escapeAttribute(enemy.id)}">
+      ${sprite}
+      <strong>${escapeHtml(enemy.label)}</strong>
+      <div class="combat-unit-hp"><i style="width:${percent}%"></i></div>
+      <small>${Math.max(0, hp)} / ${enemy.maxHp}</small>
+    </article>`;
+  }).join("");
+  els.combatPartyFormation.innerHTML = state.players.map((player) => {
+    const snapshot = playerStates.get(normalize(player.name));
+    const visibleHp = snapshot ? snapshot.hp : player.hp;
+    const visibleDown = snapshot ? visibleHp <= 0 : player.incapacitated;
+    const answerResult = playerResults.get(normalize(player.name));
+    const answerClass = answerResult === true ? "answer-correct" : answerResult === false ? "answer-wrong" : "";
+    const answerCue = answerResult === true ? "ATTACK READY" : answerResult === false ? "BRACE" : "";
+    const hpPercent = player.maxHp ? Math.max(0, Math.min(100, visibleHp / player.maxHp * 100)) : 0;
+    const classLabel = combatSystem.classDefinition?.(player.classId)?.label || "Operator";
+    return `<article class="combat-party-unit ${visibleDown ? "down" : ""} ${answerClass}" data-player-name="${escapeAttribute(normalize(player.name))}">
+      <div class="combat-party-avatar" style="--player-color:${playerColor(player.name)}"><span>${escapeHtml(player.name.slice(0, 1).toUpperCase())}</span></div>
+      <div><strong>${escapeHtml(player.name)}${answerCue ? `<b class="combat-answer-cue">${answerCue}</b>` : ""}</strong><small>${escapeHtml(classLabel)} · LV ${player.level || 1}</small><div class="combat-unit-hp party"><i style="width:${hpPercent}%"></i></div><em>${visibleHp} / ${player.maxHp} HP</em></div>
+    </article>`;
+  }).join("");
+}
+
+function syncCombatStage() {
+  const node = state.nodes[state.currentNode];
+  if (!isCombatNode(node) || state.currentNode >= state.nodes.length) {
+    if (els.combatStage && !els.combatStage.classList.contains("resolving") && !els.combatStage.classList.contains("exiting")) els.combatStage.hidden = true;
+    return;
+  }
+  if (node.type === "boss" && !state.bossReadyChecks.has(state.currentNode)) {
+    if (els.combatStage && !els.combatStage.classList.contains("resolving") && !els.combatStage.classList.contains("exiting")) {
+      els.combatStage.hidden = true;
+    }
+    return;
+  }
+  if (state.combatMountBlocked) return;
+  const encounter = currentCombatEncounter();
+  if (!encounter || els.combatStage?.classList.contains("resolving") || els.combatStage?.classList.contains("exiting")) return;
+  if (els.combatStage.classList.contains("entering")) return;
+  const firstEntry = !state.combatStageEnteredNodes.has(state.currentNode);
+  if (firstEntry) {
+    els.combatStage.classList.remove("resolving", "combat-cleared", "exiting", "boss-eyes-attacking", "boss-eyes-hit");
+    els.combatStage.classList.add("entering");
+  }
+  renderCombatStage(encounter);
+  if (firstEntry) {
+    state.combatStageEnteredNodes.add(state.currentNode);
+    void els.combatStage.offsetWidth;
+    const currentPosition = routePositions(state.nodes.length)[state.currentNode] || { x: 450, y: 280 };
+    els.mapPanel?.style.setProperty("--combat-zoom-x", `${Math.max(0, Math.min(100, currentPosition.x / 9))}%`);
+    els.mapPanel?.style.setProperty("--combat-zoom-y", `${Math.max(0, Math.min(100, currentPosition.y / 5.6))}%`);
+    els.mapPanel?.classList.remove("combat-map-zooming");
+    void els.mapPanel?.offsetWidth;
+    els.mapPanel?.classList.add("combat-map-zooming");
+    if (state.backgroundMusicMode !== "boss") loadBackgroundMusic("boss", state.backgroundMusicLoaded ? { transition: true } : { fadeIn: true });
+    if (els.combatActionBanner) els.combatActionBanner.textContent = "HOSTILE CONTACT — FORMING BATTLE LINE";
+    const readyTimer = window.setTimeout(() => {
+      if (els.combatActionBanner) els.combatActionBanner.textContent = encounter.cleared ? "HOSTILE LINE CLEARED" : combatIntentText();
+    }, COMBAT_FORMATION_READY_MS);
+    const timer = window.setTimeout(() => {
+      els.combatStage?.classList.remove("entering");
+      els.mapPanel?.classList.remove("combat-map-zooming");
+      renderMapQuestionOverlay();
+    }, COMBAT_ENTRY_COMPLETE_MS);
+    state.combatPresentationTimers.push(readyTimer);
+    state.combatPresentationTimers.push(timer);
+    return;
+  }
+  if (els.combatActionBanner) els.combatActionBanner.textContent = encounter.cleared ? "HOSTILE LINE CLEARED" : combatIntentText();
+}
+
+function combatPresentationTimer(callback, delay, runId) {
+  const timer = window.setTimeout(() => {
+    if (runId !== state.combatPresentationRunId) return;
+    callback();
+  }, delay);
+  state.combatPresentationTimers.push(timer);
+}
+
+function showCombatFloat(card, text, kind) {
+  if (!card) return;
+  const node = document.createElement("span");
+  node.className = `combat-damage-float ${kind || "damage"}`;
+  node.textContent = text;
+  card.appendChild(node);
+  window.setTimeout(() => node.remove(), 900);
+}
+
+function updateCombatEnemyVisual(attack) {
+  const card = els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(attack.targetId || "")}"]`);
+  if (!card) return;
+  const cards = attack.aoe
+    ? [...els.combatEnemyFormation.querySelectorAll(".combat-enemy-unit:not(.defeated)")]
+    : [card];
+  for (const hitCard of cards) {
+    hitCard.classList.remove("hit");
+    void hitCard.offsetWidth;
+    hitCard.classList.add("hit");
+    window.setTimeout(() => hitCard.classList.remove("hit"), 650);
+  }
+  if (cards.some((hitCard) => hitCard.classList.contains("boss"))) {
+    els.combatStage?.classList.remove("boss-eyes-hit");
+    if (els.combatStage) void els.combatStage.offsetWidth;
+    els.combatStage?.classList.add("boss-eyes-hit");
+    combatPresentationTimer(() => els.combatStage?.classList.remove("boss-eyes-hit"), 820, state.combatPresentationRunId);
+  }
+  for (const enemyState of attack.enemyStatesAfter || []) {
+    const enemyCard = els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(enemyState.id)}"]`);
+    const fill = enemyCard?.querySelector(".combat-unit-hp i");
+    const hpLabel = enemyCard?.querySelector("small");
+    if (fill) fill.style.width = `${Math.max(0, Math.min(100, enemyState.hp / Math.max(1, enemyState.maxHp || 1) * 100))}%`;
+    if (hpLabel) hpLabel.textContent = `${Math.max(0, enemyState.hp)} / ${enemyState.maxHp}`;
+  }
+  showCombatFloat(card, attack.aoe ? `AOE -${attack.damage}` : `-${attack.damage}`, "damage");
+  if (attack.defeated?.length) playEnemyDeathSound(attack.defeated.length);
+  if (attack.defeated?.length) {
+    const runId = state.combatPresentationRunId;
+    combatPresentationTimer(() => {
+      for (const enemy of attack.defeated) {
+        const defeatedCard = els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(enemy.id)}"]`);
+        defeatedCard?.classList.add("defeated");
+        window.setTimeout(() => defeatedCard?.remove(), 520);
+      }
+    }, 260, runId);
+  }
+}
+
+function playEnemyDeathSound(count = 1) {
+  const total = Math.max(1, Math.min(6, Number(count) || 1));
+  for (let index = 0; index < total; index += 1) {
+    window.setTimeout(() => {
+      const audio = new Audio("audio-effects/enemydeath.mp3");
+      audio.preload = "auto";
+      audio.studyAdventureBaseVolume = state.sfxPreset === "cinematic" ? 0.92 : 0.58;
+      audio.volume = effectiveGameSfxVolume(audio);
+      setNarrationLowPass(audio, state.ttsPlaybackActive);
+      audio.play().catch(() => {});
+    }, index * 120);
+  }
+}
+
+function updateCombatPlayerVisual(hit, card) {
+  if (!card) return;
+  const maxHp = Math.max(1, Number(hit.target.maxHp) || 1);
+  const fill = card.querySelector(".combat-unit-hp i");
+  const label = card.querySelector("em");
+  if (fill) fill.style.width = `${Math.max(0, Math.min(100, hit.hpAfter / maxHp * 100))}%`;
+  if (label) label.textContent = `${Math.max(0, hit.hpAfter)} / ${maxHp} HP`;
+  card.classList.toggle("down", hit.hpAfter <= 0);
+  const key = normalize(hit.target.name);
+  state.combatDisplayedHp[key] = hit.hpAfter;
+  const dashboardCard = els.statusGrid?.querySelector(`[data-player-name="${CSS.escape(hit.target.name)}"]`);
+  const dashboardHp = dashboardCard?.querySelector(".status-vitals strong");
+  if (dashboardHp) dashboardHp.textContent = `${Math.max(0, hit.hpAfter)} / ${maxHp} HP`;
+  dashboardCard?.classList.toggle("incapacitated", hit.hpAfter <= 0);
+}
+
+function showBossClawImpact(card, blocked = false) {
+  if (!card) return;
+  card.querySelector(".combat-claw-impact")?.remove();
+  const claw = document.createElement("span");
+  claw.className = `combat-claw-impact${blocked ? " blocked" : ""}`;
+  claw.setAttribute("aria-hidden", "true");
+  card.appendChild(claw);
+  window.setTimeout(() => claw.remove(), 1050);
+}
+
+function showBossSwipeAttack() {
+  if (!els.combatStage) return;
+  els.combatStage.querySelector(".combat-boss-swipe-trail")?.remove();
+  const swipe = document.createElement("span");
+  swipe.className = "combat-boss-swipe-trail";
+  swipe.setAttribute("aria-hidden", "true");
+  els.combatStage.appendChild(swipe);
+  window.setTimeout(() => swipe.remove(), 980);
+}
+
+function appendCombatActionStatus(log, text) {
+  if (!log || !text) return;
+  const line = document.createElement("p");
+  line.textContent = text;
+  log.appendChild(line);
+}
+
+function showCombatXpAwards(result, runId) {
+  const baseline = new Map((result.roundStartPlayers || []).map((player) => [normalize(player.name), player]));
+  let awardCount = 0;
+  for (const player of state.players) {
+    const before = baseline.get(normalize(player.name));
+    const gained = Math.max(0, (Number(player.xp) || 0) - (Number(before?.xp) || 0));
+    if (!gained) continue;
+    awardCount += 1;
+    const card = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(player.name))}"]`);
+    showCombatFloat(card, `+${gained} XP`, "xp");
+    if ((Number(player.level) || 1) > (Number(before?.level) || 1)) {
+      card?.classList.add("level-up");
+      combatPresentationTimer(() => showCombatFloat(card, `LEVEL ${player.level}`, "level"), 520, runId);
+    }
+  }
+  return awardCount;
+}
+
+function presentCombatResolution(result, options = {}) {
+  if (!result?.combat || !els.combatStage) return;
+  state.combatPresentationRunId += 1;
+  const runId = state.combatPresentationRunId;
+  for (const timer of state.combatPresentationTimers) window.clearTimeout(timer);
+  state.combatPresentationTimers = [];
+  const playerRoundStart = new Map();
+  for (const action of result.enemyActions || []) {
+    for (const hit of action.targets || []) {
+      const key = normalize(hit.target.name);
+      if (!playerRoundStart.has(key)) playerRoundStart.set(key, { name: hit.target.name, hp: hit.hpBefore });
+    }
+  }
+  state.combatDisplayedHp = Object.fromEntries(state.players.map((player) => {
+    const snapshot = playerRoundStart.get(normalize(player.name));
+    return [normalize(player.name), snapshot ? snapshot.hp : player.hp];
+  }));
+  renderCombatStage(result.encounter, {
+    enemyStates: result.roundStartEnemies,
+    playerStates: [...playerRoundStart.values()],
+    playerResults: result.combatPlayerResults,
+    beforeRound: true
+  });
+  els.combatStage.classList.add("resolving");
+  const statusLog = renderCombatRoundStatus(result, { deferLines: true });
+  els.combatActionBanner.textContent = "PLAYER PHASE — CORRECT ANSWERS ATTACK";
+  let cursor = 900;
+  for (const attack of result.attackResults || []) {
+    combatPresentationTimer(() => {
+      const playerCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(attack.player.name))}"]`);
+      playerCard?.classList.add("attacking");
+      els.combatActionBanner.textContent = `${attack.player.name} attacks ${attack.targetLabel}`;
+      combatPresentationTimer(() => {
+        playerCard?.classList.remove("attacking");
+        playGameSfx("damage");
+        updateCombatEnemyVisual(attack);
+        appendCombatActionStatus(statusLog, `${attack.player.name} attacks ${attack.targetLabel} for ${attack.damage} damage${attack.defeated.length ? ` — KILLING BLOW (${attack.defeated.map((enemy) => enemy.label).join(", ")})` : ""}.`);
+      }, 380, runId);
+    }, cursor, runId);
+    cursor += 1350;
+  }
+  cursor += 650;
+  combatPresentationTimer(() => {
+    els.combatActionBanner.textContent = result.lockedSuppression
+      ? "LOCKED OPERATOR SWEEP — ENEMY PHASE SUPPRESSED"
+      : "ENEMY PHASE — INCOMING ATTACKS";
+    if (result.lockedSuppression) {
+      const enemyCards = [...(els.combatEnemyFormation?.querySelectorAll(".combat-enemy-unit:not(.defeated)") || [])];
+      for (const enemyCard of enemyCards) {
+        enemyCard.classList.add("stunned");
+        showCombatFloat(enemyCard, "STUNNED", "block");
+      }
+      appendCombatActionStatus(statusLog, `${result.attackResults[0]?.player.name || "Locked operator"}'s area attack suppresses every enemy activation.`);
+      combatPresentationTimer(() => enemyCards.forEach((enemyCard) => enemyCard.classList.remove("stunned")), 850, runId);
+    }
+  }, cursor, runId);
+  cursor += result.lockedSuppression ? 1500 : 950;
+  let lastEnemyActionEndsAt = 0;
+  for (const action of result.enemyActions || []) {
+    combatPresentationTimer(() => {
+      const enemyCard = els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(action.enemy.id)}"]`);
+      const bossSwipe = Boolean(action.enemy.boss && !action.disrupted);
+      enemyCard?.classList.remove("attacking", "boss-swiping", "stunned", "hit");
+      if (enemyCard) void enemyCard.offsetWidth;
+      enemyCard?.classList.add(bossSwipe ? "boss-swiping" : "attacking");
+      if (action.disrupted) {
+        els.combatActionBanner.textContent = `${action.enemy.label} — ATTACK DISRUPTED`;
+        enemyCard?.classList.add("stunned");
+        showCombatFloat(enemyCard, "STUNNED", "block");
+        appendCombatActionStatus(statusLog, `${action.enemy.label}'s attack is disrupted.`);
+      } else {
+        const targetNames = (action.targets || []).map((hit) => hit.target.name).join(", ");
+        els.combatActionBanner.textContent = bossSwipe
+          ? `${action.enemy.label} rakes the battle line — ${targetNames}`
+          : `${action.enemy.label} targets ${targetNames}`;
+        if (bossSwipe) {
+          els.combatStage?.classList.add("boss-eyes-attacking");
+          showBossSwipeAttack();
+        }
+        for (const hit of action.targets || []) {
+          const playerCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(hit.target.name))}"]`);
+          playerCard?.classList.remove("blocking", "hit");
+          if (playerCard) void playerCard.offsetWidth;
+          playerCard?.classList.add(hit.blocked ? "blocking" : "hit");
+          if (bossSwipe) showBossClawImpact(playerCard, hit.blocked);
+          showCombatFloat(playerCard, hit.blocked ? "BLOCK" : `-${hit.damage}`, hit.blocked ? "block" : "damage");
+          if (!hit.blocked && hit.damage > 0) playGameSfx("damage");
+          updateCombatPlayerVisual(hit, playerCard);
+          appendCombatActionStatus(statusLog, hit.blocked
+            ? `${hit.target.name} braces and blocks ${action.enemy.label}'s attack.`
+            : `${action.enemy.label} attacks ${hit.target.name} for ${hit.damage} damage${hit.braced ? " after bracing" : ""}.`);
+          combatPresentationTimer(() => playerCard?.classList.remove("blocking", "hit"), bossSwipe ? 820 : 620, runId);
+        }
+      }
+      combatPresentationTimer(() => {
+        enemyCard?.classList.remove("attacking", "boss-swiping", "stunned", "hit");
+        if (bossSwipe) els.combatStage?.classList.remove("boss-eyes-attacking");
+      }, bossSwipe ? 1080 : 720, runId);
+    }, cursor, runId);
+    lastEnemyActionEndsAt = cursor + (action.enemy.boss && !action.disrupted ? 1080 : 720);
+    cursor += action.enemy.boss && !action.disrupted ? 1900 : 1550;
+  }
+  const combatFinalizationDelay = result.teamDefeated && lastEnemyActionEndsAt
+    ? lastEnemyActionEndsAt + 160
+    : cursor + 650;
+  combatPresentationTimer(() => {
+    if (result.combatCleared) applyCombatVictoryXp(result.encounter);
+    renderCombatStage(result.encounter);
+    els.combatStage.classList.remove("resolving");
+    els.combatStage.classList.toggle("combat-cleared", Boolean(result.combatCleared));
+    els.combatActionBanner.textContent = result.combatCleared ? "HOSTILE LINE CLEARED" : combatIntentText();
+    const xpAwardCount = showCombatXpAwards(result, runId);
+    if (xpAwardCount) els.combatActionBanner.textContent = `EXPERIENCE AWARDED — ${xpAwardCount} OPERATOR${xpAwardCount === 1 ? "" : "S"}`;
+    state.combatDisplayedHp = {};
+    renderStatus();
+    if (typeof options.onComplete === "function") options.onComplete(result);
+    if (result.combatCleared || state.currentNode !== result.encounter.nodeIndex) {
+      const beginExit = () => {
+        state.combatMountBlocked = true;
+        els.combatStage.classList.add("exiting");
+        if (state.backgroundMusicMode !== "normal") loadBackgroundMusic("normal", { transition: true });
+        combatPresentationTimer(() => {
+          if (els.combatStage) {
+            els.combatStage.hidden = true;
+            els.combatStage.classList.remove("exiting");
+          }
+        }, 1400, runId);
+      };
+      if (xpAwardCount) combatPresentationTimer(beginExit, 1650, runId);
+      else beginExit();
+    }
+  }, combatFinalizationDelay, runId);
+}
+
+function renderCombatRoundStatus(result, options = {}) {
+  if (!result?.combatStatusLog || !els.statusUpdateFeed) return;
+  const log = document.createElement("div");
+  log.className = "damage-log combat-round-log";
+  if (!options.deferLines) result.combatStatusLog.split(/\r?\n/).filter(Boolean).forEach((text) => appendCombatActionStatus(log, text));
+  appendStatusUpdateLog(log, null);
+  return log;
 }
 
 function appendMovingRouteTrail(from, to, correct) {
@@ -7994,6 +9462,19 @@ function renderMapQuestionOverlay() {
   if (!els.mapQuestionOverlay) return;
   const info = currentQuestionInfo();
   const node = state.nodes[state.currentNode];
+  const combatTransitionActive = !els.combatStage?.hidden && (
+    els.combatStage?.classList.contains("resolving")
+    || els.combatStage?.classList.contains("exiting")
+  );
+  const combatRevealPending = combatTransitionActive || isCombatNode(node) && (
+    !state.combatStageEnteredNodes.has(state.currentNode)
+    || els.combatStage?.classList.contains("entering")
+    || els.combatStage?.classList.contains("exiting")
+  );
+  if (combatRevealPending) {
+    fadeMapQuestionOverlay();
+    return;
+  }
   const canShowQuestionSurface = Boolean(
     state.started
     && (!state.chatMode || state.teamReady)
@@ -8138,11 +9619,11 @@ function generateSprawledRoutePositions(count, seed) {
   const rng = mulberry32(seed || 1);
   const cols = 6;
   const rows = Math.max(3, Math.ceil(count / 5));
-  const corners = [
-    { col: 0, row: 0 },
-    { col: cols - 1, row: 0 },
-    { col: 0, row: rows - 1 },
-    { col: cols - 1, row: rows - 1 }
+  const starts = [
+    { col: Math.floor((cols - 1) / 2), row: Math.floor((rows - 1) / 2) },
+    { col: Math.ceil((cols - 1) / 2), row: Math.floor((rows - 1) / 2) },
+    { col: Math.floor((cols - 1) / 2), row: Math.ceil((rows - 1) / 2) },
+    { col: Math.ceil((cols - 1) / 2), row: Math.ceil((rows - 1) / 2) }
   ];
   const keyFor = (cell) => `${cell.col}:${cell.row}`;
   const neighborCells = (cell) => [
@@ -8154,7 +9635,7 @@ function generateSprawledRoutePositions(count, seed) {
 
   let route = null;
   for (let attempt = 0; attempt < 24 && !route; attempt++) {
-    const start = corners[Math.floor(rng() * corners.length)];
+    const start = starts[Math.floor(rng() * starts.length)];
     const path = [{ ...start }];
     const used = new Set([keyFor(start)]);
     let budget = 24000;
@@ -8190,10 +9671,85 @@ function generateSprawledRoutePositions(count, seed) {
   if (!route) route = spiralRouteCells(rows, cols).slice(0, count);
   const xGap = 744 / Math.max(1, cols - 1);
   const yGap = Math.max(104, Math.min(122, 520 / Math.max(1, rows - 1)));
-  return route.map((cell, index) => ({
+  const positions = route.map((cell, index) => ({
     x: 78 + cell.col * xGap + (rng() - 0.5) * 28,
     y: 68 + cell.row * yGap + (rng() - 0.5) * 18 + (index % 2 ? 3 : -3)
   }));
+  const offsetX = 450 - positions[0].x;
+  const offsetY = 280 - positions[0].y;
+  positions.forEach((position) => {
+    position.x += offsetX;
+    position.y += offsetY;
+  });
+  return stabilizeRoutePositions(positions, { lockedCount: 1 });
+}
+
+function stabilizeRoutePositions(positions, { lockedCount = 0, minDistance = 0 } = {}) {
+  const bounds = { minX: 42, maxX: 858, minY: 42, maxY: 506 };
+  const spacingTarget = Number(minDistance) > 0
+    ? Number(minDistance)
+    : positions.length > 26 ? 86 : positions.length > 20 ? 100 : 118;
+  const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+  const result = positions.map((position) => ({
+    x: Number(position?.x) || 450,
+    y: Number(position?.y) || 280
+  }));
+  const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  const isClear = (candidate, index) => result
+    .slice(0, index)
+    .every((prior) => distance(candidate, prior) >= spacingTarget);
+
+  for (let index = Math.max(0, lockedCount); index < result.length; index += 1) {
+    const origin = {
+      x: clamp(result[index].x, bounds.minX, bounds.maxX),
+      y: clamp(result[index].y, bounds.minY, bounds.maxY)
+    };
+    result[index] = origin;
+    if (isClear(origin, index)) continue;
+
+    let replacement = null;
+    for (let ring = 1; ring <= 18 && !replacement; ring += 1) {
+      const radius = 22 + ring * 23;
+      for (let step = 0; step < 20; step += 1) {
+        const angle = ((step * 137.5) + index * 31 + ring * 11) * Math.PI / 180;
+        const candidate = {
+          x: clamp(origin.x + Math.cos(angle) * radius, bounds.minX, bounds.maxX),
+          y: clamp(origin.y + Math.sin(angle) * radius, bounds.minY, bounds.maxY)
+        };
+        if (isClear(candidate, index)) {
+          replacement = candidate;
+          break;
+        }
+      }
+    }
+
+    if (!replacement) {
+      let bestCandidate = origin;
+      let bestScore = -Infinity;
+      const gridOffsets = [0, spacingTarget / 2];
+      for (const offsetY of gridOffsets) {
+        for (const offsetX of gridOffsets) {
+          for (let y = bounds.minY + offsetY; y <= bounds.maxY; y += spacingTarget) {
+            for (let x = bounds.minX + offsetX; x <= bounds.maxX; x += spacingTarget) {
+              const candidate = { x, y };
+              if (!isClear(candidate, index)) continue;
+              const separation = result
+                .slice(0, index)
+                .reduce((nearest, prior) => Math.min(nearest, distance(candidate, prior)), Infinity);
+              const score = separation - distance(candidate, origin) * 0.08;
+              if (score > bestScore) {
+                bestScore = score;
+                bestCandidate = candidate;
+              }
+            }
+          }
+        }
+      }
+      replacement = bestCandidate;
+    }
+    result[index] = replacement;
+  }
+  return result;
 }
 
 function spiralRouteCells(rows, cols) {
@@ -8295,13 +9851,15 @@ function renderChallenge(node) {
   const q = state.questions[state.currentQuestion];
   const type = challengeType(state.currentQuestion, state.questions.length);
   const operator = type.locked ? selectOperator(state.currentQuestion) : null;
+  activateScoutHintForPrompt({ question: q, type, operator });
   const setup = makeSetup(type, operator, q);
   state.encounter = { node, question: q, type, operator };
   state.resolved = false;
   state.selectedEMS = false;
 
+  const narrowed = new Set(state.narrowedChoices[state.currentQuestion] || []);
   const choicesHtml = q.mode === "multiple"
-    ? `<div class="choices">${q.choices.map((choice) => `<div class="choice-chip">${choice.key}. ${escapeHtml(choice.text)}</div>`).join("")}</div>`
+    ? `<div class="choices">${q.choices.filter((choice) => !narrowed.has(choice.key)).map((choice) => `<div class="choice-chip">${choice.key}. ${escapeHtml(choice.text)}</div>`).join("")}</div>`
     : "";
 
   els.encounterCard.innerHTML = `
@@ -8312,6 +9870,7 @@ function renderChallenge(node) {
       <strong>${q.mode === "fill" ? "Fill in the blank:" : "Question:"}</strong>
       <p>${escapeHtml(displayQuestionText(q))}</p>
       ${choicesHtml}
+      ${state.classHints[state.currentQuestion] ? `<div class="player-class-hint">${escapeHtml(state.classHints[state.currentQuestion])}</div>` : ""}
     </div>
   `;
 
@@ -8362,7 +9921,20 @@ function renderChatCheckpoint(node) {
 
   if (state.bossTestMode && state.teamReady && !state.bossTestPromptStarted) {
     state.bossTestPromptStarted = true;
-    appendBossTestCheckpointPrompt();
+    const currentNode = state.nodes[state.currentNode];
+    if (currentNode?.type === "boss" && !state.bossReadyChecks.has(state.currentNode)) {
+      appendTranscript({
+        tag: "Readiness Check",
+        areaName: bossAreaName(currentNode),
+        story: `The test route is staged at ${bossAreaName(currentNode)}. The pressure ahead holds until the team chooses to begin critical contact.`,
+        readyCheck: true,
+        bossNodeIndex: state.currentNode,
+        bossPhase: currentNode.bossPhase || "final",
+        recordHistory: false
+      });
+    } else {
+      appendBossTestCheckpointPrompt();
+    }
     return;
   }
 
@@ -8692,6 +10264,7 @@ function renderChatControls() {
   const sideActionAvailable = actionsAllowedThisEncounter();
   const actionModeActive = Boolean(state.actionDrivenMode && state.teamReady && !readyCheckActive);
   const narrowed = new Set(state.narrowedChoices[state.currentQuestion] || []);
+  const classHintHtml = state.classHints[state.currentQuestion] ? `<div class="player-class-hint">${escapeHtml(state.classHints[state.currentQuestion])}</div>` : "";
   const fixedAnswerLetters = ["A", "B", "C", "D"];
   const quickAnswers = state.nodes[state.currentNode]?.type === "recovery"
     ? ["A", "B", "C"]
@@ -8751,12 +10324,14 @@ function renderChatControls() {
     </div>
   ` : state.teamReady && !readyCheckActive ? state.deviceMode === "multi" ? `
     <div class="player-answer-form">
+      ${classHintHtml}
       <div id="answerSubmitState" class="answer-submit-state ${state.answerPending ? "pending" : ""}">
         ${state.answerPending ? `${escapeHtml(state.lastSubmittedAnswer)}. Receiving transmission.` : presentationLocked ? "Incoming mission prompt..." : "Collecting answers from player devices."}
       </div>
     </div>
   ` : `
     <form id="playerAnswerForm" class="player-answer-form">
+      ${classHintHtml}
       <label>
         Player Answer
         <div class="quick-answer-row">
@@ -8833,12 +10408,14 @@ function renderChatControls() {
   if (els.missionControlsPanel) {
     els.missionControlsPanel.innerHTML = `
       <div class="mission-controls-body">
+        ${simulatorAccuracyControlHtml()}
         ${primaryMissionButton}
         ${manualFallbackPanel}
         ${drawerSideAction}
         ${dmToolsPanel}
       </div>
     `;
+    bindSimulatorAccuracyControl();
   }
 
   document.getElementById("primaryMissionBtn")?.addEventListener("click", () => {
@@ -8904,9 +10481,11 @@ function confirmBossReady() {
   if (!node || node.type !== "boss") return;
   state.bossReadyPending = false;
   state.bossReadyChecks.add(state.currentNode);
+  state.combatMountBlocked = false;
   state.questionPresentationReady = false;
   state.answerPending = false;
   state.lastSubmittedAnswer = "";
+  renderMap();
 
   const qInfo = currentQuestionInfo();
   const fallbackStory = bossOpeningFallback(qInfo);
@@ -9037,12 +10616,13 @@ function submitPlayerAnswerValue(answer, options = {}) {
     status.textContent = options.timeout ? "Emergency window expired. Receiving transmission." : `Answer sent: ${cleanAnswer}. Receiving transmission.`;
   }
 
-  fetch("/api/answer", {
+  fetchWithTimeout("/api/answer", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload)
-  })
-    .then(() => {
+  }, 10_000)
+    .then((response) => {
+      if (!response.ok) throw new Error(`Answer service returned ${response.status}`);
       if (state.localDmMode) resolveLocalSubmittedAnswer(cleanAnswer, {
         source,
         submittedAt: payload.submittedAt
@@ -9053,6 +10633,9 @@ function submitPlayerAnswerValue(answer, options = {}) {
       renderChatControls();
       const currentStatus = document.getElementById("answerSubmitState");
       if (currentStatus) currentStatus.textContent = "Answer could not be sent. Try again.";
+      if (state.started && state.questionPresentationReady && !state.resolved && !state.emergencyTimer) {
+        startEmergencyTimerForCurrentEncounter(currentQuestionInfo().type);
+      }
     });
 }
 
@@ -9127,7 +10710,7 @@ function startEmergencyTimerForCurrentEncounter(type = challengeType(state.curre
   state.questionOpenedAt = Date.now() + deliveryGraceMs;
   state.questionPauseStartedAt = 0;
   state.questionPausedTotalMs = 0;
-  state.emergencyTimer.interval = window.setInterval(tickEmergencyTimer, 100);
+  state.emergencyTimer.interval = window.setInterval(tickEmergencyTimer, 200);
   applyDashboardAtmosphere();
   if (deliveryGraceMs > 0) {
     const nodeIndex = state.currentNode;
@@ -9242,6 +10825,7 @@ function stopEmergencyTimer() {
   const timer = state.emergencyTimer;
   if (timer?.interval) window.clearInterval(timer.interval);
   if (timer?.startGraceTimer) window.clearTimeout(timer.startGraceTimer);
+  if (timer?.timeoutRetryTimer) window.clearTimeout(timer.timeoutRetryTimer);
   stopGameSfx("timer");
   stopGameSfx("emergency");
   state.emergencyTimer = null;
@@ -9306,12 +10890,24 @@ function handleEmergencyTimeout() {
   const timer = state.emergencyTimer;
   const blockers = timerAutoSubmitBlockers(timer);
   if (blockers.length) {
-    logDebugEvent({
-      kind: "state",
-      label: "Timer timeout ignored",
-      detail: blockers.join(" | ")
-    });
-    stopEmergencyTimer();
+    if (!timer.lastTimeoutBlockerLogAt || Date.now() - timer.lastTimeoutBlockerLogAt >= 5_000) {
+      timer.lastTimeoutBlockerLogAt = Date.now();
+      logDebugEvent({
+        kind: "state",
+        label: "Timer timeout waiting for recovery",
+        detail: blockers.join(" | ")
+      });
+    }
+    timer.paused = true;
+    timer.starting = false;
+    timer.remainingMs = 0;
+    if (!timer.timeoutRetryTimer) {
+      timer.timeoutRetryTimer = window.setTimeout(() => {
+        timer.timeoutRetryTimer = null;
+        if (state.emergencyTimer === timer) handleEmergencyTimeout();
+      }, 750);
+    }
+    renderTimerSurfaces();
     publishTimerStateToPlayers();
     return;
   }
@@ -10210,9 +11806,8 @@ function makeLocalBossOpeningPrompt(qInfo) {
 function startTransmissionFeedback({ correct, context, playerEvents = [] }) {
   stopTransmissionFeedback();
   const bossProgress = currentBossProgress();
-  const routeTo = bossProgress && !bossProgress.finalStep
-    ? state.currentNode
-    : Math.min(state.nodes.length - 1, state.currentNode + 1);
+  const progression = projectedProgressAfterRound();
+  const routeTo = Math.min(state.nodes.length - 1, progression.nextNode);
   const destinationIsBoss = state.nodes[routeTo]?.type === "boss";
   state.transmissionPending = true;
   state.transmissionStartedAt = Date.now();
@@ -10223,9 +11818,11 @@ function startTransmissionFeedback({ correct, context, playerEvents = [] }) {
     boss: destinationIsBoss,
     moving: false
   };
-  updateCurrentNodeResult(Boolean(correct));
+  if (!progression.stayInRoom) updateCurrentNodeResult(Boolean(correct));
   renderStatus();
-  flashStatusEffects(playerEvents.map((event) => ({ player: findPlayer(event), kind: event.effect, amount: event.amount })).filter((event) => event.player));
+  if (!isCombatNode(context.node)) {
+    flashStatusEffects(playerEvents.map((event) => ({ player: findPlayer(event), kind: event.effect, amount: event.amount })).filter((event) => event.player));
+  }
   flashAnswerFeedback(correct, { boss: Boolean(context.type?.boss || bossProgress) });
   renderTransmissionWaiting(correct, playerEvents, context.type);
   if (state.transmissionUiTimer) window.clearInterval(state.transmissionUiTimer);
@@ -10396,17 +11993,28 @@ function resolveLocalSubmittedAnswer(answer, options = {}) {
     source: options.source || ""
   });
   rememberPreviousAnswer(answer, context.question, correct);
-  const result = applyEncounter(correct, context.type, context.operator);
+  const combatEntries = context.type.locked && context.operator
+    ? [{ player: context.operator, correct, submittedAt: options.submittedAt || Date.now(), answer }]
+    : context.type.kind === "emergency" && options.scoringPlayer
+    ? [{ player: options.scoringPlayer, correct, submittedAt: options.submittedAt || Date.now(), answer }]
+    : activePlayers().map((player) => ({ player, correct, submittedAt: options.submittedAt || Date.now(), answer }));
+  const result = isCombatNode(context.node)
+    ? applyCombatEncounter(combatEntries, context.type, context.operator, context.question)
+    : applyEncounter(correct, context.type, context.operator);
+  if (result.combat && context.type.boss) context.type = { ...context.type, bossFinalStep: Boolean(result.combatCleared) };
   const playerEvents = changedPlayerEvents(before, result.eventNotes);
-  const currentArea = context.node?.type === "boss"
+  const currentArea = isCombatNode(context.node)
     ? roomName(context.node, state.currentNode)
     : context.question.area || roomName(context.node, state.currentNode);
   if (teamFullyIncapacitated()) {
-    beginLocalTeamFailure({ context, result, currentArea, playerEvents });
+    const showFailure = () => beginLocalTeamFailure({ context, result, currentArea, playerEvents });
+    if (result.combat) presentCombatResolution(result, { onComplete: showFailure });
+    else showFailure();
     return;
   }
+  if (result.combat) presentCombatResolution(result);
   const nextInfo = nextLocalQuestionInfo();
-  const statusLog = result.lootStatus || "";
+  const statusLog = result.combatStatusLog || result.lootStatus || "";
   const promptStatusLog = localStatusLog(playerEvents, result.lootFact);
   const actionFacts = localAnswerActionFacts(context, answer);
   const fallbackAction = localAnswerFallbackAction(context, answer);
@@ -10545,18 +12153,24 @@ function resolveLocalDeviceTeamAnswers(answers) {
   const before = snapshotPlayers();
   rememberPreviousDeviceTeamAnswers(entries, context.question, challengeSucceeded);
   setDeviceAnswerResults(entries);
-  const result = applyDeviceTeamEncounter(entries, context.type);
+  const result = isCombatNode(context.node)
+    ? applyCombatEncounter(entries, context.type, context.operator, context.question)
+    : applyDeviceTeamEncounter(entries, context.type);
+  if (result.combat && context.type.boss) context.type = { ...context.type, bossFinalStep: Boolean(result.combatCleared) };
   const playerEvents = changedPlayerEvents(before, result.eventNotes);
-  const currentArea = context.node?.type === "boss"
+  const currentArea = isCombatNode(context.node)
     ? roomName(context.node, state.currentNode)
     : context.question.area || roomName(context.node, state.currentNode);
   if (teamFullyIncapacitated()) {
-    beginLocalTeamFailure({ context, result, currentArea, playerEvents });
+    const showFailure = () => beginLocalTeamFailure({ context, result, currentArea, playerEvents });
+    if (result.combat) presentCombatResolution(result, { onComplete: showFailure });
+    else showFailure();
     return;
   }
+  if (result.combat) presentCombatResolution(result);
 
   const nextInfo = nextLocalQuestionInfo();
-  const statusLog = result.lootStatus || "";
+  const statusLog = result.combatStatusLog || result.lootStatus || "";
   const promptStatusLog = localStatusLog(playerEvents, result.lootFact);
   const actionFacts = localDeviceTeamActionFacts(context, entries);
   const fallbackAction = localDeviceTeamFallbackAction(context, entries);
@@ -10742,8 +12356,11 @@ function currentLocalContext() {
   const question = state.questions[state.currentQuestion];
   const type = challengeType(state.currentQuestion, state.questions.length);
   const operator = type.locked ? selectOperator(state.currentQuestion) : null;
-  const areaName = node?.type === "boss" ? roomName(node, state.currentNode) : question?.area || roomName(node, state.currentNode);
-  const activeObstacle = getActiveObstacle(state.currentQuestion, question, type, areaName);
+  const areaName = isCombatNode(node) ? roomName(node, state.currentNode) : question?.area || roomName(node, state.currentNode);
+  const combatEncounter = isCombatNode(node) ? ensureCombatEncounter(state.currentNode) : null;
+  const activeObstacle = combatEncounter
+    ? `${combatEncounter.enemies.filter((enemy) => !enemy.defeated).length} hostiles share one advancing combat line; ${combatEncounter.hp} integrity remains`
+    : getActiveObstacle(state.currentQuestion, question, type, areaName);
   return { node, question, type, operator, activeObstacle };
 }
 
@@ -10859,8 +12476,8 @@ function changedPlayerEvents(before, eventNotes = {}) {
 }
 
 function nextLocalQuestionInfo() {
-  const bossProgress = currentBossProgress();
-  const nextNodeIndex = bossProgress && !bossProgress.finalStep ? state.currentNode : state.currentNode + 1;
+  const progression = projectedProgressAfterRound();
+  const nextNodeIndex = progression.nextNode;
   const nextNode = state.nodes[nextNodeIndex];
   if (nextNode?.type === "boss" && !state.bossReadyChecks.has(nextNodeIndex)) {
     return {
@@ -10887,22 +12504,74 @@ function nextLocalQuestionInfo() {
     };
   }
 
-  const nextIndex = Math.min(state.currentQuestion + 1, state.questions.length - 1);
+  if (progression.missionComplete) {
+    return {
+      index: state.questions.length,
+      question: null,
+      type: { label: "Final Mission Result" },
+      tag: "Final Mission Result",
+      operator: null,
+      sameBossRoom: false,
+      areaName: "Extraction",
+      activeObstacle: "",
+      questionText: ""
+    };
+  }
+  const nextIndex = Math.min(progression.nextQuestion, state.questions.length - 1);
   const question = state.questions[nextIndex];
-  const type = challengeType(nextIndex, state.questions.length);
+  const sameCombatRoom = nextNodeIndex === state.currentNode && isCombatNode(state.nodes[state.currentNode]);
+  const type = sameCombatRoom
+    ? combatRoundChallengeType(nextIndex)
+    : challengeType(nextIndex, state.questions.length);
   const operator = type.locked ? selectOperator(nextIndex) : null;
-  const sameBossRoom = bossProgress && !bossProgress.finalStep;
-  const areaName = sameBossRoom ? roomName(state.nodes[state.currentNode], state.currentNode) : question?.area || "Unknown Area";
+  const sameBossRoom = sameCombatRoom;
+  const areaName = sameBossRoom ? roomName(state.nodes[state.currentNode], state.currentNode) : nextNode?.type === "boss" ? roomName(nextNode, nextNodeIndex) : question?.area || "Unknown Area";
   return {
     index: nextIndex,
     question,
     type,
-    tag: state.currentQuestion + 1 >= state.questions.length ? "Final Mission Result" : type.label,
+    tag: progression.nextQuestion >= state.questions.length ? "Final Mission Result" : type.label,
     operator,
     sameBossRoom,
     areaName,
     activeObstacle: getActiveObstacle(nextIndex, question, type, areaName),
-    questionText: state.currentQuestion + 1 >= state.questions.length ? "" : localQuestionText(question, type, operator, nextIndex)
+    questionText: progression.nextQuestion >= state.questions.length ? "" : localQuestionText(question, type, operator, nextIndex)
+  };
+}
+
+function projectedProgressAfterRound() {
+  const node = state.nodes[state.currentNode];
+  if (isCombatNode(node)) {
+    const encounter = currentCombatEncounter();
+    const indexes = combatQuestionIndexes(node);
+    const lastQuestion = indexes[indexes.length - 1] ?? state.currentQuestion;
+    if (encounter?.cleared) {
+      if (node.type === "boss" && node.bossPhase === "final") {
+        return { nextQuestion: state.questions.length, nextNode: state.nodes.length, stayInRoom: false, missionComplete: true };
+      }
+      return {
+        nextQuestion: Math.min(state.questions.length, Math.max(state.currentQuestion + 1, lastQuestion + 1)),
+        nextNode: Math.min(state.nodes.length, state.currentNode + 1),
+        stayInRoom: false,
+        missionComplete: false
+      };
+    }
+    const currentPosition = Math.max(0, indexes.indexOf(state.currentQuestion));
+    const nextCombatQuestion = indexes[(currentPosition + 1) % indexes.length] ?? state.currentQuestion;
+    return {
+      nextQuestion: nextCombatQuestion,
+      nextNode: state.currentNode,
+      stayInRoom: true,
+      missionComplete: false
+    };
+  }
+  const bossProgress = currentBossProgress();
+  const stayInRoom = Boolean(bossProgress && !bossProgress.finalStep);
+  return {
+    nextQuestion: Math.min(state.questions.length, state.currentQuestion + 1),
+    nextNode: stayInRoom ? state.currentNode : Math.min(state.nodes.length, state.currentNode + 1),
+    stayInRoom,
+    missionComplete: state.currentQuestion + 1 >= state.questions.length
   };
 }
 
@@ -10919,6 +12588,54 @@ function recoveryQuestionText(node) {
 function recoveryAreaName(node) {
   if (node?.afterBoss) return "Emergency Shelter";
   return node?.tier === 1 ? "Emergency Aid Station" : "Fortified Maintenance Hub";
+}
+
+function completeRecoveryArrival(summary, playerEvents = []) {
+  state.resolved = false;
+  state.answerPending = false;
+  state.questionPresentationReady = false;
+  clearSubmittedAnswer();
+  renderStatus();
+  renderMap();
+
+  if (state.currentNode >= state.nodes.length || state.currentQuestion >= state.questions.length) {
+    renderEnding();
+    return;
+  }
+
+  if (!state.chatMode && !state.localDmMode) {
+    beginNextNode();
+    return;
+  }
+
+  const destination = state.nodes[state.currentNode];
+  if (destination?.type === "boss" && !state.bossReadyChecks.has(state.currentNode)) {
+    appendTranscript({
+      tag: "Readiness Check",
+      areaName: bossAreaName(destination),
+      story: `The route marker settles at ${bossAreaName(destination)}. The pressure ahead holds until the team chooses to begin critical contact.`,
+      readyCheck: true,
+      bossNodeIndex: state.currentNode,
+      bossPhase: destination.bossPhase || "mid",
+      players: playerEvents,
+      inventory: { ...state.inventory },
+      statusLog: summary
+    });
+    return;
+  }
+
+  const qInfo = currentQuestionInfo();
+  appendTranscript({
+    tag: qInfo.tag,
+    areaName: qInfo.areaName,
+    story: `The squad marker locks into ${qInfo.areaName}. The next system comes online.`,
+    activeObstacle: qInfo.activeObstacle,
+    question: qInfo.questionText,
+    players: playerEvents,
+    inventory: { ...state.inventory },
+    statusLog: summary,
+    suppressEffectFlash: true
+  });
 }
 
 function resolveLocalRecovery(answer) {
@@ -10971,36 +12688,15 @@ function resolveLocalRecovery(answer) {
   ].join("\n");
 
   const finishRecovery = (text) => {
-    travelFromRecoveryRoom(recoveryNodeIndex, nextNodeIndex, () => {
-      state.resolved = false;
-      const destination = state.nodes[state.currentNode];
-      if (destination?.type === "boss" && !state.bossReadyChecks.has(state.currentNode)) {
-        appendTranscript({
-          tag: "Readiness Check",
-          areaName: bossAreaName(destination),
-          story: text || `The team takes the recovery window, then follows the tightening route toward ${bossAreaName(destination)}.`,
-          readyCheck: true,
-          bossNodeIndex: state.currentNode,
-          bossPhase: destination.bossPhase || "mid",
-          players: playerEvents,
-          inventory: { ...state.inventory },
-          statusLog: [choiceText, reviveText].filter(Boolean).join(" ")
-        });
-      } else {
-        const qInfo = currentQuestionInfo();
-        appendTranscript({
-          tag: qInfo.tag,
-          areaName: qInfo.areaName,
-          story: text || `The team takes the recovery window, seals what wounds they can, and pushes into ${qInfo.areaName}.`,
-          activeObstacle: qInfo.activeObstacle,
-          question: qInfo.questionText,
-          players: playerEvents,
-          inventory: { ...state.inventory },
-          statusLog: [choiceText, reviveText].filter(Boolean).join(" ")
-        });
+    stopTransmissionFeedback();
+    const summary = [choiceText, reviveText].filter(Boolean).join(" ");
+    appendTranscript({
+      tag: "Recovery Departure",
+      areaName: recoveryAreaName(node),
+      story: text || `The team takes the recovery window, seals what wounds they can, and prepares to move toward ${nextAreaName}.`,
+      onTypedComplete: () => {
+        travelFromRecoveryRoom(recoveryNodeIndex, nextNodeIndex, () => completeRecoveryArrival(summary, playerEvents));
       }
-      renderStatus();
-      renderMap();
     });
   };
 
@@ -11028,10 +12724,13 @@ function currentQuestionInfo() {
   }
   if (state.actionDrivenMode) return currentActionRoomInfo();
   const question = state.questions[state.currentQuestion];
-  const type = challengeType(state.currentQuestion, state.questions.length);
-  const operator = type.locked ? selectOperator(state.currentQuestion) : null;
   const node = state.nodes[state.currentNode];
-  const areaName = node?.type === "boss"
+  const type = isCombatNode(node)
+    ? combatRoundChallengeType(state.currentQuestion)
+    : challengeType(state.currentQuestion, state.questions.length);
+  const operator = type.locked ? selectOperator(state.currentQuestion) : null;
+  const combatEncounter = isCombatNode(node) ? ensureCombatEncounter(state.currentNode) : null;
+  const areaName = isCombatNode(node)
     ? roomName(node, state.currentNode)
     : question?.area || "Unknown Area";
   return {
@@ -11041,7 +12740,9 @@ function currentQuestionInfo() {
     operator,
     areaName,
     questionText: localQuestionText(question, type, operator),
-    activeObstacle: getActiveObstacle(state.currentQuestion, question, type, areaName)
+    activeObstacle: combatEncounter
+      ? `${combatEncounter.enemies.filter((enemy) => !enemy.defeated).length} hostiles share one advancing combat line; ${combatEncounter.hp} integrity remains`
+      : getActiveObstacle(state.currentQuestion, question, type, areaName)
   };
 }
 
@@ -11747,7 +13448,7 @@ function compactThreatProfileText() {
 
 function compactTeamStatusText(playerEvents = []) {
   const affected = new Set(playerEvents.map((event) => normalize(event.name)));
-  const notable = state.players.filter((player) => affected.has(normalize(player.name)) || player.incapacitated || player.status.length || player.hp <= 2);
+  const notable = state.players.filter((player) => affected.has(normalize(player.name)) || player.incapacitated || player.status.length || playerLowHealth(player));
   const players = notable.length ? notable : state.players;
   return players
     .map((player) => `${player.name}: ${Math.max(0, player.hp)} HP${player.status.length ? `, ${player.status.join(", ")}` : ""}${player.incapacitated ? ", incapacitated" : ""}`)
@@ -12226,7 +13927,7 @@ function finalOnlyPrompt(prompt) {
 }
 
 function sendLocalDmRequest({ endpoint, provider, model, prompt, options, requestId, startedAt }) {
-  return fetch(endpoint, {
+  return fetchWithTimeout(endpoint, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -12236,7 +13937,7 @@ function sendLocalDmRequest({ endpoint, provider, model, prompt, options, reques
       format: options.format || undefined,
       think: options.think ?? false
     })
-  })
+  }, LOCAL_DM_REQUEST_TIMEOUT_MS)
     .then((response) => response.json().then((body) => ({ response, body })))
     .then(({ response, body }) => {
       if (!response.ok || !body.ok) {
@@ -12484,8 +14185,10 @@ function appendTranscript(feed) {
   prefetchUpcomingTts(payload);
   const readyCheckAudioLeadMs = payload.readyCheck ? 500 : 0;
   const typing = syncTtsPresentation(autoRead, readyCheckAudioLeadMs).then(() => {
+    if (presentationRunId !== state.logPresentationRunId) throw new Error("Mission log presentation superseded");
     return revealPreparedVoiceText(entry);
   }).then(() => {
+    if (presentationRunId !== state.logPresentationRunId) throw new Error("Mission log presentation superseded");
     if (payload.question) startBossQuestionMusic();
     return typeQueuedText(entry);
   });
@@ -12493,36 +14196,49 @@ function appendTranscript(feed) {
     return waitForTtsPlayback(autoRead.playback);
   }).then(() => {
     if (presentationRunId !== state.logPresentationRunId) return;
-    finishLogPresentation(presentationRunId);
-    if (typeof payload.onTypedComplete === "function") payload.onTypedComplete(entry, payload);
-    if (deferStatusPresentation) {
-      const deferredEntry = document.createElement("div");
-      appendDamageLog(deferredEntry, payload);
-      const deferredEffects = applyFeedState(payload);
-      if (deferredEffects.length && !payload.suppressEffectFlash) flashStatusEffects(deferredEffects);
-    }
-    startMissionLogAutoScroll({ startAtBottom: true });
-    if (hasContinuationGate) {
-      renderMissionContinueGate(entry, payload);
-      return;
-    }
-    if (payload.teamReadyGate) {
-      renderTeamReadyGate(entry);
-      return;
-    }
-    if (payload.readyCheck) {
-      if (state.chatMode) renderChatControls();
-      renderBossReadyGate(entry);
-      return;
-    }
-    if (payload.isRecovery) {
-      if (state.chatMode) renderChatControls();
-      renderRecoveryGateForEntry(entry, payload);
-      return;
-    }
-    finishTranscriptQuestionFlow(payload);
+    completeTranscriptPresentation(entry, payload, presentationRunId, { deferStatusPresentation, hasContinuationGate });
+  }).catch((error) => {
+    if (presentationRunId !== state.logPresentationRunId) return;
+    logDebugEvent({
+      kind: "error",
+      label: "Mission log presentation recovered",
+      detail: String(error?.message || error || "presentation interrupted").slice(0, 500)
+    });
+    completeTranscriptPresentation(entry, payload, presentationRunId, { deferStatusPresentation, hasContinuationGate });
   });
   return true;
+}
+
+function completeTranscriptPresentation(entry, payload, presentationRunId, options = {}) {
+  if (presentationRunId !== state.logPresentationRunId) return;
+  finishLogPresentation(presentationRunId);
+  if (typeof payload.onTypedComplete === "function") payload.onTypedComplete(entry, payload);
+  if (options.deferStatusPresentation) {
+    const deferredEntry = document.createElement("div");
+    appendDamageLog(deferredEntry, payload);
+    const deferredEffects = applyFeedState(payload);
+    if (deferredEffects.length && !payload.suppressEffectFlash) flashStatusEffects(deferredEffects);
+  }
+  startMissionLogAutoScroll({ startAtBottom: true });
+  if (options.hasContinuationGate) {
+    renderMissionContinueGate(entry, payload);
+    return;
+  }
+  if (payload.teamReadyGate) {
+    renderTeamReadyGate(entry);
+    return;
+  }
+  if (payload.readyCheck) {
+    if (state.chatMode) renderChatControls();
+    renderBossReadyGate(entry);
+    return;
+  }
+  if (payload.isRecovery) {
+    if (state.chatMode) renderChatControls();
+    renderRecoveryGateForEntry(entry, payload);
+    return;
+  }
+  finishTranscriptQuestionFlow(payload);
 }
 
 function shouldShowOpeningVoiceLoader(payload) {
@@ -12564,7 +14280,10 @@ function revealPreparedVoiceText(entry) {
 }
 
 function completeTranscriptAdvance(payload) {
-  if (payload.advanceRoom) advanceChatProgress(Boolean(payload.correct));
+  if (payload.advanceRoom) {
+    state.combatMountBlocked = false;
+    advanceChatProgress(Boolean(payload.correct));
+  }
   applyFeedRoom(payload);
   registerActiveObstacleFromPayload(payload);
   if (payload.question || payload.advanceRoom) clearSubmittedAnswer();
@@ -12689,7 +14408,10 @@ function revealMissionContinuation(entry, payload, gate) {
   const transitionStartedAt = beginDeferredRouteTransition(payload);
   renderInventoryActions();
   const autoRead = maybeAutoReadMissionLog(continuationEntry);
-  syncTtsPresentation(autoRead).then(() => typeText(continuation, payload.continuationStory)).then(() => {
+  syncTtsPresentation(autoRead).then(() => {
+    if (runId !== state.logPresentationRunId) throw new Error("Mission continuation superseded");
+    return typeText(continuation, payload.continuationStory);
+  }).then(() => {
     return waitForTtsPlayback(autoRead.playback);
   }).then(() => {
     if (runId !== state.logPresentationRunId) return;
@@ -12718,9 +14440,25 @@ function revealMissionContinuation(entry, payload, gate) {
         finishTranscriptQuestionFlow(payload);
       });
     };
-    const routeHold = transitionStartedAt ? Math.max(0, ROUTE_TRAVEL_MS - (Date.now() - transitionStartedAt)) : 0;
+    const projectedDestination = payload.advanceRoom ? projectedProgressAfterRound() : null;
+    const combatHandoffDelay = projectedDestination && isCombatNode(state.nodes[projectedDestination.nextNode]) ? 450 : 0;
+    const routeHold = (transitionStartedAt ? Math.max(0, ROUTE_TRAVEL_MS - (Date.now() - transitionStartedAt)) : 0) + combatHandoffDelay;
     if (routeHold) window.setTimeout(finishContinuation, routeHold);
     else finishContinuation();
+  }).catch((error) => {
+    if (runId !== state.logPresentationRunId) return;
+    logDebugEvent({
+      kind: "error",
+      label: "Mission continuation recovered",
+      detail: String(error?.message || error || "continuation interrupted").slice(0, 500)
+    });
+    if (payload.deferredRouteTransition && state.transmissionPending) stopTransmissionFeedback(false);
+    completeTranscriptAdvance(payload);
+    finishLogPresentation(runId);
+    if (payload.readyCheck) renderBossReadyGate(continuationEntry);
+    else if (payload.isRecovery) renderRecoveryPromptAfterTransition(continuationEntry, payload);
+    else if (payload.advanceRoom && state.currentQuestion >= state.questions.length) renderFinalResultGate(continuationEntry);
+    else finishTranscriptQuestionFlow(payload);
   });
 }
 
@@ -12780,10 +14518,25 @@ function clearMissionContinueGateTimer() {
   state.continueGateTimer = null;
 }
 
-function queueMapQuestionReveal(onReady) {
+function queueMapQuestionReveal(onReady, waitStartedAt = Date.now(), alertDelayMs = questionAlertDelayMs()) {
   const revealRunId = ++state.questionRevealRunId;
   const alertDelay = window.setTimeout(() => {
     if (revealRunId !== state.questionRevealRunId || state.resolved) return;
+    const combatRevealPending = isCombatNode(state.nodes[state.currentNode]) && (
+      !state.combatStageEnteredNodes.has(state.currentNode)
+      || els.combatStage?.classList.contains("entering")
+      || els.combatStage?.classList.contains("exiting")
+    );
+    if (combatRevealPending) {
+      if (Date.now() - waitStartedAt >= COMBAT_GATE_MAX_WAIT_MS) {
+        recoverCombatPresentationGate("question reveal");
+      } else {
+        trackTypeTimer(() => {
+          if (revealRunId === state.questionRevealRunId && !state.resolved) queueMapQuestionReveal(onReady, waitStartedAt, 0);
+        }, 350);
+        return;
+      }
+    }
     state.questionSurfaceVisible = false;
     state.questionPresentationReady = false;
     state.mapQuestionAlertActive = true;
@@ -12805,18 +14558,18 @@ function queueMapQuestionReveal(onReady) {
       const unlockDelay = Math.min(1200, Math.max(250, Number(autoRead.visualDelay) || 0));
       const unlockTimer = window.setTimeout(() => {
         if (revealRunId !== state.questionRevealRunId || state.resolved) return;
-      state.questionSurfaceVisible = false;
-      state.questionPresentationReady = true;
-      state.questionOpenedAt = Date.now();
-      state.questionDurationMs = questionScoringDurationMs(currentQuestionInfo());
-      state.questionPauseStartedAt = 0;
-      state.questionPausedTotalMs = 0;
-      renderMapQuestionOverlay();
+        state.questionSurfaceVisible = false;
+        state.questionPresentationReady = true;
+        state.questionOpenedAt = Date.now();
+        state.questionDurationMs = questionScoringDurationMs(currentQuestionInfo());
+        state.questionPauseStartedAt = 0;
+        state.questionPausedTotalMs = 0;
+        renderMapQuestionOverlay();
         if (typeof onReady === "function") onReady();
       }, unlockDelay);
       state.typeTimers.push(unlockTimer);
     });
-  }, questionAlertDelayMs());
+  }, alertDelayMs);
   state.typeTimers.push(alertDelay);
 }
 
@@ -12946,8 +14699,8 @@ function applyFeedState(payload) {
   for (const event of asArray(payload.players)) {
     const player = findPlayer(event);
     if (!player) continue;
-    if (Number.isFinite(Number(event.hp))) player.hp = Math.max(0, Math.min(5, Number(event.hp)));
-    if (Number.isFinite(Number(event.delta))) player.hp = Math.max(0, Math.min(5, player.hp + Number(event.delta)));
+    if (Number.isFinite(Number(event.hp))) player.hp = Math.max(0, Math.min(Math.max(10, Number(player.maxHp) || 10), Number(event.hp)));
+    if (Number.isFinite(Number(event.delta))) player.hp = Math.max(0, Math.min(Math.max(10, Number(player.maxHp) || 10), player.hp + Number(event.delta)));
     if (Array.isArray(event.status)) player.status = event.status.filter(Boolean);
     if (event.addStatus) addStatusToPlayer(player, event.addStatus);
     if (event.clearStatus) player.status = [];
@@ -12980,9 +14733,11 @@ function appendDamageLog(entry, payload) {
   log.className = "damage-log";
 
   if (payload.statusLog) {
-    const line = document.createElement("p");
-    line.textContent = payload.statusLog;
-    log.appendChild(line);
+    String(payload.statusLog).split(/\r?\n/).filter(Boolean).forEach((text) => {
+      const line = document.createElement("p");
+      line.textContent = text;
+      log.appendChild(line);
+    });
   }
 
   for (const event of events) {
@@ -13191,16 +14946,14 @@ function advanceChatRoom() {
 
 function advanceChatProgress(correct) {
   state.resolved = true;
-  const bossProgress = currentBossProgress();
-  const stayInBossRoom = bossProgress && !bossProgress.finalStep;
-  if (state.nodes[state.currentNode]?.type !== "recovery" && (!bossProgress || bossProgress.finalStep)) {
+  const nodeBeforeAdvance = state.nodes[state.currentNode];
+  const progression = projectedProgressAfterRound();
+  if (nodeBeforeAdvance?.type !== "recovery" && !progression.stayInRoom) {
     updateCurrentNodeResult(Boolean(correct));
   }
-  state.currentQuestion = Math.min(state.questions.length, state.currentQuestion + 1);
-  if (!stayInBossRoom) {
-    if (bossProgress) stopEmergencyTimer();
-    state.currentNode = Math.min(state.nodes.length, state.currentNode + 1);
-  }
+  state.currentQuestion = progression.nextQuestion;
+  if (!progression.stayInRoom && nodeBeforeAdvance?.type === "boss") stopEmergencyTimer();
+  state.currentNode = progression.nextNode;
   state.challengeHistory.push({ correct, type: "Live Mission" });
   if (state.localDmMode && state.currentQuestion < state.questions.length) state.resolved = false;
   syncBackgroundMusicForEncounter();
@@ -13223,7 +14976,7 @@ function adjustInventory(kind, delta) {
 function adjustPlayerHp(index, delta) {
   const player = state.players[index];
   if (!player) return;
-  player.hp = Math.max(0, Math.min(5, player.hp + delta));
+  player.hp = Math.max(0, Math.min(Math.max(10, Number(player.maxHp) || 10), player.hp + delta));
   player.incapacitated = player.hp === 0;
   renderStatus();
 }
@@ -13336,22 +15089,30 @@ function resolveChallenge(answer, options = {}) {
   });
   rememberPreviousAnswer(answer, question, correct);
 
-  const result = applyEncounter(correct, type, operator);
+  const combatEntries = type.locked && operator
+    ? [{ player: operator, correct, submittedAt: options.submittedAt || Date.now(), answer }]
+    : activePlayers().map((player) => ({ player, correct, submittedAt: options.submittedAt || Date.now(), answer }));
+  const result = isCombatNode(state.nodes[state.currentNode])
+    ? applyCombatEncounter(combatEntries, type, operator, question)
+    : applyEncounter(correct, type, operator);
   const bossAnswer = Boolean(type.boss || currentBossProgress());
   state.resolved = true;
-  updateCurrentNodeResult(Boolean(correct));
+  const progression = projectedProgressAfterRound();
+  if (!progression.stayInRoom) updateCurrentNodeResult(Boolean(correct));
   if (teamFullyIncapacitated()) {
-    flashAnswerFeedback(correct, { boss: bossAnswer });
-    renderTeamFailureCard(localTeamFailureFallback(result, roomName(state.nodes[state.currentNode] || { type: "challenge" }, state.currentNode)));
+    const showFailure = () => {
+      flashAnswerFeedback(correct, { boss: bossAnswer });
+      renderTeamFailureCard(localTeamFailureFallback(result, roomName(state.nodes[state.currentNode] || { type: "challenge" }, state.currentNode)));
+    };
+    if (result.combat) presentCombatResolution(result, { onComplete: showFailure });
+    else showFailure();
     return;
   }
-  const bossProgress = currentBossProgress();
-  const stayInBossRoom = bossProgress && !bossProgress.finalStep;
-  state.currentQuestion += 1;
-  if (!stayInBossRoom) {
-    if (bossProgress) stopEmergencyTimer();
-    state.currentNode += 1;
-  }
+  if (result.combat) presentCombatResolution(result);
+  const nodeBeforeAdvance = state.nodes[state.currentNode];
+  state.currentQuestion = progression.nextQuestion;
+  state.currentNode = progression.nextNode;
+  if (!progression.stayInRoom && nodeBeforeAdvance?.type === "boss") stopEmergencyTimer();
   syncBackgroundMusicForEncounter();
   state.challengeHistory.push({ correct, type: type.label });
   flashAnswerFeedback(correct, { boss: bossAnswer });
@@ -13386,8 +15147,9 @@ function typeQueuedText(container) {
   const nodes = [...container.querySelectorAll("[data-text]")];
   const startedAt = Date.now();
   const charCount = nodes.reduce((total, node) => total + String(node.dataset.text || "").length, 0);
+  const generation = state.typewriterGeneration;
   return nodes.reduce((chain, node) => {
-    return chain.then(() => typeText(node, node.dataset.text || ""));
+    return chain.then(() => typeText(node, node.dataset.text || "", generation));
   }, Promise.resolve()).then(() => {
     if (charCount) {
       logDebugEvent({
@@ -13399,11 +15161,15 @@ function typeQueuedText(container) {
   });
 }
 
-function typeText(element, text) {
+function typeText(element, text, generation = state.typewriterGeneration) {
   element.textContent = "";
   return new Promise((resolve) => {
     let index = 0;
     const step = () => {
+      if (generation !== state.typewriterGeneration) {
+        resolve();
+        return;
+      }
       if (!document.body.contains(element)) {
         resolve();
         return;
@@ -13418,8 +15184,7 @@ function typeText(element, text) {
       if (index <= text.length) {
         const previous = text[index - 2] || "";
         const delay = typewriterDelayFor(previous);
-        const timer = window.setTimeout(step, delay);
-        state.typeTimers.push(timer);
+        trackTypeTimer(step, delay, resolve);
       } else {
         element.removeAttribute("data-text");
         keepMissionLogTypingInView(element);
@@ -13484,10 +15249,14 @@ function participantColorIndex(name) {
 function clearTypewriters() {
   clearMissionContinueGateTimer();
   stopGameSfx("typewriter");
+  state.typewriterGeneration += 1;
+  const pendingResolvers = [...new Set(state.typeTimerResolvers.values())];
   for (const timer of state.typeTimers) {
     window.clearTimeout(timer);
   }
   state.typeTimers = [];
+  state.typeTimerResolvers.clear();
+  pendingResolvers.forEach((resolve) => resolve());
   for (const timer of state.autoScrollTimers) {
     window.clearInterval(timer);
   }
@@ -13738,7 +15507,7 @@ function applyDamage(player, amount, source) {
 }
 
 function healPlayer(player, amount) {
-  player.hp = Math.min(5, Math.max(0, player.hp + amount));
+  player.hp = Math.min(Math.max(10, Number(player.maxHp) || 10), Math.max(0, player.hp + amount));
 }
 
 function randomStatus() {
@@ -13776,6 +15545,10 @@ function activePlayers() {
   return state.players.filter((player) => !player.incapacitated);
 }
 
+function playerLowHealth(player) {
+  return Number(player?.hp) <= Math.max(2, Math.ceil((Number(player?.maxHp) || 10) * 0.25));
+}
+
 function randomActivePlayer() {
   const active = activePlayers();
   if (!active.length) return null;
@@ -13791,6 +15564,27 @@ function selectOperator(index) {
 function challengeType(index, total) {
   if (state.challengeTypes[index]) return state.challengeTypes[index];
   return buildChallengeType(index, total);
+}
+
+function combatRoundChallengeType(index = state.currentQuestion) {
+  const base = challengeType(index, state.questions.length);
+  const encounter = isCombatNode(state.nodes[state.currentNode]) ? ensureCombatEncounter(state.currentNode) : null;
+  const previousKind = encounter?.lastRound?.challengeKind;
+  if (!previousKind || base.kind !== previousKind) return base;
+
+  const rotation = ["individual", "team", "locked", "emergency"];
+  const question = state.questions[index];
+  let nextKind = "individual";
+  for (let offset = 1; offset <= rotation.length; offset += 1) {
+    const candidate = rotation[(rotation.indexOf(previousKind) + offset + rotation.length) % rotation.length];
+    if (candidate === "emergency" && question?.type === "fill") continue;
+    nextKind = candidate;
+    break;
+  }
+  if (nextKind === "team") return { label: "Team Challenge", kind: "team", locked: false, damage: 2 };
+  if (nextKind === "locked") return { label: "Locked Operator Challenge", kind: "locked", locked: true, damage: 3, teamDamage: 2 };
+  if (nextKind === "emergency") return { label: "Emergency Response Challenge", kind: "emergency", locked: false, damage: 2 };
+  return { label: "Individual Challenge", kind: "individual", locked: false, damage: 2 };
 }
 
 function buildChallengePlan(total) {
@@ -14424,25 +16218,20 @@ function renderRecoveryContinueGate(entry, summary, playerEvents = [], recoveryN
 function continueAfterRecovery(summary, playerEvents = [], recoveryNode = null) {
   const fromNode = state.currentNode;
   const toNode = Math.min(state.nodes.length, fromNode + 1);
-  travelFromRecoveryRoom(fromNode, toNode, () => {
-    state.resolved = false;
-    state.answerPending = false;
-    state.questionPresentationReady = false;
-    clearSubmittedAnswer();
-    renderStatus();
-    renderMap();
-
-    if (state.currentNode >= state.nodes.length || state.currentQuestion >= state.questions.length) {
-      renderEnding();
-      return;
+  const destination = state.nodes[toNode];
+  const nextArea = destination?.type === "boss"
+    ? bossAreaName(destination)
+    : (state.questions[state.currentQuestion]?.area || roomName(destination || { type: "challenge" }, toNode));
+  state.answerPending = false;
+  state.questionPresentationReady = false;
+  clearSubmittedAnswer();
+  appendTranscript({
+    tag: "Recovery Departure",
+    areaName: recoveryAreaName(recoveryNode || state.nodes[fromNode]),
+    story: `${summary} The aid-room seals cycle open, and the squad prepares to move toward ${nextArea}.`,
+    onTypedComplete: () => {
+      travelFromRecoveryRoom(fromNode, toNode, () => completeRecoveryArrival(summary, playerEvents));
     }
-
-    if (state.chatMode || state.localDmMode) {
-      appendRecoveryTransitionToNextEncounter(summary, playerEvents, recoveryNode);
-      return;
-    }
-
-    beginNextNode();
   });
 }
 
@@ -14469,60 +16258,6 @@ function travelFromRecoveryRoom(fromNode, toNode, onArrive) {
     renderRouteTelemetry();
     if (typeof onArrive === "function") onArrive();
   }, state.routeTransition.moving ? ROUTE_TRAVEL_MS : 0);
-}
-
-function appendRecoveryTransitionToNextEncounter(summary, playerEvents = [], recoveryNode = null) {
-  const nextNode = state.nodes[state.currentNode];
-  if (nextNode?.type === "boss" && !state.bossReadyChecks.has(state.currentNode)) {
-    appendTranscript({
-      tag: "Readiness Check",
-      areaName: bossAreaName(nextNode),
-      story: `${summary} The recovery window collapses behind the squad as the route tightens toward ${bossAreaName(nextNode)}. The pressure ahead is organized, deliberate, and waiting for the team to commit.`,
-      readyCheck: true,
-      bossNodeIndex: state.currentNode,
-      bossPhase: nextNode.bossPhase || "mid",
-      players: playerEvents,
-      inventory: { ...state.inventory },
-      statusLog: summary
-    });
-    return;
-  }
-
-  const qInfo = currentQuestionInfo();
-  const prompt = [
-    `Write player-facing narration only, ${narrationSentenceRange("4-7", "2-4")} sentences.`,
-    "Describe the recovery choice, then transition into the next area.",
-    "Do not include the question text or answer choices.",
-    "Keep the recovery window tense and temporary.",
-    `Operation: ${state.title}.`,
-    `Persistent threat: ${state.threat}.`,
-    `Recovery area: ${recoveryAreaName(recoveryNode || { tier: 1 })}.`,
-    `Recovery result: ${summary}.`,
-    `Next area: ${qInfo.areaName}.`,
-    `Next encounter pressure: ${qInfo.activeObstacle || "the route ahead is unstable"}`
-  ].join("\n");
-
-  setAnswerPendingText("Receiving recovery transmission...");
-  startPassiveTransmissionFeedback({ type: { label: "Recovery Event" }, playerEvents });
-  requestOllama(prompt, { temperature: 0.72 })
-    .then((text) => cleanLocalNarration(text))
-    .catch(() => "")
-    .then((story) => {
-      stopTransmissionFeedback();
-      appendTranscript({
-        tag: qInfo.tag,
-        areaName: qInfo.areaName,
-        story: story || `The team takes the recovery window, seals what wounds they can, and pushes into ${qInfo.areaName}.`,
-        activeObstacle: qInfo.activeObstacle,
-        question: qInfo.questionText,
-        players: playerEvents,
-        inventory: { ...state.inventory },
-        statusLog: summary,
-        suppressEffectFlash: true
-      });
-      renderStatus();
-      renderMap();
-    });
 }
 
 function renderEnding() {
@@ -15131,7 +16866,7 @@ function threatLevel() {
 }
 
 function copyDmScript() {
-  fetch("dm-script.md")
+  fetchWithTimeout("dm-script.md")
     .then((response) => response.ok ? response.text() : fallbackScript())
     .catch(fallbackScript)
     .then((script) => navigator.clipboard.writeText(script))
