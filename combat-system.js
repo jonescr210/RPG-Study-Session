@@ -29,7 +29,7 @@
     },
     enforcer: {
       id: "enforcer", label: "Enforcer", gear: "Ballistic Shield", color: "#62b8ff",
-      summary: "R&R reduces damage and repairs health from streaks; arm the shield to block one enemy phase every 5 questions. At level 3, RRR adds fatal redirection."
+      summary: "R&R reduces incoming damage and stores prevented damage; arm the shield to block one enemy phase and convert the reserve into healing. At level 3, RRR adds fatal redirection."
     },
     engineer: {
       id: "engineer", label: "Engineer", gear: "Arc Toolkit", color: "#66e8e1",
@@ -122,6 +122,7 @@
       maxHp,
       hp: clamp(player.hp == null ? maxHp : player.hp, 0, maxHp),
       answerStreak: clamp(player.answerStreak, 0, 999),
+      enforcerReserve: classId === "enforcer" ? clamp(player.enforcerReserve, 0, Math.floor(maxHp * 0.5)) : 0,
       equippedItem: player.equippedItem || null,
       items: Array.isArray(player.items) ? player.items.slice(0, 2) : [],
       classCooldowns: { ...(player.classCooldowns || {}) }

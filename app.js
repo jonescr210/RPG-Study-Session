@@ -3293,6 +3293,7 @@ function playerStatePayload() {
     xp: Math.max(0, Math.round(Number(player.xp) || 0)),
     level: Math.max(1, Math.round(Number(player.level) || 1)),
     answerStreak: Math.max(0, Math.round(Number(player.answerStreak) || 0)),
+    enforcerReserve: player.classId === "enforcer" ? Math.max(0, Math.round(Number(player.enforcerReserve) || 0)) : 0,
     classId: player.classId || "",
     classLabel: combatSystem.classDefinition?.(player.classId)?.label || "Operator",
     classGear: player.classGear || combatSystem.classDefinition?.(player.classId)?.gear || "",
@@ -7624,32 +7625,45 @@ function enforcerReduction(player) {
   return streak >= 5 ? 0.5 : streak >= 3 ? 0.35 : streak >= 1 ? 0.2 : 0;
 }
 
-function enforcerRepairAmount(player) {
+function enforcerReserveCap(player) {
+  return Math.max(0, Math.floor(Math.max(10, Number(player?.maxHp) || 10) * 0.5));
+}
+
+function addEnforcerReserve(player, amount) {
   if (player?.classId !== "enforcer" || player.incapacitated) return 0;
-  const streak = Math.max(0, Number(player.answerStreak) || 0);
-  const base = streak >= 5 ? 3 : streak >= 3 ? 2 : streak >= 1 ? 1 : 0;
-  if (!base) return 0;
-  if (Number(player.level) >= 3) return base === 3 ? 5 : base * 2;
-  return base;
+  const cap = enforcerReserveCap(player);
+  const current = Math.max(0, Math.min(cap, Math.round(Number(player.enforcerReserve) || 0)));
+  const added = Math.max(0, Math.min(cap - current, Math.round(Number(amount) || 0)));
+  player.enforcerReserve = current + added;
+  return added;
 }
 
 function applyCombatDamage(player, amount, source, notes, facts, encounter = null, allowRedirect = true) {
   if (!player || player.incapacitated) return 0;
   let incoming = Math.max(0, Math.round(Number(amount) || 0));
   if (incoming > 0 && player._itemAbilityGuard) {
+    const beforeGuard = incoming;
     incoming = Math.max(0, incoming - 4);
     player._itemAbilityGuard = false;
+    addEnforcerReserve(player, beforeGuard - incoming);
     facts.push(`${player.name}'s item guard matrix reduces the incoming hit`);
     addEventNote(notes, player.name, `${player.name}'s protection module absorbs part of the attack.`);
   }
   incoming += Math.max(0, itemRisk(player, "incomingDamage"));
+  const beforeFlatReduction = incoming;
   incoming = Math.max(0, incoming - itemBonus(player, "damageReduction"));
+  addEnforcerReserve(player, beforeFlatReduction - incoming);
   const passiveRate = enforcerReduction(player);
-  if (passiveRate) incoming = Math.max(0, Math.round(incoming * (1 - passiveRate)));
+  if (passiveRate) {
+    const beforePercentageReduction = incoming;
+    incoming = Math.max(0, Math.round(incoming * (1 - passiveRate)));
+    addEnforcerReserve(player, beforePercentageReduction - incoming);
+  }
   // Preserve the reason a hit dealt no damage so the combat presentation can
   // call it out as BLOCKED instead of showing a confusing "-0" result.
   if (Number(amount) > 0 && incoming === 0) player._combatBlocked = true;
   if (encounter?.bubbleTargetName && sameName(encounter.bubbleTargetName, player.name)) {
+    addEnforcerReserve(player, incoming);
     encounter.bubbleTargetName = "";
     player._combatBubble = true;
     facts.push(`${player.name}'s Engineer bubble absorbs one incoming hit`);
@@ -7657,6 +7671,7 @@ function applyCombatDamage(player, amount, source, notes, facts, encounter = nul
     return 0;
   }
   if (incoming > 0 && player._classShieldReady) {
+    addEnforcerReserve(player, incoming);
     const shieldName = Number(player.level) >= 3 ? "RRR" : "R&R";
     facts.push(`${player.name}'s ${shieldName} shield blocks all incoming damage this turn`);
     addEventNote(notes, player.name, `${player.name}'s ${shieldName} shield catches the attack before it lands.`);
@@ -7748,6 +7763,21 @@ function applyPendingCombatAbilities(encounter, notes, facts, supportEvents = []
       const shieldName = Number(source.level) >= 3 ? "RRR" : "R&R";
       facts.push(`${source.name}'s ${shieldName} shield is armed and will block all incoming damage this turn`);
       supportEvents.push({ kind: "guard", source: source.name, target: source.name, amount: 0, label: `${shieldName} — Ballistic Shield` });
+      const reserve = Math.max(0, Math.round(Number(source.enforcerReserve) || 0));
+      if (reserve > 0 && source.hp < source.maxHp) {
+        const before = source.hp;
+        healPlayer(source, reserve);
+        const repaired = Math.max(0, source.hp - before);
+        source.enforcerReserve = 0;
+        if (repaired) {
+          const repairName = Number(source.level) >= 3 ? "RRR Repair" : "R&R Repair";
+          facts.push(`${source.name}'s ${repairName} converts the damage reserve into ${repaired} HP`);
+          addEventNote(notes, source.name, `${source.name}'s ${repairName} restores ${repaired} HP from the stored damage reserve.`);
+          supportEvents.push({ kind: "regen", source: source.name, target: source.name, amount: repaired, hpAfter: source.hp, maxHp: source.maxHp, label: repairName });
+        }
+      } else if (reserve > 0 && source.hp >= source.maxHp) {
+        source.enforcerReserve = 0;
+      }
     } else if (classId === "engineer") {
       source._classDisruptionReady = true;
       disruptionCount += 1 + itemBonus(source, "disruption");
@@ -7867,18 +7897,6 @@ function applyCombatEncounter(entries, type, operator, question) {
   clearCombatAbilityMarkers();
   encounter.tacticianGuardAmount = 0;
   let disrupted = applyPendingCombatAbilities(encounter, notes, facts, combatSupportEvents);
-  state.players.filter((player) => player.classId === "enforcer" && !player.incapacitated).forEach((enforcer) => {
-    const amount = enforcerRepairAmount(enforcer);
-    if (!amount || enforcer.hp >= enforcer.maxHp) return;
-    const before = enforcer.hp;
-    healPlayer(enforcer, amount);
-    const repaired = Math.max(0, enforcer.hp - before);
-    if (!repaired) return;
-    const repairName = Number(enforcer.level) >= 3 ? "RRR Repair" : "R&R Repair";
-    facts.push(`${enforcer.name}'s ${repairName} restores ${repaired} HP from answer streak`);
-    addEventNote(notes, enforcer.name, `${enforcer.name}'s ${repairName} restores ${repaired} HP.`);
-    combatSupportEvents.push({ kind: "regen", source: enforcer.name, target: enforcer.name, amount: repaired, hpAfter: enforcer.hp, maxHp: enforcer.maxHp, label: repairName });
-  });
   const attacks = entries.filter((entry) => entry.correct && entry.player && !entry.player.incapacitated)
     .sort((a, b) => pointTimestamp(a.submittedAt) - pointTimestamp(b.submittedAt));
   const doubleAttackers = new Set(attacks
@@ -8003,6 +8021,7 @@ function applyCombatEncounter(entries, type, operator, question) {
             : Math.max(0, amount - commandGuard);
           let blocked = braced && mitigatedAmount <= 0;
           const targetAmount = blocked ? 0 : Math.max(0, mitigatedAmount);
+          if (target.classId === "enforcer" && amount > targetAmount) addEnforcerReserve(target, amount - targetAmount);
           if (braced) facts.push(`${target.name} braces, mitigating ${Math.round(braceMitigation * 100)}% of the incoming attack`);
           else if (commandGuard) facts.push(`${target.name} is covered by Guard Protocol, reducing the incoming attack by ${commandGuard}`);
           if (blocked) facts.push(`${target.name} braces and blocks the area attack`);
@@ -9095,6 +9114,7 @@ function statusRenderKey() {
     player.level,
     player.xp,
     player.answerStreak,
+    player.enforcerReserve,
     (player.items || []).join(","),
     JSON.stringify(player.classCooldowns || {}),
     player.itemNotice || "",
@@ -9648,13 +9668,14 @@ function playerItemSlotsHtml(player) {
   const abilityLabel = abilityTurnUsed ? "USED THIS TURN" : abilityState.label;
   const abilityWindow = isCombatNode(state.nodes[state.currentNode]) && !state.resolved;
   const classId = String(player.classId || "").toLowerCase();
+  const reserveText = classId === "enforcer" ? `RESERVE ${Math.max(0, Math.round(Number(player.enforcerReserve) || 0))}/${enforcerReserveCap(player)}` : "";
   const manualClass = state.deviceMode === "single" && abilityWindow && ["soldier", "medic", "scout", "enforcer", "engineer", "tactician"].includes(classId);
   const targetableClass = manualClass && ["medic", "engineer"].includes(classId);
   const targetNotice = state.classAbilityTargetNotices?.[normalize(player.name)] || "";
   const displayedClassAbility = classId === "enforcer"
     ? `${Number(player.level) >= 3 ? "RRR" : "R&R"} — Ballistic Shield`
     : (definition?.gear || "Class ability");
-  const abilityLabelHtml = `<span class="player-class-icon" aria-hidden="true">${playerClassIcon(player.classId)}</span>${escapeHtml(displayedClassAbility)} <b class="player-ability-state ${abilityState.ready && !abilityTurnUsed ? "ready" : "recharging"}">${escapeHtml(abilityLabel)}</b>${targetNotice ? `<b class="player-ability-targeted">${escapeHtml(targetNotice)}</b>` : ""}`;
+  const abilityLabelHtml = `<span class="player-class-icon" aria-hidden="true">${playerClassIcon(player.classId)}</span>${escapeHtml(displayedClassAbility)} <b class="player-ability-state ${abilityState.ready && !abilityTurnUsed ? "ready" : "recharging"}">${escapeHtml(abilityLabel)}</b>${reserveText ? `<b class="player-ability-reserve">${escapeHtml(reserveText)}</b>` : ""}${targetNotice ? `<b class="player-ability-targeted">${escapeHtml(targetNotice)}</b>` : ""}`;
   const itemText = [0, 1].map((slot) => {
     const item = items[slot];
     if (!item) return `<span class="player-item-dot empty" aria-label="Empty item slot"></span>`;

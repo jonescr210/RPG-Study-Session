@@ -9518,6 +9518,7 @@ body.mission-active .map-panel .status-card { min-height: 66px; height: auto; pa
 button.player-ability-label { cursor: pointer; }
 button.player-ability-label:disabled { cursor: default; opacity: 0.58; }
 .player-ability-state { margin-left: 2px; color: #8fe39c; font-size: 0.46rem; letter-spacing: 0.05em; }
+.player-ability-reserve { color: #86e8ff; font-size: 0.46rem; letter-spacing: 0.04em; }
 .player-ability-state.recharging { color: #ffb875; animation: ability-recharge-pulse 1.6s ease-in-out infinite; }
 .player-item-slots { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; }
 .player-ability-notice-inline { flex: 1 1 100%; color: #c9fffb; font-size: 0.48rem; letter-spacing: 0.02em; }
