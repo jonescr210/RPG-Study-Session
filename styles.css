@@ -8845,6 +8845,12 @@ body.mission-active .player-dm-controls {
 .combat-stage.boss-fight.boss-eyes-attacking::before { animation: combat-boss-background-attack 1.02s cubic-bezier(.2,.8,.25,1) both; }
 .combat-stage.boss-fight.boss-eyes-hit::before { animation: combat-boss-background-hit 0.78s steps(2, end) both; }
 .combat-stage.boss-fight.boss-eyes-hit::after { opacity: 0.38; animation: combat-boss-hit-static 0.1s steps(2, end) infinite; }
+.combat-stage.boss-fight.final-boss-defeated::before {
+  animation: combat-final-boss-defeat 2.2s ease-out both !important;
+}
+.combat-stage.boss-fight.final-boss-defeated::after {
+  animation: combat-final-boss-defeat-static 2.2s steps(2, end) both !important;
+}
 
 .combat-stage.boss-fight .combat-party-formation {
   left: 50%;
@@ -8932,6 +8938,19 @@ html.app-tab-hidden .combat-stage-header {
   38% { opacity: 0.35; transform: translate(4px, -2px); filter: contrast(1.7) brightness(0.72); }
   58% { opacity: 0.92; transform: translate(-2px, 2px); filter: grayscale(0.3) sepia(1) saturate(8.5) hue-rotate(310deg) contrast(1.8) brightness(1.48); }
   100% { opacity: 0.14; transform: translate(0, 0); filter: grayscale(0.68) sepia(0.9) saturate(5.8) hue-rotate(310deg) contrast(1.4) brightness(0.94); }
+}
+@keyframes combat-final-boss-defeat {
+  0% { opacity: 0.26; transform: scale(1); filter: grayscale(0.55) sepia(0.9) saturate(5.8) hue-rotate(310deg) contrast(1.4) brightness(0.9); }
+  18% { opacity: 0.95; transform: scale(1.025); filter: grayscale(0.08) sepia(1) saturate(10) hue-rotate(310deg) contrast(2) brightness(1.8) drop-shadow(0 0 34px rgba(255, 0, 13, 0.98)); }
+  42% { opacity: 0.72; transform: scale(1.01); filter: grayscale(0.45) sepia(1) saturate(7) hue-rotate(310deg) contrast(1.6) brightness(1.1); }
+  100% { opacity: 0; transform: scale(1.12); filter: grayscale(1) saturate(0) contrast(1.1) brightness(0.08) blur(6px); }
+}
+@keyframes combat-final-boss-defeat-static {
+  0%, 18% { opacity: 0.12; }
+  22% { opacity: 0.4; }
+  35% { opacity: 0.08; }
+  48% { opacity: 0.24; }
+  100% { opacity: 0; }
 }
 @keyframes combat-boss-hit-static {
   0% { transform: translate(0, 0); background-position: 0 0, 0 0; }
@@ -9180,6 +9199,7 @@ html.app-tab-hidden .combat-stage-header {
 }
 
 .combat-damage-float.block { color: #85edff; text-shadow: 0 2px 0 #000, 0 0 8px #43d8ff; }
+.combat-damage-float.damage { white-space: pre-line; line-height: 1.05; }
 .combat-damage-float.xp {
   top: 48%;
   color: #ffe477;

@@ -7587,7 +7587,6 @@ function combatPlayerDamage(entry, question, type) {
     damage += armedItemDamage;
     entry.player._itemAbilityDamageBonus = 0;
   }
-  if (entry.player.classId === "tactician") damage += 2;
   if (type.kind === "emergency") damage += 2;
   return Math.max(1, Math.round(damage));
 }
@@ -7690,14 +7689,14 @@ function applyPendingCombatAbilities(encounter, notes, facts, supportEvents = []
       if (healed) {
         facts.push(`${source.name}'s Surgical Kit restores ${target.name}`);
         addEventNote(notes, target.name, `${source.name} uses the Surgical Kit to restore ${healed} HP.`);
-        supportEvents.push({ kind: "heal", source: source.name, target: target.name, amount: healed, label: "Surgical Kit" });
+        supportEvents.push({ kind: "heal", source: source.name, target: target.name, amount: healed, hpAfter: target.hp, maxHp: target.maxHp, label: "Surgical Kit" });
       }
       if (empoweredMedic) {
         markEmpoweredUse(source, "medic-overflow", encounter);
         activePlayers().filter((player) => player !== target && player.hp < player.maxHp).sort((a, b) => a.hp - b.hp).slice(0, 2).forEach((secondary) => {
           const secondaryBefore = secondary.hp;
           healPlayer(secondary, 2 + Math.floor(itemBonus(source, "healing") / 2));
-          if (secondary.hp > secondaryBefore) supportEvents.push({ kind: "heal", source: source.name, target: secondary.name, amount: secondary.hp - secondaryBefore, label: "Medical Field" });
+          if (secondary.hp > secondaryBefore) supportEvents.push({ kind: "heal", source: source.name, target: secondary.name, amount: secondary.hp - secondaryBefore, hpAfter: secondary.hp, maxHp: secondary.maxHp, label: "Medical Field" });
         });
         facts.push(`${source.name}'s empowered Surgical Kit sends smaller heals to nearby teammates`);
       }
@@ -7730,7 +7729,7 @@ function applyPendingCombatAbilities(encounter, notes, facts, supportEvents = []
         : "assault";
       const protocolLabel = source._classCommandProtocol[0].toUpperCase() + source._classCommandProtocol.slice(1);
       facts.push(`${source.name} selects ${protocolLabel} Protocol`);
-      supportEvents.push({ kind: "damage", source: source.name, target: source.name, amount: 0, label: `${protocolLabel} Protocol` });
+      supportEvents.push({ kind: "protocol", source: source.name, target: source.name, amount: 0, label: `${protocolLabel} Protocol` });
     }
     delete state.classAbilityTargets[normalize(source.name)];
     delete state.classAbilityTargetNotices[normalize(source.name)];
@@ -7752,7 +7751,7 @@ function applyPendingCombatAbilities(encounter, notes, facts, supportEvents = []
       healPlayer(target, 4);
       const healed = Math.max(0, target.hp - before);
       facts.push(`${source.name}'s ${ability.label} restores ${target.name}`);
-      supportEvents.push({ kind: "heal", source: source.name, target: target.name, amount: healed, label: ability.label });
+      supportEvents.push({ kind: "heal", source: source.name, target: target.name, amount: healed, hpAfter: target.hp, maxHp: target.maxHp, label: ability.label });
       addEventNote(notes, target.name, `${source.name}'s ${ability.label} restores ${healed} HP.`);
     } else if (ability.effect === "damage") {
       source._itemAbilityDamageBonus = Math.max(0, Number(source._itemAbilityDamageBonus) || 0) + 4;
@@ -7851,7 +7850,7 @@ function applyCombatEncounter(entries, type, operator, question) {
       const healed = Math.max(0, supportTarget.hp - before);
       if (healed) {
         facts.push(`${tactician.player.name}'s Support Protocol stabilizes ${supportTarget.name}`);
-        combatSupportEvents.push({ kind: "heal", source: tactician.player.name, target: supportTarget.name, amount: healed, label: "Support Protocol" });
+        combatSupportEvents.push({ kind: "heal", source: tactician.player.name, target: supportTarget.name, amount: healed, hpAfter: supportTarget.hp, maxHp: supportTarget.maxHp, label: "Support Protocol" });
         addEventNote(notes, supportTarget.name, `${tactician.player.name}'s Support Protocol restores ${healed} HP.`);
       }
     } else {
@@ -7862,7 +7861,7 @@ function applyCombatEncounter(entries, type, operator, question) {
     markEmpoweredUse(tactician.player, "tactician-command", encounter);
     facts.push(`${tactician.player.name}'s ${Number(tactician.player.level) >= 3 ? "empowered " : ""}command protocol coordinates the correct responders`);
   } else if (tactician) {
-    facts.push(`${tactician.player.name}'s command protocol adds a tactical damage edge to the response`);
+    facts.push(`${tactician.player.name}'s ${tacticianProtocol} protocol resolves without a coordination bonus`);
   }
   const attackQueue = attacks.flatMap((entry) => [entry, ...(doubleAttackers.has(normalize(entry.player.name)) ? [{ ...entry, empoweredFollowUp: true }] : [])]);
   const attackResults = [];
@@ -9375,7 +9374,7 @@ function classAbilityCooldownState(player) {
     enforcer: ["shield", 5],
     engineer: ["arc-disrupt", 3],
     soldier: ["soldier-double", 2],
-    tactician: ["tactician-command", 2]
+    tactician: ["tactician-command", 1]
   };
   const [key, cadence] = cooldowns[classId] || ["", 0];
   const level = Math.max(1, Number(player?.level) || 1);
@@ -9597,6 +9596,8 @@ function refreshPlayerItemStats(player) {
 function openItemRewardChoices(encounter) {
   if (!encounter?.cleared || encounter.rewardOffered) return false;
   const boss = encounter.roomType === "boss";
+  const bossNode = state.nodes?.[encounter.nodeIndex];
+  if (boss && bossNode?.bossPhase === "final") return false;
   const firstBoss = boss && !state.firstBossRewardGranted;
   if (!boss && state.rng() > 0.42) return false;
   const queue = state.players.filter((player) => boss || player.items?.length < 2);
@@ -9826,7 +9827,7 @@ function clearCombatPresentation() {
   state.combatMountBlocked = false;
   state.combatDisplayedHp = {};
   if (els?.combatStage) {
-    els.combatStage.classList.remove("entering", "resolving", "combat-cleared", "exiting", "boss-fight", "boss-eyes-attacking", "boss-eyes-hit");
+    els.combatStage.classList.remove("entering", "resolving", "combat-cleared", "exiting", "boss-fight", "boss-eyes-attacking", "boss-eyes-hit", "final-boss-defeated");
     els.combatStage.hidden = true;
     delete els.combatStage.dataset.nodeIndex;
   }
@@ -9939,7 +9940,7 @@ function syncCombatStage() {
   if (els.combatStage.classList.contains("entering")) return;
   const firstEntry = !state.combatStageEnteredNodes.has(state.currentNode);
   if (firstEntry) {
-    els.combatStage.classList.remove("resolving", "combat-cleared", "exiting", "boss-eyes-attacking", "boss-eyes-hit");
+    els.combatStage.classList.remove("resolving", "combat-cleared", "exiting", "boss-eyes-attacking", "boss-eyes-hit", "final-boss-defeated");
     els.combatStage.classList.add("entering");
   }
   renderCombatStage(encounter);
@@ -10052,19 +10053,23 @@ function playEnemyDeathSound(count = 1) {
 }
 
 function updateCombatPlayerVisual(hit, card) {
-  if (!card) return;
   const maxHp = Math.max(1, Number(hit.target.maxHp) || 1);
+  const hpAfter = Math.max(0, Number(hit.hpAfter) || 0);
+  const key = normalize(hit.target.name);
+  state.combatDisplayedHp[key] = hpAfter;
+  const dashboardCard = els.statusGrid?.querySelector(`[data-player-name="${CSS.escape(hit.target.name)}"]`);
+  const dashboardHp = dashboardCard?.querySelector(".player-card-stats strong, .status-vitals strong");
+  if (dashboardHp) dashboardHp.textContent = `${hpAfter} / ${maxHp} HP`;
+  dashboardCard?.classList.toggle("incapacitated", hpAfter <= 0);
+  if (!card) {
+    publishPlayerVitals();
+    return;
+  }
   const fill = card.querySelector(".combat-unit-hp i");
   const label = card.querySelector("em");
-  if (fill) fill.style.width = `${Math.max(0, Math.min(100, hit.hpAfter / maxHp * 100))}%`;
-  if (label) label.textContent = `${Math.max(0, hit.hpAfter)} / ${maxHp} HP`;
-  card.classList.toggle("down", hit.hpAfter <= 0);
-  const key = normalize(hit.target.name);
-  state.combatDisplayedHp[key] = hit.hpAfter;
-  const dashboardCard = els.statusGrid?.querySelector(`[data-player-name="${CSS.escape(hit.target.name)}"]`);
-  const dashboardHp = dashboardCard?.querySelector(".status-vitals strong");
-  if (dashboardHp) dashboardHp.textContent = `${Math.max(0, hit.hpAfter)} / ${maxHp} HP`;
-  dashboardCard?.classList.toggle("incapacitated", hit.hpAfter <= 0);
+  if (fill) fill.style.width = `${Math.max(0, Math.min(100, hpAfter / maxHp * 100))}%`;
+  if (label) label.textContent = `${hpAfter} / ${maxHp} HP`;
+  card.classList.toggle("down", hpAfter <= 0);
   // Keep field devices in lockstep with the battle presentation instead of
   // waiting for the full round to finish. The payload uses combatDisplayedHp,
   // so each hit publishes the same intermediate value shown on the battle card.
@@ -10162,12 +10167,15 @@ function presentCombatResolution(result, options = {}) {
           const key = normalize(targetPlayer.name);
           const beforeHp = Number(state.combatDisplayedHp[key]);
           const amount = Math.max(0, Number(ability.amount) || 0);
-          const nextHp = Math.min(Math.max(10, Number(targetPlayer.maxHp) || 10), (Number.isFinite(beforeHp) ? beforeHp : targetPlayer.hp) + amount);
-          updateCombatPlayerVisual({ target: targetPlayer, hpAfter: nextHp }, targetCard);
+          const maxHp = Math.max(1, Number(ability.maxHp) || Number(targetPlayer.maxHp) || 1);
+          const nextHp = Number.isFinite(Number(ability.hpAfter))
+            ? Math.max(0, Number(ability.hpAfter))
+            : Math.min(maxHp, (Number.isFinite(beforeHp) ? beforeHp : targetPlayer.hp) + amount);
+          updateCombatPlayerVisual({ target: { ...targetPlayer, maxHp }, hpAfter: nextHp }, targetCard);
         }
       }
       els.combatActionBanner.textContent = `${ability.source} — ${String(ability.label || "ABILITY").toUpperCase()}`;
-      showCombatFloat(targetCard, ability.kind === "heal" ? `+${ability.amount}` : String(ability.kind || "ABILITY").toUpperCase(), ability.kind === "heal" ? "heal" : "block");
+      showCombatFloat(targetCard, ability.kind === "heal" ? `+${ability.amount}` : ability.kind === "protocol" ? String(ability.label || "PROTOCOL").toUpperCase() : String(ability.kind || "ABILITY").toUpperCase(), ability.kind === "heal" ? "heal" : "block");
       appendCombatActionStatus(statusLog, ability.kind === "heal"
         ? `${ability.source}'s ${ability.label} restores ${ability.target} for ${ability.amount} HP.`
         : `${ability.source} uses ${ability.label}${ability.target && ability.target !== ability.source ? ` on ${ability.target}` : ""}.`);
@@ -10245,7 +10253,12 @@ function presentCombatResolution(result, options = {}) {
           playerCard?.classList.add(protectedHit ? "blocking" : "hit");
           if (bossSwipe) showBossClawImpact(playerCard, fullyProtected);
           const protectionLabel = hit.redirected ? "REDIRECT" : hit.bubbleBlocked ? "BUBBLE" : fullyProtected ? "BLOCKED" : "BRACED";
-          showCombatFloat(playerCard, protectedHit ? protectionLabel : `-${hit.damage}`, protectedHit ? "block" : "damage");
+          const floatText = fullyProtected
+            ? protectionLabel
+            : hit.braced
+              ? `BRACED\n-${hit.damage}`
+              : `-${hit.damage}`;
+          showCombatFloat(playerCard, floatText, fullyProtected ? "block" : "damage");
           if (!fullyProtected && hit.damage > 0) playGameSfx("damage");
           updateCombatPlayerVisual(hit, playerCard);
           if (hit.redirected?.target) {
@@ -10305,13 +10318,19 @@ function presentCombatResolution(result, options = {}) {
           }
         }, 1400, runId);
       };
+      const finalBossDefeated = Boolean(result.combatCleared && result.encounter.roomType === "boss" && state.nodes?.[result.encounter.nodeIndex]?.bossPhase === "final");
+      if (finalBossDefeated) {
+        els.combatStage.classList.add("final-boss-defeated");
+        els.combatActionBanner.textContent = "CRITICAL HOSTILE NEUTRALIZED";
+      }
       const rewardOpened = result.combatCleared && openItemRewardChoices(result.encounter);
       if (rewardOpened) {
         state.pendingRewardExit = () => {
           if (xpAwardCount) combatPresentationTimer(beginExit, 350, runId);
           else beginExit();
         };
-      } else if (xpAwardCount) combatPresentationTimer(beginExit, 1650, runId);
+      } else if (finalBossDefeated) combatPresentationTimer(beginExit, 2300, runId);
+      else if (xpAwardCount) combatPresentationTimer(beginExit, 1650, runId);
       else beginExit();
     }
   }, combatFinalizationDelay, runId);
