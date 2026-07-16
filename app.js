@@ -7597,6 +7597,7 @@ function clearCombatAbilityMarkers(players = state.players) {
     delete player._classCommandReady;
     delete player._classCommandProtocol;
     delete player._classDisruptionReady;
+    delete player._classShieldReady;
   });
 }
 
@@ -7645,9 +7646,8 @@ function applyCombatDamage(player, amount, source, notes, facts, encounter = nul
     addEventNote(notes, player.name, `${player.name}'s protection bubble catches the attack.`);
     return 0;
   }
-  if (incoming > 0 && player.classId === "enforcer" && combatCooldownReady(player, "shield", 5, encounter) && incoming >= player.hp) {
-    markCombatCooldown(player, "shield", encounter);
-    facts.push(`${player.name}'s Ballistic Shield blocks all incoming damage`);
+  if (incoming > 0 && player._classShieldReady) {
+    facts.push(`${player.name}'s Ballistic Shield blocks all incoming damage this turn`);
     addEventNote(notes, player.name, `${player.name}'s Ballistic Shield catches the attack before it lands.`);
     player._combatBlocked = true;
     return 0;
@@ -7732,6 +7732,10 @@ function applyPendingCombatAbilities(encounter, notes, facts, supportEvents = []
         facts.push(`${source.name}'s Spectrum Analyzer sharpens the active prompt`);
         supportEvents.push({ kind: "hint", source: source.name, target: source.name, amount: 1, label: "Spectrum Analyzer" });
       }
+    } else if (classId === "enforcer") {
+      source._classShieldReady = true;
+      facts.push(`${source.name}'s Ballistic Shield is armed and will block all incoming damage this turn`);
+      supportEvents.push({ kind: "guard", source: source.name, target: source.name, amount: 0, label: "Ballistic Shield" });
     } else if (classId === "engineer") {
       source._classDisruptionReady = true;
       disruptionCount += 1 + itemBonus(source, "disruption");
@@ -7807,6 +7811,7 @@ function supportEventStatusLog(events = []) {
   return events.filter(Boolean).map((event) => {
     if (event.kind === "heal") return `${event.source} uses ${event.label} on ${event.target} (+${event.amount} HP).`;
     if (event.kind === "hint") return `${event.source} uses ${event.label}; a clue is added to the prompt.`;
+    if (event.kind === "guard") return `${event.source} arms ${event.label}; all incoming damage is blocked this turn.`;
     return `${event.source} uses ${event.label}.`;
   }).join(" ");
 }
@@ -8009,7 +8014,9 @@ function applyCombatEncounter(entries, type, operator, question) {
   const combatStatusLines = [
     ...combatSupportEvents.map((event) => event.kind === "heal"
       ? `${event.source}'s ${event.label} restores ${event.target} for ${event.amount} HP.`
-      : `${event.source} uses ${event.label}${event.target && event.target !== event.source ? ` on ${event.target}` : ""}.`),
+      : event.kind === "guard"
+        ? `${event.source} arms ${event.label}; all incoming damage is blocked this turn.`
+        : `${event.source} uses ${event.label}${event.target && event.target !== event.source ? ` on ${event.target}` : ""}.`),
     ...attackResults.map((attack) => `${attack.player.name}${attack.empowered ? " uses an empowered ability and" : " attacks"} ${attack.targetLabel} for ${attack.damage} damage${attack.defeated.length ? ` — KILLING BLOW (${attack.defeated.map((enemy) => enemy.label).join(", ")})` : ""}.`),
     ...(lockedSuppression ? [`${operator.name}'s area attack suppresses every enemy activation.`] : []),
     ...enemyActions.flatMap((action) => action.disrupted
@@ -9428,11 +9435,9 @@ function classAbilityCooldownState(player) {
   const level = Math.max(1, Number(player?.level) || 1);
   if (classId === "enforcer") {
     const last = Number(player?.classCooldowns?.[key]);
-    const current = isCombatNode(state.nodes[state.currentNode])
-      ? Number(currentCombatEncounter()?.round || 0)
-      : Number(state.currentQuestion || 0);
+    const current = Number(state.currentQuestion || 0);
     const remaining = Number.isFinite(last) ? Math.max(0, cadence - (current - last)) : 0;
-    return { label: remaining ? `AUTO ${remaining}` : "AUTO READY", ready: !remaining, key, cadence, automatic: true };
+    return { label: remaining ? `RECHARGE ${remaining}` : "READY", ready: !remaining, key, cadence };
   }
   if (level < 3 && classId === "soldier") return { label: "LV 3", ready: false, key, cadence };
   if (classId === "soldier" && Math.max(0, Number(player?.answerStreak) || 0) < 3) return { label: "STREAK 3", ready: false, key, cadence };
@@ -9487,6 +9492,7 @@ function classAbilityLabel(classId) {
     soldier: "Heavy Rifle Overdrive",
     medic: "Surgical Kit",
     scout: "Spectrum Analyzer",
+    enforcer: "Ballistic Shield",
     engineer: "Arc Toolkit",
     tactician: "Command Protocol"
   }[String(classId || "").toLowerCase()] || "Class ability";
@@ -9496,10 +9502,9 @@ function abilityRejectionText(source, action = "") {
   if (!source) return "operator is unavailable";
   if (source.incapacitated) return "operator is incapacitated";
   const clean = String(action || "");
-  const classMatch = clean.match(/^CLASS:(soldier|medic|scout|engineer|tactician)/i);
+  const classMatch = clean.match(/^CLASS:(soldier|medic|scout|enforcer|engineer|tactician)/i);
   if (classMatch) {
     const classId = classMatch[1].toLowerCase();
-    if (classId === "enforcer") return "Ballistic Shield is passive";
     if (!isCombatNode(state.nodes[state.currentNode]) && !["medic", "scout"].includes(classId)) return "combat-only ability outside a combat room";
     if (classId === "soldier" && Number(source.level) < 3) return "unlocks at level 3";
     if (abilityUsedThisTurn(source)) return "another ability or item is already armed this turn";
@@ -9536,7 +9541,7 @@ function queueClassAbilityUse(sourceName, targetName = "", sourceMode = "teacher
   if ((sourceMode === "teacher" && state.deviceMode !== "single") || !sourceName) return false;
   if (state.resolved || state.nodes[state.currentNode]?.type === "recovery") return false;
   const source = state.players.find((player) => sameName(player.name, sourceName));
-  if (!source || source.incapacitated || source.classId === "enforcer") return false;
+  if (!source || source.incapacitated) return false;
   const classId = String(source.classId || "").toLowerCase();
   const combatRoom = isCombatNode(state.nodes[state.currentNode]);
   // Support abilities remain useful during obstacle rooms. Offensive,
@@ -9619,7 +9624,7 @@ function playerItemSlotsHtml(player) {
   const abilityLabel = abilityTurnUsed ? "USED THIS TURN" : abilityState.label;
   const abilityWindow = isCombatNode(state.nodes[state.currentNode]) && !state.resolved;
   const classId = String(player.classId || "").toLowerCase();
-  const manualClass = state.deviceMode === "single" && abilityWindow && ["soldier", "medic", "scout", "engineer", "tactician"].includes(classId);
+  const manualClass = state.deviceMode === "single" && abilityWindow && ["soldier", "medic", "scout", "enforcer", "engineer", "tactician"].includes(classId);
   const targetableClass = manualClass && ["medic", "engineer"].includes(classId);
   const targetNotice = state.classAbilityTargetNotices?.[normalize(player.name)] || "";
   const abilityLabelHtml = `<span class="player-class-icon" aria-hidden="true">${playerClassIcon(player.classId)}</span>${escapeHtml(definition?.gear || "Class ability")} <b class="player-ability-state ${abilityState.ready && !abilityTurnUsed ? "ready" : "recharging"}">${escapeHtml(abilityLabel)}</b>${targetNotice ? `<b class="player-ability-targeted">${escapeHtml(targetNotice)}</b>` : ""}`;
@@ -9634,7 +9639,7 @@ function playerItemSlotsHtml(player) {
   const classAbilityControl = targetableClass
     ? `<button type="button" class="player-ability-label class-ability-button" data-class-ability-target="${escapeAttribute(player.name)}" data-class-id="${escapeAttribute(classId)}" ${abilityState.ready && !abilityTurnUsed ? "" : "disabled"}>${abilityLabelHtml}<small>Choose target, then use</small></button>`
     : manualClass
-    ? `<button type="button" class="player-ability-label class-ability-button" data-class-ability-use="${escapeAttribute(player.name)}" data-class-id="${escapeAttribute(classId)}" ${abilityState.ready && !abilityTurnUsed ? "" : "disabled"}>${abilityLabelHtml}<small>${classId === "tactician" ? "Choose protocol, then use" : "Use now"}</small></button>`
+    ? `<button type="button" class="player-ability-label class-ability-button" data-class-ability-use="${escapeAttribute(player.name)}" data-class-id="${escapeAttribute(classId)}" ${abilityState.ready && !abilityTurnUsed ? "" : "disabled"}>${abilityLabelHtml}<small>${classId === "tactician" ? "Choose protocol, then use" : classId === "enforcer" ? "Arm shield" : "Use now"}</small></button>`
     : `<span class="player-ability-label">${abilityLabelHtml}</span>`;
   const tacticianProtocolPicker = manualClass && classId === "tactician"
     ? `<label class="tactician-protocol-picker"><span>Protocol</span><select data-tactician-protocol-for="${escapeAttribute(player.name)}" ${abilityState.ready && !abilityTurnUsed ? "" : "disabled"}><option value="assault">Assault</option><option value="guard">Guard</option><option value="support">Support</option></select></label>`
@@ -12100,7 +12105,7 @@ function resolvePlayerSideAction(entry) {
     }
     return;
   }
-  const classMatch = action.match(/^CLASS:(soldier|medic|scout|engineer|tactician)(?::(.*))?$/i);
+  const classMatch = action.match(/^CLASS:(soldier|medic|scout|enforcer|engineer|tactician)(?::(.*))?$/i);
   if (classMatch) {
     const used = queueClassAbilityUse(actor.name, classMatch[2] || "", "player");
     if (used) {

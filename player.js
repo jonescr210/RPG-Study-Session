@@ -929,13 +929,13 @@ function renderVitals(session) {
     const cooldowns = vitals.classCooldowns || {};
     const classCooldownInfo = { medic: ["surgical-kit", 2], scout: ["spectrum-analyzer", 5], enforcer: ["shield", 5], engineer: ["arc-disrupt", 3], soldier: ["soldier-double", 2], tactician: ["tactician-command", 1] }[classId];
     const classLast = classCooldownInfo ? Number(cooldowns[classCooldownInfo[0]]) : NaN;
-    // The host stores class cooldown markers against the completed combat
-    // round, while the published prompt displays the upcoming round.
-    const classCurrent = ["soldier", "tactician", "enforcer"].includes(classId)
+    // Soldier and tactician cadence follows combat rounds; all other class
+    // cooldowns (including the Enforcer shield) follow question index.
+    const classCurrent = ["soldier", "tactician"].includes(classId)
       ? Math.max(0, Number(session.prompt?.combat?.round || 1) - 1)
       : Number(session.prompt?.questionIndex || 0);
     const classRemaining = Number.isFinite(classLast) ? Math.max(0, classCooldownInfo[1] - (classCurrent - classLast)) : 0;
-    const classReady = classId === "enforcer" || (!classRemaining && (level >= 3 || classId !== "soldier") && (classId !== "soldier" || streak >= 3));
+    const classReady = !classRemaining && (level >= 3 || classId !== "soldier") && (classId !== "soldier" || streak >= 3);
     const abilityTurnUsed = Boolean(vitals.abilityUsedThisTurn);
     const combatRoom = Boolean(session.prompt?.combat);
     const abilityWindow = Boolean(session.prompt?.allowPlayerActions && session.prompt?.accepting && !incapacitated);
@@ -954,13 +954,13 @@ function renderVitals(session) {
     const classTargetSelect = ["medic", "engineer"].includes(classId) && classAbilityAllowed ? playerTargetCardsHtml(states, `class:${classId}`, classAbilityAllowed) : "";
     const noticeHtml = vitals.itemNotice ? `<div class="player-item-notice" role="status">${escapeHtml(vitals.itemNotice)}</div>` : "";
     const abilityNoticeHtml = vitals.abilityNotice ? `<div class="player-ability-notice" role="status">${escapeHtml(vitals.abilityNotice)}</div>` : "";
-    const manualClass = ["soldier", "medic", "scout", "engineer", "tactician"].includes(classId);
+    const manualClass = ["soldier", "medic", "scout", "enforcer", "engineer", "tactician"].includes(classId);
     const targetableClass = ["medic", "engineer"].includes(classId);
     const classAction = manualClass
-      ? `<div class="player-class-action-row">${classId === "tactician" ? `<label class="tactician-protocol-picker"><span>Protocol</span><select id="playerTacticianProtocol" ${classReady && !abilityTurnUsed && classAbilityAllowed ? "" : "disabled"}><option value="assault">Assault</option><option value="guard">Guard</option><option value="support">Support</option></select></label>` : ""}${targetableClass ? classTargetSelect : ""}<button type="button" class="player-ability-btn class" id="playerClassAbilityBtn" ${classReady && !abilityTurnUsed && classAbilityAllowed ? "" : "disabled"}>${targetableClass ? "Use ability" : classId === "tactician" ? "Use protocol" : "Use now"}</button></div>`
+      ? `<div class="player-class-action-row">${classId === "tactician" ? `<label class="tactician-protocol-picker"><span>Protocol</span><select id="playerTacticianProtocol" ${classReady && !abilityTurnUsed && classAbilityAllowed ? "" : "disabled"}><option value="assault">Assault</option><option value="guard">Guard</option><option value="support">Support</option></select></label>` : ""}${targetableClass ? classTargetSelect : ""}<button type="button" class="player-ability-btn class" id="playerClassAbilityBtn" ${classReady && !abilityTurnUsed && classAbilityAllowed ? "" : "disabled"}>${targetableClass ? "Use ability" : classId === "tactician" ? "Use protocol" : classId === "enforcer" ? "Arm shield" : "Use now"}</button></div>`
       : "";
     const abilityPresentation = playerClassAbilityPresentation(classId, level);
-    const abilityBadge = abilityTurnUsed ? "USED THIS TURN" : classId === "enforcer" ? (classRemaining ? `AUTO ${classRemaining}` : "AUTO READY") : classRemaining ? `RECHARGE ${classRemaining}` : classReady ? (abilityPresentation.upgraded ? "EMPOWERED READY" : "READY") : level < 3 ? "LV 3 UNLOCK" : "STREAK 3 REQUIRED";
+    const abilityBadge = abilityTurnUsed ? "USED THIS TURN" : classRemaining ? `RECHARGE ${classRemaining}` : classReady ? (abilityPresentation.upgraded ? "EMPOWERED READY" : "READY") : level < 3 ? "LV 3 UNLOCK" : "STREAK 3 REQUIRED";
     playerEls.playerVitals.insertAdjacentHTML("beforeend", `<div class="player-vitals-modern"><div class="player-vitals-modern-top"><span class="player-vitals-class-icon" style="--player-class-color:${escapeAttribute(vitals.classColor || classDefinition?.color || "#9eeeff")}">${classGlyph}</span><div><strong>${hp} / ${maxHp} HP</strong><small>${escapeHtml(statusText)}</small></div><b>LV ${level}</b></div><div class="player-vitals-modern-summary"><span>${escapeHtml(vitals.classLabel || "Operator")}</span><span>${xp} XP</span><span>${streak} STK</span><span>${points} PTS</span></div>${noticeHtml}${abilityNoticeHtml}<section class="player-class-loadout"><div class="player-class-loadout-heading${abilityPresentation.upgraded ? " empowered" : ""}"><strong>${escapeHtml(abilityPresentation.label)}</strong><b class="${classReady ? "ready" : "recharging"}">${escapeHtml(abilityBadge)}</b></div><small>${abilityPresentation.upgraded ? "UPGRADED: " : ""}${escapeHtml(classDefinition?.summary || "Ready")}</small>${classAction}</section><section class="player-inventory-panel"><strong>Inventory</strong>${itemHtml}</section></div>`);
     playerEls.playerVitals.querySelector("#playerClassAbilityBtn")?.addEventListener("click", () => {
       const target = selectedAbilityTarget(`class:${classId}`, states);
