@@ -927,7 +927,7 @@ function renderVitals(session) {
     const classId = String(vitals.classId || "").toLowerCase();
     const classGlyph = playerClassGlyphs[classId] || "\u2022";
     const cooldowns = vitals.classCooldowns || {};
-    const classCooldownInfo = { medic: ["surgical-kit", 2], scout: ["spectrum-analyzer", 5], enforcer: ["shield", 5], engineer: ["arc-disrupt", 3], soldier: ["soldier-double", 2], tactician: ["tactician-command", 2] }[classId];
+    const classCooldownInfo = { medic: ["surgical-kit", 2], scout: ["spectrum-analyzer", 5], enforcer: ["shield", 5], engineer: ["arc-disrupt", 3], soldier: ["soldier-double", 2], tactician: ["tactician-command", 1] }[classId];
     const classLast = classCooldownInfo ? Number(cooldowns[classCooldownInfo[0]]) : NaN;
     const classCurrent = ["soldier", "tactician"].includes(classId) ? Number(session.prompt?.combat?.round || 0) : Number(session.prompt?.questionIndex || 0);
     const classRemaining = Number.isFinite(classLast) ? Math.max(0, classCooldownInfo[1] - (classCurrent - classLast)) : 0;
