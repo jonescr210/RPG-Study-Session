@@ -1107,6 +1107,7 @@ function submitAnswer(answer, expectedPromptId = playerState.promptId) {
 
 function submitAction(action, expectedPromptId = playerState.promptId) {
   const cleanAction = sanitizeText(action, { maxLength: 180 });
+  const abilityAction = /^(?:ABILITY|CLASS):/i.test(cleanAction);
   const form = document.getElementById("playerActionForm");
   const actionOnly = form?.dataset.actionOnly === "true";
   const status = document.getElementById("playerActionStatus");
@@ -1118,10 +1119,14 @@ function submitAction(action, expectedPromptId = playerState.promptId) {
     if (status) status.textContent = "Prompt locking in...";
     return;
   }
-  if (!cleanAction || !playerState.promptId || (!actionOnly && playerState.submittedActionPromptId === playerState.promptId)) return;
+  if (!cleanAction || !playerState.promptId) return;
+  if (!actionOnly && !abilityAction && playerState.submittedActionPromptId === playerState.promptId) {
+    if (status) status.textContent = "Action already submitted. You can still use one ability or item this turn.";
+    return;
+  }
   const cooldownUntil = Number(form?.dataset.cooldownUntil) || 0;
   const cooldownRemaining = Math.max(0, cooldownUntil - Date.now());
-  if (!actionOnly && cooldownRemaining > 0) {
+  if (!actionOnly && !abilityAction && cooldownRemaining > 0) {
     if (status) status.textContent = `Action recharging: ${formatCooldown(cooldownRemaining)} remaining.`;
     return;
   }
@@ -1151,7 +1156,7 @@ function submitAction(action, expectedPromptId = playerState.promptId) {
         }
         throw new Error(payload.error || "Action rejected.");
       }
-      if (!actionOnly) playerState.submittedActionPromptId = playerState.promptId;
+      if (!actionOnly && !abilityAction) playerState.submittedActionPromptId = playerState.promptId;
       playerState.localActionCooldownUntil = actionOnly ? 0 : Number(payload.cooldownUntil) || Date.now() + (Number(payload.cooldownMs) || 120000);
       const input = document.getElementById("playerActionInput");
       const button = document.getElementById("playerActionSubmitBtn");
@@ -1170,7 +1175,9 @@ function submitAction(action, expectedPromptId = playerState.promptId) {
         if (input) input.disabled = true;
         if (button) button.disabled = true;
         if (autoButton) autoButton.disabled = true;
-        if (status) status.textContent = "Action submitted. You can still answer the challenge.";
+        if (status) status.textContent = abilityAction
+          ? "Ability request sent. Awaiting Mission Control confirmation."
+          : "Action submitted. You can still answer the challenge.";
       }
     })
     .catch((error) => {

@@ -1786,12 +1786,24 @@ function startBossQuestionMusic() {
 }
 
 function syncBossEyesVisual() {
-  if (els.mapPanel?.classList.contains("boss-eyes-exiting")) {
+  const node = state.nodes[state.currentNode];
+  const bossActive = node?.type === "boss" || Boolean(currentBossProgress());
+  const eyesExiting = els.mapPanel?.classList.contains("boss-eyes-exiting");
+  const combatStageActive = Boolean(els.combatStage && (
+    !els.combatStage.hidden
+    || els.combatStage.classList.contains("exiting")
+    || els.combatStage.classList.contains("combat-cleared")
+  ));
+  if (eyesExiting && !combatStageActive) {
     els.mapPanel.classList.add("boss-eyes-active");
     return;
   }
-  const node = state.nodes[state.currentNode];
-  const bossActive = node?.type === "boss" || Boolean(currentBossProgress());
+  if (!bossActive || combatStageActive) {
+    window.clearTimeout(state.bossEyesExitTimer);
+    state.bossEyesExitTimer = null;
+    els.mapPanel?.classList.remove("boss-eyes-active", "boss-eyes-exiting", "boss-eyes-strike");
+    return;
+  }
   const revealActive = bossActive && state.bossMusicStartedNodes.has(state.currentNode);
   els.mapPanel?.classList.toggle("boss-eyes-active", revealActive);
 }
@@ -7827,7 +7839,7 @@ function applyCombatEncounter(entries, type, operator, question) {
   const attacks = entries.filter((entry) => entry.correct && entry.player && !entry.player.incapacitated)
     .sort((a, b) => pointTimestamp(a.submittedAt) - pointTimestamp(b.submittedAt));
   const doubleAttackers = new Set(attacks
-    .filter((entry) => entry.player._classDoubleAttackReady && entry.player.classId === "soldier" && Number(entry.player.level) >= 3 && Number(entry.player.answerStreak) >= 3 && encounter.round % 2 === 0)
+    .filter((entry) => entry.player._classDoubleAttackReady && entry.player.classId === "soldier" && Number(entry.player.level) >= 3 && Number(entry.player.answerStreak) >= 3)
     .map((entry) => normalize(entry.player.name)));
   doubleAttackers.forEach((name) => {
     const player = attacks.find((entry) => normalize(entry.player.name) === name)?.player;
@@ -7876,6 +7888,7 @@ function applyCombatEncounter(entries, type, operator, question) {
       player: entry.player,
       damage: applied.damage,
       empowered: Boolean(entry.empoweredFollowUp || (tacticianCommand && Number(tactician.player.level) >= 3)),
+      doubleAttack: Boolean(entry.empoweredFollowUp),
       aoe: Boolean(type.locked),
       defeated: applied.defeated,
       targetId: target?.id || "",
@@ -9441,6 +9454,46 @@ function classAbilityLabel(classId) {
   }[String(classId || "").toLowerCase()] || "Class ability";
 }
 
+function abilityRejectionText(source, action = "") {
+  if (!source) return "operator is unavailable";
+  if (source.incapacitated) return "operator is incapacitated";
+  const clean = String(action || "");
+  const classMatch = clean.match(/^CLASS:(soldier|medic|scout|engineer|tactician)/i);
+  if (classMatch) {
+    const classId = classMatch[1].toLowerCase();
+    if (classId === "enforcer") return "Ballistic Shield is passive";
+    if (!isCombatNode(state.nodes[state.currentNode]) && !["medic", "scout"].includes(classId)) return "combat-only ability outside a combat room";
+    if (classId === "soldier" && Number(source.level) < 3) return "unlocks at level 3";
+    if (abilityUsedThisTurn(source)) return "another ability or item is already armed this turn";
+    const cooldown = classAbilityCooldownState(source);
+    if (!cooldown.ready) return cooldown.label.toLowerCase();
+    return "the current prompt is not accepting class abilities";
+  }
+  const itemMatch = clean.match(/^ABILITY:(?:ITEM:)?([^:]+)/i);
+  if (itemMatch) {
+    const item = itemForPlayer(itemMatch[1]);
+    const ability = itemAbilityDefinition(item);
+    if (!item || !ability) return "item ability was not found";
+    const combatRoom = isCombatNode(state.nodes[state.currentNode]);
+    if (!combatRoom && !["heal", "hint"].includes(ability.effect)) return "combat-only item ability outside a combat room";
+    if (abilityUsedThisTurn(source)) return "another ability or item is already armed this turn";
+    const cooldown = itemAbilityCooldownState(source, item, ability);
+    if (!cooldown.ready) return cooldown.label.toLowerCase();
+    return "the current prompt is not accepting item abilities";
+  }
+  return "the ability request was not recognized";
+}
+
+function publishAbilityRejection(source, action) {
+  if (!source) return;
+  const reason = abilityRejectionText(source, action);
+  source.abilityNotice = `Not armed: ${reason}.`;
+  state.classAbilityTargetNotices[normalize(source.name)] = source.abilityNotice;
+  announceAbilityUse(`${source.name}: ${source.abilityNotice}`, "prompt");
+  publishPlayerSession({ status: "open", prompt: buildPlayerPrompt(), resetAnswers: false });
+  renderStatus();
+}
+
 function queueClassAbilityUse(sourceName, targetName = "", sourceMode = "teacher") {
   if ((sourceMode === "teacher" && state.deviceMode !== "single") || !sourceName) return false;
   if (state.resolved || state.nodes[state.currentNode]?.type === "recovery") return false;
@@ -9812,6 +9865,7 @@ function renderMap() {
   syncBossEyesVisual();
   renderRouteTelemetry();
   syncCombatStage();
+  syncBossEyesVisual();
   renderMapQuestionOverlay();
 }
 
@@ -10193,7 +10247,9 @@ function presentCombatResolution(result, options = {}) {
       const playerCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(attack.player.name))}"]`);
       playerCard?.classList.add("attacking");
       if (attack.empowered) playerCard?.classList.add("empowered");
-      els.combatActionBanner.textContent = attack.empowered
+      if (attack.doubleAttack) playerCard?.classList.add("soldier-double-attack");
+      if (attack.doubleAttack) els.combatActionBanner.textContent = `${attack.player.name} — DOUBLE TAP`;
+      if (!attack.doubleAttack) els.combatActionBanner.textContent = attack.empowered
         ? `${attack.player.name} — EMPOWERED ABILITY`
         : `${attack.player.name} attacks ${attack.targetLabel}`;
       combatPresentationTimer(() => {
@@ -10201,7 +10257,7 @@ function presentCombatResolution(result, options = {}) {
         playGameSfx("damage");
         updateCombatEnemyVisual(attack);
         appendCombatActionStatus(statusLog, `${attack.player.name} attacks ${attack.targetLabel} for ${attack.damage} damage${attack.defeated.length ? ` — KILLING BLOW (${attack.defeated.map((enemy) => enemy.label).join(", ")})` : ""}.`);
-        combatPresentationTimer(() => playerCard?.classList.remove("empowered"), 420, runId);
+        combatPresentationTimer(() => playerCard?.classList.remove("empowered", "soldier-double-attack"), 520, runId);
       }, 380, runId);
     }, cursor, runId);
     cursor += 1350;
@@ -11979,6 +12035,9 @@ function resolvePlayerSideAction(entry) {
       announceAbilityUse(`${actor.name} activates an item ability from the field device.`);
       publishPlayerSession({ status: "open", prompt: buildPlayerPrompt(), resetAnswers: false });
       renderStatus();
+    } else {
+      state.playerActions = state.playerActions.filter((queued) => queued.id !== entry.id);
+      publishAbilityRejection(actor, action);
     }
     return;
   }
@@ -11988,6 +12047,9 @@ function resolvePlayerSideAction(entry) {
     if (used) {
       state.playerActions = state.playerActions.filter((queued) => queued.id !== entry.id);
       publishPlayerSession({ status: "open", prompt: buildPlayerPrompt(), resetAnswers: false });
+    } else {
+      state.playerActions = state.playerActions.filter((queued) => queued.id !== entry.id);
+      publishAbilityRejection(actor, action);
     }
     return;
   }

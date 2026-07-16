@@ -9081,6 +9081,7 @@ html.app-tab-hidden .combat-stage-header {
 .combat-party-unit.healing { border-color: #8ff0a4; box-shadow: 0 0 24px rgba(110, 240, 137, 0.72), inset 0 0 20px rgba(110, 240, 137, 0.2); animation: combat-heal-pulse 0.62s ease; }
 .combat-party-unit.ability-targeted { border-color: #ffe477; box-shadow: 0 0 22px rgba(255, 210, 74, 0.68), inset 0 0 18px rgba(255, 210, 74, 0.18); }
 .combat-party-unit.empowered { z-index: 9; border-color: #ffe477; box-shadow: 0 0 22px rgba(255,210,74,0.68), inset 0 0 20px rgba(255,210,74,0.2); animation: party-attack-lunge 0.44s ease, empowered-ability-pulse 0.55s ease; }
+.combat-party-unit.soldier-double-attack { z-index: 10; border-color: #ff8c52; box-shadow: 0 0 28px rgba(255, 90, 64, 0.86), inset 0 0 22px rgba(255, 104, 46, 0.26); animation: soldier-double-tap 0.52s ease both; }
 .combat-enemy-unit.attacking { z-index: 8; animation: enemy-attack-lunge 0.68s ease; }
 .combat-enemy-unit.boss-swiping { z-index: 9; animation: none; transform: none; }
 .combat-enemy-unit.hit, .combat-party-unit.hit { animation: combat-hit-shake 0.58s ease; filter: brightness(2.2); }
@@ -9096,6 +9097,13 @@ html.app-tab-hidden .combat-stage-header {
   0%, 100% { filter: brightness(1); }
   35% { filter: brightness(1.9) saturate(1.25); box-shadow: 0 0 30px rgba(255,210,74,0.9), inset 0 0 24px rgba(255,210,74,0.35); }
   70% { filter: brightness(1.25); }
+}
+@keyframes soldier-double-tap {
+  0% { transform: translateX(0) scale(1); filter: brightness(1); }
+  22% { transform: translate(42%, -18%) scale(1.16); filter: brightness(2.05) saturate(1.4); }
+  48% { transform: translate(-10%, 2%) scale(1.02); filter: brightness(1.35); }
+  68% { transform: translate(34%, -12%) scale(1.1); filter: brightness(1.85) saturate(1.25); }
+  100% { transform: translate(0) scale(1); filter: brightness(1); }
 }
 @keyframes enemy-attack-lunge { 50% { transform: translate(-30%, 22%) scale(1.12); filter: brightness(1.8); } }
 @keyframes combat-boss-swipe-command {
@@ -9235,6 +9243,7 @@ html.app-tab-hidden .combat-stage-header {
   .combat-party-unit.ability-casting,
   .combat-party-unit.healing,
   .combat-party-unit.empowered,
+  .combat-party-unit.soldier-double-attack,
   .combat-enemy-unit.attacking,
   .combat-enemy-unit.boss-swiping,
   .combat-boss-swipe-trail,
