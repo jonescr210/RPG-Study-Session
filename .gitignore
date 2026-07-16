@@ -17,6 +17,7 @@ __pycache__/
 
 # Local manual checkpoints/backups
 checkpoints/
+backups/
 RPG Studey Session/
 RPG Study Session/
 dist/

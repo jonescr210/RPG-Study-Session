@@ -1316,6 +1316,7 @@ const server = http.createServer(async (req, res) => {
       const playerId = String(parsed.playerId || "").trim();
       const postedPlayerName = sanitizePlayerName(parsed.playerName);
       const queued = Boolean(parsed.queued);
+      const isAbilityAction = !queued && /^(?:ABILITY|CLASS):/i.test(action);
       if (!roomCode || roomCode !== playerSession.roomCode) return sendJson(res, 400, { ok: false, error: "Invalid room code" });
       if (queued) {
         if (!playerSession.allowQueuedPlayerActions) return sendJson(res, 409, { ok: false, error: "Action queue is not available yet" });
@@ -1333,10 +1334,12 @@ const server = http.createServer(async (req, res) => {
       if (isSessionPlayerIncapacitated(playerName)) return sendJson(res, 403, { ok: false, error: "Incapacitated players cannot act" });
       const now = Date.now();
       const configuredCooldownMs = Number(playerSession.actionCooldownMs);
-      const cooldownMs = Number.isFinite(configuredCooldownMs) ? Math.max(0, configuredCooldownMs) : DEFAULT_PLAYER_ACTION_COOLDOWN_MS;
+      const cooldownMs = isAbilityAction
+        ? 0
+        : Number.isFinite(configuredCooldownMs) ? Math.max(0, configuredCooldownMs) : DEFAULT_PLAYER_ACTION_COOLDOWN_MS;
       const lastActionAt = Number(participant.lastActionAt) || 0;
       const cooldownRemainingMs = Math.max(0, cooldownMs - (now - lastActionAt));
-      if (cooldownRemainingMs > 0) {
+      if (!isAbilityAction && cooldownRemainingMs > 0) {
         return sendJson(res, 429, {
           ok: false,
           error: `Action cooldown active for ${Math.ceil(cooldownRemainingMs / 1000)} more seconds`,
@@ -1345,7 +1348,7 @@ const server = http.createServer(async (req, res) => {
         });
       }
       const priorIndex = playerSession.actions.findIndex((entry) => entry.promptId === promptId && entry.playerId === playerId);
-      if (!queued && priorIndex >= 0 && !playerSession.prompt?.actionOnly) return sendJson(res, 409, { ok: false, error: "Action already submitted for this turn" });
+      if (!queued && !isAbilityAction && priorIndex >= 0 && !playerSession.prompt?.actionOnly) return sendJson(res, 409, { ok: false, error: "Action already submitted for this turn" });
       if (queued && playerSession.queuedActions.some((entry) => entry.playerId === playerId)) {
         return sendJson(res, 409, { ok: false, error: "You already have an action queued" });
       }
@@ -1361,7 +1364,7 @@ const server = http.createServer(async (req, res) => {
       };
       if (queued) playerSession.queuedActions.push(entry);
       else playerSession.actions.push(entry);
-      participant.lastActionAt = now;
+      if (!isAbilityAction) participant.lastActionAt = now;
       playerSession.updatedAt = Date.now();
       serverTrace(queued ? "action.queued" : "action.accepted", {
         roomCode,
@@ -1369,6 +1372,7 @@ const server = http.createServer(async (req, res) => {
         playerId,
         playerName,
         queued,
+        ability: isAbilityAction,
         actionCount: queued ? playerSession.queuedActions.length : playerSession.actions.filter((actionEntry) => actionEntry.promptId === entry.promptId).length,
         cooldownMs
       });

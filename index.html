@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Study Adventure Mission Console</title>
     <link rel="preload" as="image" href="assets/boss-swipe-sprite.webp?v=2" type="image/webp">
-    <link rel="stylesheet" href="styles.css?v=boss-swipe-3">
+    <link rel="stylesheet" href="styles.css?v=performance-pass-1">
   </head>
   <body>
     <div class="app-shell">
@@ -145,8 +145,16 @@
                   <input id="bossTestMode" type="checkbox">
                   <span>
                     Boss test start
-                    <small>Start one encounter before the final boss to test readiness, phase plans, and boss flow.</small>
+                    <small>Start one encounter before the selected boss so its balance can be tested in isolation.</small>
                   </span>
+                </label>
+                <label id="bossTestPhaseField" class="setup-inline-field" hidden>
+                  Boss test target
+                  <select id="bossTestPhase">
+                    <option value="mid">Mid boss — level 2/3 operators</option>
+                    <option value="final" selected>Final boss — max-level operators</option>
+                  </select>
+                  <span class="field-note">Mid assumes two prior combats; Final includes a simulated mid-boss Epic item.</span>
                 </label>
 
                 <label class="toggle-field">
@@ -723,6 +731,24 @@ Generate [NUMBER] questions.</textarea>
       </div>
     </section>
 
+    <section id="itemRewardOverlay" class="item-reward-overlay" role="dialog" aria-modal="true" aria-labelledby="itemRewardTitle" hidden>
+      <div class="item-reward-dialog">
+        <p class="eyebrow">Recovered Equipment</p>
+        <h2 id="itemRewardTitle">Choose a reward</h2>
+        <p id="itemRewardSubtitle">Select one item for each operator.</p>
+        <div id="itemRewardChoices" class="item-reward-choices"></div>
+        <button id="itemRewardContinueBtn" class="secondary" type="button" disabled>Continue</button>
+      </div>
+    </section>
+
+    <section id="itemCodexOverlay" class="item-codex-overlay" role="dialog" aria-modal="true" aria-labelledby="itemCodexTitle" hidden>
+      <div class="item-codex-dialog">
+        <div class="item-codex-heading"><div><p class="eyebrow">Equipment Archive</p><h2 id="itemCodexTitle">Item Codex</h2></div><button id="itemCodexCloseBtn" class="secondary" type="button">Close</button></div>
+        <p id="itemCodexSummary" class="muted-small"></p>
+        <div id="itemCodexList" class="item-codex-list"></div>
+      </div>
+    </section>
+
     <div class="setup-transition-blackout" id="setupTransitionBlackout" aria-hidden="true" hidden>
       <div class="setup-transition-shutter setup-transition-shutter-top"></div>
       <div class="setup-transition-shutter setup-transition-shutter-bottom"></div>
@@ -784,8 +810,8 @@ Generate [NUMBER] questions.</textarea>
   <script src="local-dm-prompts.js?v=cleanup-2"></script>
   <script src="player-session.js?v=stall-guard-1"></script>
   <script src="action-rooms.js?v=cleanup-1"></script>
-  <script src="combat-system.js?v=classes-1"></script>
+  <script src="combat-system.js?v=classes-tactician-2"></script>
   <script src="tts-manager.js?v=stall-guard-1"></script>
-  <script src="app.js?v=boss-swipe-3"></script>
+  <script src="app.js?v=performance-pass-1"></script>
 </body>
 </html>
