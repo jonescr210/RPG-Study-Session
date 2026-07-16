@@ -29,7 +29,7 @@
     },
     enforcer: {
       id: "enforcer", label: "Enforcer", gear: "Ballistic Shield", color: "#62b8ff",
-      summary: "Passive streak-based protection; fully blocks one enemy phase every 5 questions."
+      summary: "R&R reduces damage and repairs health from streaks; arm the shield to block one enemy phase every 5 questions. At level 3, RRR adds fatal redirection."
     },
     engineer: {
       id: "engineer", label: "Engineer", gear: "Arc Toolkit", color: "#66e8e1",

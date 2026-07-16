@@ -800,7 +800,7 @@ function playerClassAbilityPresentation(classId, level = 1) {
     soldier: ["Heavy Rifle", "Heavy Rifle Overdrive — Double Tap"],
     medic: ["Surgical Kit", "Surgical Kit — Medical Field"],
     scout: ["Spectrum Analyzer", "Spectrum Analyzer — Signal Burst"],
-    enforcer: ["Ballistic Shield", "Ballistic Shield — Fatal Redirect"],
+    enforcer: ["R&R — Reduce and Repair", "RRR — Reduce, Repair, and Redirect"],
     engineer: ["Arc Toolkit", "Arc Toolkit — Protection Bubble"],
     tactician: ["Command Protocol", "Command Protocol — Coordinated Strike"]
   };

@@ -7619,9 +7619,18 @@ function combatPlayerDamage(entry, question, type) {
 }
 
 function enforcerReduction(player) {
-  if (player?.classId !== "enforcer") return itemBonus(player, "damageReduction");
+  if (player?.classId !== "enforcer") return 0;
   const streak = Math.max(0, Number(player.answerStreak) || 0);
-  return (streak >= 5 ? 3 : streak >= 3 ? 2 : streak >= 1 ? 1 : 0) + itemBonus(player, "damageReduction");
+  return streak >= 5 ? 0.5 : streak >= 3 ? 0.35 : streak >= 1 ? 0.2 : 0;
+}
+
+function enforcerRepairAmount(player) {
+  if (player?.classId !== "enforcer" || player.incapacitated) return 0;
+  const streak = Math.max(0, Number(player.answerStreak) || 0);
+  const base = streak >= 5 ? 3 : streak >= 3 ? 2 : streak >= 1 ? 1 : 0;
+  if (!base) return 0;
+  if (Number(player.level) >= 3) return base === 3 ? 5 : base * 2;
+  return base;
 }
 
 function applyCombatDamage(player, amount, source, notes, facts, encounter = null, allowRedirect = true) {
@@ -7633,9 +7642,10 @@ function applyCombatDamage(player, amount, source, notes, facts, encounter = nul
     facts.push(`${player.name}'s item guard matrix reduces the incoming hit`);
     addEventNote(notes, player.name, `${player.name}'s protection module absorbs part of the attack.`);
   }
-  const passive = enforcerReduction(player);
   incoming += Math.max(0, itemRisk(player, "incomingDamage"));
-  incoming = Math.max(0, incoming - passive);
+  incoming = Math.max(0, incoming - itemBonus(player, "damageReduction"));
+  const passiveRate = enforcerReduction(player);
+  if (passiveRate) incoming = Math.max(0, Math.round(incoming * (1 - passiveRate)));
   // Preserve the reason a hit dealt no damage so the combat presentation can
   // call it out as BLOCKED instead of showing a confusing "-0" result.
   if (Number(amount) > 0 && incoming === 0) player._combatBlocked = true;
@@ -7647,20 +7657,21 @@ function applyCombatDamage(player, amount, source, notes, facts, encounter = nul
     return 0;
   }
   if (incoming > 0 && player._classShieldReady) {
-    facts.push(`${player.name}'s Ballistic Shield blocks all incoming damage this turn`);
-    addEventNote(notes, player.name, `${player.name}'s Ballistic Shield catches the attack before it lands.`);
+    const shieldName = Number(player.level) >= 3 ? "RRR" : "R&R";
+    facts.push(`${player.name}'s ${shieldName} shield blocks all incoming damage this turn`);
+    addEventNote(notes, player.name, `${player.name}'s ${shieldName} shield catches the attack before it lands.`);
     player._combatBlocked = true;
     return 0;
   }
-  if (allowRedirect && incoming > 0 && player.classId === "enforcer" && Number(player.level) >= 3 && incoming >= player.hp && combatCooldownReady(player, "fatal-redirect", 3, encounter)) {
-    const redirectTarget = activePlayers().find((candidate) => candidate !== player && !candidate.incapacitated);
-    if (redirectTarget) {
-      markCombatCooldown(player, "fatal-redirect", encounter);
+  if (allowRedirect && incoming > 0 && player.classId !== "enforcer" && incoming >= player.hp) {
+    const redirector = activePlayers().find((candidate) => candidate.classId === "enforcer" && Number(candidate.level) >= 3 && !candidate.incapacitated && combatCooldownReady(candidate, "fatal-redirect", 3, encounter));
+    if (redirector) {
+      markCombatCooldown(redirector, "fatal-redirect", encounter);
       const redirectedAmount = Math.max(1, Math.ceil(incoming / 2));
-      const redirectedDamage = applyCombatDamage(redirectTarget, redirectedAmount, source, notes, facts, encounter, false);
-      player._combatRedirect = { target: redirectTarget, damage: redirectedDamage || redirectedAmount };
-      facts.push(`${player.name}'s empowered Ballistic Shield redirects fatal damage to ${redirectTarget.name} at half strength`);
-      addEventNote(notes, player.name, `${player.name}'s empowered shield redirects the fatal blow to ${redirectTarget.name}.`);
+      const redirectedDamage = applyCombatDamage(redirector, redirectedAmount, source, notes, facts, encounter, false);
+      player._combatRedirect = { target: redirector, damage: redirectedDamage, amount: redirectedAmount };
+      facts.push(`${redirector.name}'s RRR redirects fatal damage away from ${player.name} and onto the Enforcer at half strength`);
+      addEventNote(notes, redirector.name, `${redirector.name}'s RRR intercepts the fatal blow meant for ${player.name}.`);
       return 0;
     }
   }
@@ -7734,8 +7745,9 @@ function applyPendingCombatAbilities(encounter, notes, facts, supportEvents = []
       }
     } else if (classId === "enforcer") {
       source._classShieldReady = true;
-      facts.push(`${source.name}'s Ballistic Shield is armed and will block all incoming damage this turn`);
-      supportEvents.push({ kind: "guard", source: source.name, target: source.name, amount: 0, label: "Ballistic Shield" });
+      const shieldName = Number(source.level) >= 3 ? "RRR" : "R&R";
+      facts.push(`${source.name}'s ${shieldName} shield is armed and will block all incoming damage this turn`);
+      supportEvents.push({ kind: "guard", source: source.name, target: source.name, amount: 0, label: `${shieldName} — Ballistic Shield` });
     } else if (classId === "engineer") {
       source._classDisruptionReady = true;
       disruptionCount += 1 + itemBonus(source, "disruption");
@@ -7809,7 +7821,7 @@ function applyPendingCombatAbilities(encounter, notes, facts, supportEvents = []
 
 function supportEventStatusLog(events = []) {
   return events.filter(Boolean).map((event) => {
-    if (event.kind === "heal") return `${event.source} uses ${event.label} on ${event.target} (+${event.amount} HP).`;
+    if (event.kind === "heal" || event.kind === "regen") return `${event.source}'s ${event.label} restores ${event.target} for ${event.amount} HP.`;
     if (event.kind === "hint") return `${event.source} uses ${event.label}; a clue is added to the prompt.`;
     if (event.kind === "guard") return `${event.source} arms ${event.label}; all incoming damage is blocked this turn.`;
     return `${event.source} uses ${event.label}.`;
@@ -7855,6 +7867,18 @@ function applyCombatEncounter(entries, type, operator, question) {
   clearCombatAbilityMarkers();
   encounter.tacticianGuardAmount = 0;
   let disrupted = applyPendingCombatAbilities(encounter, notes, facts, combatSupportEvents);
+  state.players.filter((player) => player.classId === "enforcer" && !player.incapacitated).forEach((enforcer) => {
+    const amount = enforcerRepairAmount(enforcer);
+    if (!amount || enforcer.hp >= enforcer.maxHp) return;
+    const before = enforcer.hp;
+    healPlayer(enforcer, amount);
+    const repaired = Math.max(0, enforcer.hp - before);
+    if (!repaired) return;
+    const repairName = Number(enforcer.level) >= 3 ? "RRR Repair" : "R&R Repair";
+    facts.push(`${enforcer.name}'s ${repairName} restores ${repaired} HP from answer streak`);
+    addEventNote(notes, enforcer.name, `${enforcer.name}'s ${repairName} restores ${repaired} HP.`);
+    combatSupportEvents.push({ kind: "regen", source: enforcer.name, target: enforcer.name, amount: repaired, hpAfter: enforcer.hp, maxHp: enforcer.maxHp, label: repairName });
+  });
   const attacks = entries.filter((entry) => entry.correct && entry.player && !entry.player.incapacitated)
     .sort((a, b) => pointTimestamp(a.submittedAt) - pointTimestamp(b.submittedAt));
   const doubleAttackers = new Set(attacks
@@ -8012,7 +8036,7 @@ function applyCombatEncounter(entries, type, operator, question) {
     : `${attackSummary}. ${hostileCountered ? "The surviving hostiles answer with a coordinated counterattack." : "The enemy counterattack is completely disrupted."}`;
   const down = state.players.filter((player) => player.incapacitated);
   const combatStatusLines = [
-    ...combatSupportEvents.map((event) => event.kind === "heal"
+    ...combatSupportEvents.map((event) => event.kind === "heal" || event.kind === "regen"
       ? `${event.source}'s ${event.label} restores ${event.target} for ${event.amount} HP.`
       : event.kind === "guard"
         ? `${event.source} arms ${event.label}; all incoming damage is blocked this turn.`
@@ -8022,7 +8046,7 @@ function applyCombatEncounter(entries, type, operator, question) {
     ...enemyActions.flatMap((action) => action.disrupted
       ? [`${action.enemy.label}'s attack is disrupted.`]
       : action.targets.map((hit) => hit.redirected
-        ? `${hit.target.name}'s empowered shield redirects the fatal strike to ${hit.redirected.target.name} at half strength.`
+        ? `${hit.target.name}'s fatal damage is redirected to ${hit.redirected.target.name} by RRR at half strength.`
         : hit.bubbleBlocked
           ? `${hit.target.name}'s Engineer bubble absorbs ${action.enemy.label}'s attack.`
           : hit.blocked
@@ -8051,7 +8075,7 @@ function applyCombatEncounter(entries, type, operator, question) {
     roundStartPlayers,
     combatPlayerResults: entries.map((entry) => ({ name: entry.player.name, correct: Boolean(entry.correct) })),
     combatSupportEvents,
-    combatAbilityEvents: facts.filter((fact) => /empowered|upgraded|bubble|command protocol|Surgical Kit|Arc Toolkit|Ballistic Shield/.test(fact)),
+    combatAbilityEvents: facts.filter((fact) => /empowered|upgraded|bubble|command protocol|Surgical Kit|Arc Toolkit|Ballistic Shield|R&R|RRR/.test(fact)),
     combatStatusLog: combatStatusLines.join("\n")
   };
 }
@@ -9492,7 +9516,7 @@ function classAbilityLabel(classId) {
     soldier: "Heavy Rifle Overdrive",
     medic: "Surgical Kit",
     scout: "Spectrum Analyzer",
-    enforcer: "Ballistic Shield",
+    enforcer: "R&R / RRR",
     engineer: "Arc Toolkit",
     tactician: "Command Protocol"
   }[String(classId || "").toLowerCase()] || "Class ability";
@@ -9627,7 +9651,10 @@ function playerItemSlotsHtml(player) {
   const manualClass = state.deviceMode === "single" && abilityWindow && ["soldier", "medic", "scout", "enforcer", "engineer", "tactician"].includes(classId);
   const targetableClass = manualClass && ["medic", "engineer"].includes(classId);
   const targetNotice = state.classAbilityTargetNotices?.[normalize(player.name)] || "";
-  const abilityLabelHtml = `<span class="player-class-icon" aria-hidden="true">${playerClassIcon(player.classId)}</span>${escapeHtml(definition?.gear || "Class ability")} <b class="player-ability-state ${abilityState.ready && !abilityTurnUsed ? "ready" : "recharging"}">${escapeHtml(abilityLabel)}</b>${targetNotice ? `<b class="player-ability-targeted">${escapeHtml(targetNotice)}</b>` : ""}`;
+  const displayedClassAbility = classId === "enforcer"
+    ? `${Number(player.level) >= 3 ? "RRR" : "R&R"} — Ballistic Shield`
+    : (definition?.gear || "Class ability");
+  const abilityLabelHtml = `<span class="player-class-icon" aria-hidden="true">${playerClassIcon(player.classId)}</span>${escapeHtml(displayedClassAbility)} <b class="player-ability-state ${abilityState.ready && !abilityTurnUsed ? "ready" : "recharging"}">${escapeHtml(abilityLabel)}</b>${targetNotice ? `<b class="player-ability-targeted">${escapeHtml(targetNotice)}</b>` : ""}`;
   const itemText = [0, 1].map((slot) => {
     const item = items[slot];
     if (!item) return `<span class="player-item-dot empty" aria-label="Empty item slot"></span>`;
@@ -10202,6 +10229,23 @@ function showBossClawImpact(card, blocked = false) {
   window.setTimeout(() => claw.remove(), 1050);
 }
 
+function showFatalRedirectEffect(sourceCard, targetCard) {
+  if (!els.combatStage) return;
+  els.combatStage.querySelector(".combat-fatal-redirect")?.remove();
+  sourceCard?.classList.add("redirect-source");
+  targetCard?.classList.add("redirect-target");
+  const effect = document.createElement("span");
+  effect.className = "combat-fatal-redirect";
+  effect.textContent = "RRR // INTERCEPT";
+  effect.setAttribute("aria-hidden", "true");
+  els.combatStage.appendChild(effect);
+  window.setTimeout(() => {
+    effect.remove();
+    sourceCard?.classList.remove("redirect-source");
+    targetCard?.classList.remove("redirect-target");
+  }, 980);
+}
+
 function showBossSwipeAttack() {
   if (!els.combatStage) return;
   els.combatStage.querySelector(".combat-boss-swipe-trail")?.remove();
@@ -10276,9 +10320,9 @@ function presentCombatResolution(result, options = {}) {
       const sourceCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(ability.source))}"]`);
       const targetCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(ability.target || ability.source))}"]`);
       sourceCard?.classList.add("ability-casting");
-      targetCard?.classList.add(ability.kind === "heal" ? "healing" : "ability-targeted");
+      targetCard?.classList.add(ability.kind === "heal" || ability.kind === "regen" ? "healing" : "ability-targeted");
       if (ability.kind === "bubble") showCombatBubble(targetCard);
-      if (ability.kind === "heal" && ability.target) {
+      if ((ability.kind === "heal" || ability.kind === "regen") && ability.target) {
         const targetPlayer = state.players.find((player) => sameName(player.name, ability.target));
         if (targetPlayer) {
           const key = normalize(targetPlayer.name);
@@ -10292,9 +10336,11 @@ function presentCombatResolution(result, options = {}) {
         }
       }
       els.combatActionBanner.textContent = `${ability.source} — ${String(ability.label || "ABILITY").toUpperCase()}`;
-      showCombatFloat(targetCard, ability.kind === "heal" ? `+${ability.amount}` : ability.kind === "protocol" ? String(ability.label || "PROTOCOL").toUpperCase() : String(ability.kind || "ABILITY").toUpperCase(), ability.kind === "heal" ? "heal" : "block");
+      showCombatFloat(targetCard, ability.kind === "heal" || ability.kind === "regen" ? `+${ability.amount}` : ability.kind === "protocol" ? String(ability.label || "PROTOCOL").toUpperCase() : String(ability.kind || "ABILITY").toUpperCase(), ability.kind === "heal" || ability.kind === "regen" ? "heal" : "block");
       appendCombatActionStatus(statusLog, ability.kind === "heal"
         ? `${ability.source}'s ${ability.label} restores ${ability.target} for ${ability.amount} HP.`
+        : ability.kind === "regen"
+          ? `${ability.source}'s ${ability.label} restores ${ability.target} for ${ability.amount} HP.`
         : `${ability.source} uses ${ability.label}${ability.target && ability.target !== ability.source ? ` on ${ability.target}` : ""}.`);
       combatPresentationTimer(() => {
         sourceCard?.classList.remove("ability-casting");
@@ -10373,12 +10419,20 @@ function presentCombatResolution(result, options = {}) {
           if (bossSwipe) showBossClawImpact(playerCard, fullyProtected);
           if (hit.bubbleBlocked) clearCombatBubble(playerCard);
           const protectionLabel = hit.redirected ? "REDIRECT" : hit.bubbleBlocked ? "BUBBLE" : fullyProtected ? "BLOCKED" : "BRACED";
-          const floatText = fullyProtected
+          const floatText = hit.redirected
+            ? "REDIRECTED"
+            : fullyProtected
             ? protectionLabel
             : hit.braced
               ? `BRACED\n-${hit.damage}`
               : `-${hit.damage}`;
-          showCombatFloat(playerCard, floatText, fullyProtected ? "block" : "damage");
+          showCombatFloat(playerCard, floatText, hit.redirected ? "redirect" : fullyProtected ? "block" : "damage");
+          if (hit.redirected?.target) {
+            const redirectedTarget = hit.redirected.target;
+            const redirectedCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(redirectedTarget.name))}"]`);
+            showFatalRedirectEffect(playerCard, redirectedCard);
+            showCombatFloat(redirectedCard, "RRR INTERCEPT", "redirect");
+          }
           if (!fullyProtected && hit.damage > 0) playGameSfx("damage");
           updateCombatPlayerVisual(hit, playerCard);
           if (hit.redirected?.target) {
@@ -10387,7 +10441,7 @@ function presentCombatResolution(result, options = {}) {
             updateCombatPlayerVisual({ target: redirectedTarget, hpAfter: redirectedTarget.hp }, redirectedCard);
           }
           appendCombatActionStatus(statusLog, hit.redirected
-            ? `${hit.target.name}'s empowered shield redirects the fatal strike to ${hit.redirected.target.name} at half strength.`
+            ? `${hit.target.name}'s fatal damage is redirected to ${hit.redirected.target.name} by RRR at half strength.`
             : hit.bubbleBlocked
               ? `${hit.target.name}'s Engineer bubble absorbs ${action.enemy.label}'s attack.`
               : hit.blocked

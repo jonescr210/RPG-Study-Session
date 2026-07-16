@@ -9080,6 +9080,8 @@ html.app-tab-hidden .combat-stage-header {
 .combat-party-unit.ability-casting { z-index: 9; border-color: #bfefff; box-shadow: 0 0 22px rgba(106, 231, 255, 0.72), inset 0 0 20px rgba(106, 231, 255, 0.18); animation: combat-ability-cast 0.62s ease; }
 .combat-party-unit.healing { border-color: #8ff0a4; box-shadow: 0 0 24px rgba(110, 240, 137, 0.72), inset 0 0 20px rgba(110, 240, 137, 0.2); animation: combat-heal-pulse 0.62s ease; }
 .combat-party-unit.ability-targeted { border-color: #ffe477; box-shadow: 0 0 22px rgba(255, 210, 74, 0.68), inset 0 0 18px rgba(255, 210, 74, 0.18); }
+.combat-party-unit.redirect-source { border-color: #ff7474; box-shadow: 0 0 28px rgba(255, 62, 54, 0.78), inset 0 0 20px rgba(255, 62, 54, 0.22); animation: redirect-source-pull 0.82s ease both; }
+.combat-party-unit.redirect-target { border-color: #73eaff; box-shadow: 0 0 34px rgba(74, 215, 255, 0.95), inset 0 0 24px rgba(74, 215, 255, 0.3); animation: redirect-target-intercept 0.9s ease both; }
 .combat-bubble {
   position: absolute;
   z-index: 11;
@@ -9133,6 +9135,8 @@ html.app-tab-hidden .combat-stage-header {
 }
 @keyframes combat-hit-shake { 20%, 70% { transform: translateX(-7px); } 45%, 90% { transform: translateX(7px); } }
 @keyframes combat-block-flash { 0%, 100% { filter: brightness(1); } 35%, 70% { box-shadow: 0 0 20px rgba(115,232,255,0.8); filter: brightness(1.75); } }
+@keyframes redirect-source-pull { 0%, 100% { transform: translateX(0); filter: brightness(1); } 35% { transform: translateX(-8px) scale(0.96); filter: brightness(1.8) saturate(1.45); } 70% { transform: translateX(5px) scale(1.02); } }
+@keyframes redirect-target-intercept { 0%, 100% { transform: translateX(0) scale(1); filter: brightness(1); } 28% { transform: translateX(-10px) scale(1.04); filter: brightness(2.1) saturate(1.5); } 55% { transform: translateX(12px) scale(1.1); filter: brightness(2.35) saturate(1.55); } 78% { transform: translateX(-4px) scale(1.02); } }
 @keyframes combat-stunned-shake { 15%, 45%, 75% { transform: translateX(-9px) rotate(-2deg); } 30%, 60%, 90% { transform: translateX(9px) rotate(2deg); } }
 @keyframes combat-enemy-idle { 0%, 100% { transform: translate(0, 0) rotate(-1deg); } 45% { transform: translate(6px, -5px) rotate(1deg); } 72% { transform: translate(-4px, 2px) rotate(0); } }
 @keyframes combat-warning-light { 0%, 100% { box-shadow: inset 0 0 8px rgba(255,48,32,0.14); } 50% { box-shadow: inset 0 0 28px rgba(255,48,32,0.48), 0 0 14px rgba(255,48,32,0.22); } }
@@ -9173,6 +9177,37 @@ html.app-tab-hidden .combat-stage-header {
 
 .combat-claw-impact.blocked {
   --swipe-overlay-tone: hue-rotate(148deg) saturate(0.72) brightness(1.35) drop-shadow(0 0 0.55rem rgba(59, 220, 255, 0.95));
+}
+
+.combat-fatal-redirect {
+  position: absolute;
+  z-index: 19;
+  left: 50%;
+  top: 48%;
+  width: min(76%, 42rem);
+  min-height: 3.2rem;
+  display: grid;
+  place-items: center;
+  padding: 0.5rem 1rem;
+  pointer-events: none;
+  border: 2px solid rgba(119, 233, 255, 0.92);
+  border-left-color: rgba(255, 84, 84, 0.95);
+  border-right-color: rgba(255, 84, 84, 0.95);
+  background: linear-gradient(90deg, rgba(255, 39, 39, 0.1), rgba(41, 194, 255, 0.26), rgba(255, 39, 39, 0.1));
+  color: #efffff;
+  font-size: clamp(0.75rem, 1.8vw, 1.1rem);
+  font-weight: 1000;
+  letter-spacing: 0.2em;
+  text-shadow: 0 0 8px #45ddff, 0 0 12px #ff4545;
+  transform: translate(-50%, -50%) scaleX(0.18);
+  animation: fatal-redirect-banner 0.98s ease-out both;
+}
+
+@keyframes fatal-redirect-banner {
+  0% { opacity: 0; transform: translate(-50%, -50%) scaleX(0.18); filter: blur(7px); }
+  18% { opacity: 1; transform: translate(-50%, -50%) scaleX(1.08); filter: blur(0); }
+  42% { transform: translate(-50%, -50%) scaleX(0.98); box-shadow: 0 0 34px rgba(66, 221, 255, 0.65), inset 0 0 22px rgba(255, 63, 63, 0.25); }
+  100% { opacity: 0; transform: translate(-50%, -50%) scaleX(1.02); filter: blur(2px); }
 }
 
 @keyframes combat-boss-swipe-travel {
@@ -9226,6 +9261,7 @@ html.app-tab-hidden .combat-stage-header {
 }
 
 .combat-damage-float.block { color: #85edff; text-shadow: 0 2px 0 #000, 0 0 8px #43d8ff; }
+.combat-damage-float.redirect { color: #fff0a1; text-shadow: 0 2px 0 #000, 0 0 10px #ff4e4e, 0 0 20px #49dfff; font-size: clamp(0.82rem, 2.4vw, 1.5rem); }
 .combat-damage-float.damage { white-space: pre-line; line-height: 1.05; }
 .combat-damage-float.xp {
   top: 48%;
