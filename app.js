@@ -3338,6 +3338,18 @@ function activateScoutHintForPrompt(info, scout = null) {
   markCombatCooldown(scout, "spectrum-analyzer");
 }
 
+function activateCurrentQuestionHint(source, label = "Hint") {
+  const info = currentQuestionInfo();
+  if (!info?.question || !source || state.classHints[state.currentQuestion]) return false;
+  const answer = String(info.question.answerText || "").trim();
+  state.classHints[state.currentQuestion] = answer
+    ? `${source.name}'s ${label} reveals a clue beginning with “${answer.slice(0, 1).toUpperCase()}”.`
+    : `${source.name}'s ${label} highlights the active prompt.`;
+  renderChatControls();
+  renderMapQuestionOverlay();
+  return true;
+}
+
 function buildPlayerPrompt() {
   const node = state.nodes[state.currentNode];
   if (node?.type === "recovery") {
@@ -7516,13 +7528,15 @@ function preserveUnusedCombatQuestions(node, encounter) {
   });
 }
 
-function combatCooldownReady(player, ability, turns) {
+function combatCooldownReady(player, ability, turns, encounter = null) {
   const last = Number(player?.classCooldowns?.[ability]);
-  return !Number.isFinite(last) || state.currentQuestion - last >= turns;
+  const current = encounter ? Number(encounter.round) || 0 : Number(state.currentQuestion) || 0;
+  return !Number.isFinite(last) || current - last >= turns;
 }
 
-function markCombatCooldown(player, ability) {
-  player.classCooldowns = { ...(player.classCooldowns || {}), [ability]: state.currentQuestion };
+function markCombatCooldown(player, ability, encounter = null) {
+  const marker = encounter ? Number(encounter.round) || 0 : Number(state.currentQuestion) || 0;
+  player.classCooldowns = { ...(player.classCooldowns || {}), [ability]: marker };
 }
 
 function combatAnswerElapsedMs(submittedAt) {
@@ -7631,17 +7645,17 @@ function applyCombatDamage(player, amount, source, notes, facts, encounter = nul
     addEventNote(notes, player.name, `${player.name}'s protection bubble catches the attack.`);
     return 0;
   }
-  if (incoming > 0 && player.classId === "enforcer" && combatCooldownReady(player, "shield", 5) && incoming >= player.hp) {
-    markCombatCooldown(player, "shield");
+  if (incoming > 0 && player.classId === "enforcer" && combatCooldownReady(player, "shield", 5, encounter) && incoming >= player.hp) {
+    markCombatCooldown(player, "shield", encounter);
     facts.push(`${player.name}'s Ballistic Shield blocks all incoming damage`);
     addEventNote(notes, player.name, `${player.name}'s Ballistic Shield catches the attack before it lands.`);
     player._combatBlocked = true;
     return 0;
   }
-  if (allowRedirect && incoming > 0 && player.classId === "enforcer" && Number(player.level) >= 3 && incoming >= player.hp && combatCooldownReady(player, "fatal-redirect", 3)) {
+  if (allowRedirect && incoming > 0 && player.classId === "enforcer" && Number(player.level) >= 3 && incoming >= player.hp && combatCooldownReady(player, "fatal-redirect", 3, encounter)) {
     const redirectTarget = activePlayers().find((candidate) => candidate !== player && !candidate.incapacitated);
     if (redirectTarget) {
-      markCombatCooldown(player, "fatal-redirect");
+      markCombatCooldown(player, "fatal-redirect", encounter);
       const redirectedAmount = Math.max(1, Math.ceil(incoming / 2));
       const redirectedDamage = applyCombatDamage(redirectTarget, redirectedAmount, source, notes, facts, encounter, false);
       player._combatRedirect = { target: redirectTarget, damage: redirectedDamage || redirectedAmount };
@@ -9108,7 +9122,14 @@ function renderStatus() {
   `;
   els.statusGrid.querySelectorAll("[data-item-ability]").forEach((button) => {
     if (!button.dataset.itemAbility) return;
-    button.addEventListener("click", () => useTeacherItemAbility(button.closest(".status-card")?.dataset.playerName || "", button.dataset.itemAbility));
+    button.addEventListener("click", () => {
+      const sourceName = button.closest(".status-card")?.dataset.playerName || "";
+      const used = useTeacherItemAbility(sourceName, button.dataset.itemAbility);
+      if (!used) {
+        const source = state.players.find((player) => sameName(player.name, sourceName));
+        publishAbilityRejection(source, `ABILITY:${button.dataset.itemAbility}`, false);
+      }
+    });
   });
   els.statusGrid.querySelectorAll("[data-class-ability-target]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -9121,7 +9142,12 @@ function renderStatus() {
     button.addEventListener("click", () => {
       const card = button.closest("[data-player-name]");
       const protocol = card?.querySelector("[data-tactician-protocol-for]")?.value || "";
-      queueClassAbilityUse(button.dataset.classAbilityUse || "", protocol, "teacher");
+      const sourceName = button.dataset.classAbilityUse || "";
+      const used = queueClassAbilityUse(sourceName, protocol, "teacher");
+      if (!used) {
+        const source = state.players.find((player) => sameName(player.name, sourceName));
+        publishAbilityRejection(source, `CLASS:${source?.classId || ""}`, false);
+      }
     });
   });
   els.statusGrid.querySelectorAll("[data-ability-target]").forEach((button) => {
@@ -9402,7 +9428,9 @@ function classAbilityCooldownState(player) {
   const level = Math.max(1, Number(player?.level) || 1);
   if (classId === "enforcer") {
     const last = Number(player?.classCooldowns?.[key]);
-    const current = Number(state.currentQuestion || 0);
+    const current = isCombatNode(state.nodes[state.currentNode])
+      ? Number(currentCombatEncounter()?.round || 0)
+      : Number(state.currentQuestion || 0);
     const remaining = Number.isFinite(last) ? Math.max(0, cadence - (current - last)) : 0;
     return { label: remaining ? `AUTO ${remaining}` : "AUTO READY", ready: !remaining, key, cadence, automatic: true };
   }
@@ -9494,13 +9522,13 @@ function abilityRejectionText(source, action = "") {
   return "the ability request was not recognized";
 }
 
-function publishAbilityRejection(source, action) {
+function publishAbilityRejection(source, action, syncPlayer = true) {
   if (!source) return;
   const reason = abilityRejectionText(source, action);
   source.abilityNotice = `Not armed: ${reason}.`;
   state.classAbilityTargetNotices[normalize(source.name)] = source.abilityNotice;
   announceAbilityUse(`${source.name}: ${source.abilityNotice}`, "prompt");
-  publishPlayerSession({ status: "open", prompt: buildPlayerPrompt(), resetAnswers: false });
+  if (syncPlayer) publishPlayerSession({ status: "open", prompt: buildPlayerPrompt(), resetAnswers: false });
   renderStatus();
 }
 
@@ -9532,6 +9560,7 @@ function queueClassAbilityUse(sourceName, targetName = "", sourceMode = "teacher
     ? Number(encounter?.round || 0)
     : state.currentQuestion;
   source.classCooldowns = { ...(source.classCooldowns || {}), [abilityState.key]: marker };
+  if (classId === "scout") activateScoutHintForPrompt(currentQuestionInfo(), source);
   source._abilityTurnKey = currentAbilityTurnKey();
   state.pendingClassAbilityUses.push({ sourceName: source.name, classId, targetName: target?.name || "", protocol });
   state.classAbilityTargets[normalize(source.name)] = target?.name || source.name;
@@ -9569,6 +9598,7 @@ function useTeacherItemAbility(sourceName, itemId, targetName = "", sourceMode =
   if (ability.effect === "heal" && !target) return false;
   source.classCooldowns = { ...(source.classCooldowns || {}), [cooldown.key]: state.currentQuestion };
   source._abilityTurnKey = currentAbilityTurnKey();
+  if (ability.effect === "hint") activateCurrentQuestionHint(source, ability.label);
   state.pendingAbilityTarget = null;
   state.pendingAbilityUses.push({ sourceName: source.name, itemId: item.id, abilityId: ability.id, targetName: target?.name || "" });
   source.abilityNotice = `Queued: ${ability.label}${target && target !== source ? ` → ${target.name}` : ""}`;
@@ -10131,7 +10161,7 @@ function updateCombatPlayerVisual(hit, card) {
     return;
   }
   const fill = card.querySelector(".combat-unit-hp i");
-  const label = card.querySelector("em");
+  const label = card.querySelector(".combat-unit-hp.party + em") || [...card.querySelectorAll("em")].pop();
   if (fill) fill.style.width = `${Math.max(0, Math.min(100, hpAfter / maxHp * 100))}%`;
   if (label) label.textContent = `${hpAfter} / ${maxHp} HP`;
   card.classList.toggle("down", hpAfter <= 0);
@@ -10139,6 +10169,22 @@ function updateCombatPlayerVisual(hit, card) {
   // waiting for the full round to finish. The payload uses combatDisplayedHp,
   // so each hit publishes the same intermediate value shown on the battle card.
   publishPlayerVitals();
+}
+
+function showCombatBubble(card) {
+  if (!card) return;
+  card.querySelector(".combat-bubble")?.remove();
+  const bubble = document.createElement("span");
+  bubble.className = "combat-bubble";
+  bubble.setAttribute("aria-label", "Protection bubble active");
+  card.appendChild(bubble);
+}
+
+function clearCombatBubble(card) {
+  const bubble = card?.querySelector(".combat-bubble");
+  if (!bubble) return;
+  bubble.classList.add("spent");
+  window.setTimeout(() => bubble.remove(), 320);
 }
 
 function showBossClawImpact(card, blocked = false) {
@@ -10226,6 +10272,7 @@ function presentCombatResolution(result, options = {}) {
       const targetCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(ability.target || ability.source))}"]`);
       sourceCard?.classList.add("ability-casting");
       targetCard?.classList.add(ability.kind === "heal" ? "healing" : "ability-targeted");
+      if (ability.kind === "bubble") showCombatBubble(targetCard);
       if (ability.kind === "heal" && ability.target) {
         const targetPlayer = state.players.find((player) => sameName(player.name, ability.target));
         if (targetPlayer) {
@@ -10319,6 +10366,7 @@ function presentCombatResolution(result, options = {}) {
           const protectedHit = fullyProtected || Boolean(hit.braced);
           playerCard?.classList.add(protectedHit ? "blocking" : "hit");
           if (bossSwipe) showBossClawImpact(playerCard, fullyProtected);
+          if (hit.bubbleBlocked) clearCombatBubble(playerCard);
           const protectionLabel = hit.redirected ? "REDIRECT" : hit.bubbleBlocked ? "BUBBLE" : fullyProtected ? "BLOCKED" : "BRACED";
           const floatText = fullyProtected
             ? protectionLabel

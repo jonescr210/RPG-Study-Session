@@ -9080,6 +9080,18 @@ html.app-tab-hidden .combat-stage-header {
 .combat-party-unit.ability-casting { z-index: 9; border-color: #bfefff; box-shadow: 0 0 22px rgba(106, 231, 255, 0.72), inset 0 0 20px rgba(106, 231, 255, 0.18); animation: combat-ability-cast 0.62s ease; }
 .combat-party-unit.healing { border-color: #8ff0a4; box-shadow: 0 0 24px rgba(110, 240, 137, 0.72), inset 0 0 20px rgba(110, 240, 137, 0.2); animation: combat-heal-pulse 0.62s ease; }
 .combat-party-unit.ability-targeted { border-color: #ffe477; box-shadow: 0 0 22px rgba(255, 210, 74, 0.68), inset 0 0 18px rgba(255, 210, 74, 0.18); }
+.combat-bubble {
+  position: absolute;
+  z-index: 11;
+  inset: -18%;
+  pointer-events: none;
+  border: 2px solid rgba(131, 226, 255, 0.92);
+  border-radius: 50%;
+  background: radial-gradient(circle at 32% 24%, rgba(218, 250, 255, 0.28), transparent 28%, rgba(75, 175, 255, 0.08) 72%, transparent 74%);
+  box-shadow: 0 0 16px rgba(93, 210, 255, 0.82), inset 0 0 14px rgba(120, 226, 255, 0.34);
+  animation: combat-bubble-pulse 1.25s ease-in-out infinite;
+}
+.combat-bubble.spent { animation: combat-bubble-pop 0.32s ease-out both; }
 .combat-party-unit.empowered { z-index: 9; border-color: #ffe477; box-shadow: 0 0 22px rgba(255,210,74,0.68), inset 0 0 20px rgba(255,210,74,0.2); animation: party-attack-lunge 0.44s ease, empowered-ability-pulse 0.55s ease; }
 .combat-party-unit.soldier-double-attack { z-index: 10; border-color: #ff8c52; box-shadow: 0 0 28px rgba(255, 90, 64, 0.86), inset 0 0 22px rgba(255, 104, 46, 0.26); animation: soldier-double-tap 0.52s ease both; }
 .combat-enemy-unit.attacking { z-index: 8; animation: enemy-attack-lunge 0.68s ease; }
@@ -9104,6 +9116,13 @@ html.app-tab-hidden .combat-stage-header {
   48% { transform: translate(-10%, 2%) scale(1.02); filter: brightness(1.35); }
   68% { transform: translate(34%, -12%) scale(1.1); filter: brightness(1.85) saturate(1.25); }
   100% { transform: translate(0) scale(1); filter: brightness(1); }
+}
+@keyframes combat-bubble-pulse {
+  0%, 100% { transform: scale(0.96); opacity: 0.72; }
+  50% { transform: scale(1.04); opacity: 1; }
+}
+@keyframes combat-bubble-pop {
+  to { transform: scale(1.22); opacity: 0; filter: brightness(2); }
 }
 @keyframes enemy-attack-lunge { 50% { transform: translate(-30%, 22%) scale(1.12); filter: brightness(1.8); } }
 @keyframes combat-boss-swipe-command {
@@ -9244,6 +9263,7 @@ html.app-tab-hidden .combat-stage-header {
   .combat-party-unit.healing,
   .combat-party-unit.empowered,
   .combat-party-unit.soldier-double-attack,
+  .combat-bubble,
   .combat-enemy-unit.attacking,
   .combat-enemy-unit.boss-swiping,
   .combat-boss-swipe-trail,

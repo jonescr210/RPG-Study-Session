@@ -931,7 +931,7 @@ function renderVitals(session) {
     const classLast = classCooldownInfo ? Number(cooldowns[classCooldownInfo[0]]) : NaN;
     // The host stores class cooldown markers against the completed combat
     // round, while the published prompt displays the upcoming round.
-    const classCurrent = ["soldier", "tactician"].includes(classId)
+    const classCurrent = ["soldier", "tactician", "enforcer"].includes(classId)
       ? Math.max(0, Number(session.prompt?.combat?.round || 1) - 1)
       : Number(session.prompt?.questionIndex || 0);
     const classRemaining = Number.isFinite(classLast) ? Math.max(0, classCooldownInfo[1] - (classCurrent - classLast)) : 0;
