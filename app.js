@@ -7846,6 +7846,15 @@ function applyCombatEncounter(entries, type, operator, question) {
     if (player) markEmpoweredUse(player, "soldier-double", encounter);
   });
   if (doubleAttackers.size) facts.push(`${[...doubleAttackers].join(", ")} trigger an empowered second attack`);
+  state.players
+    .filter((player) => player._classDoubleAttackReady && player.classId === "soldier")
+    .filter((player) => !doubleAttackers.has(normalize(player.name)))
+    .forEach((player) => {
+      const response = entries.find((entry) => entry.player && sameName(entry.player.name, player.name));
+      const reason = response?.correct ? "the required answer streak was not maintained" : "the answer was incorrect";
+      player.abilityNotice = `Heavy Rifle Overdrive spent: ${reason}; cooldown active.`;
+      facts.push(`${player.name}'s Heavy Rifle Overdrive is spent because ${reason}; no attack is released`);
+    });
   const tactician = attacks.find((entry) => entry.player._classCommandReady && entry.player.classId === "tactician");
   const tacticianProtocol = String(tactician?.player?._classCommandProtocol || "assault").toLowerCase();
   const tacticianCommand = tactician && attacks.length >= 2 && tacticianProtocol === "assault";
@@ -9398,6 +9407,7 @@ function classAbilityCooldownState(player) {
     return { label: remaining ? `AUTO ${remaining}` : "AUTO READY", ready: !remaining, key, cadence, automatic: true };
   }
   if (level < 3 && classId === "soldier") return { label: "LV 3", ready: false, key, cadence };
+  if (classId === "soldier" && Math.max(0, Number(player?.answerStreak) || 0) < 3) return { label: "STREAK 3", ready: false, key, cadence };
   if (!key) return { label: "READY", ready: true, key, cadence };
   const last = Number(player?.classCooldowns?.[key]);
   const current = ["soldier", "tactician"].includes(classId)
@@ -9508,6 +9518,7 @@ function queueClassAbilityUse(sourceName, targetName = "", sourceMode = "teacher
   if (!abilityState.key || !abilityState.ready) return false;
   if (abilityUsedThisTurn(source)) return false;
   if (classId === "soldier" && Number(source.level) < 3) return false;
+  if (classId === "soldier" && Number(source.answerStreak) < 3) return false;
   const targetable = ["medic", "engineer"].includes(classId);
   const protocol = classId === "tactician"
     ? (["assault", "guard", "support"].includes(String(targetName || "").toLowerCase()) ? String(targetName).toLowerCase() : "assault")
