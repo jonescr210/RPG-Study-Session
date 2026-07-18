@@ -1,0 +1,1924 @@
+/* Live mission-console skin.
+   This file intentionally leaves preflight and player.html untouched. Existing
+   IDs and render functions remain the source of truth for all mission state. */
+
+body.mission-active {
+  --console-bg: #02070b;
+  --console-panel: #050d12;
+  --console-panel-raised: #08141a;
+  --console-line: #17313d;
+  --console-line-bright: #285366;
+  --console-cyan: #50d1ed;
+  --console-gold: #e2b85f;
+  --console-red: #ff4a45;
+  --console-green: #4ed58c;
+  overflow: hidden;
+  background:
+    linear-gradient(rgba(35, 76, 91, .05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(35, 76, 91, .045) 1px, transparent 1px),
+    radial-gradient(circle at 52% 35%, #071a23 0, #030b10 43%, #010407 100%);
+  background-size: 34px 34px, 34px 34px, auto;
+}
+
+body.mission-active::after {
+  display: none;
+}
+
+body.mission-active .app-shell {
+  width: 100vw;
+  height: 100vh;
+  min-height: 0;
+  padding: 7px 10px;
+}
+
+body.mission-active .topbar {
+  flex: 0 0 54px;
+  min-height: 54px;
+  padding: 0 8px 7px;
+  border: 0;
+  background: transparent;
+}
+
+body.mission-active .topbar h1 {
+  margin: 1px 0 0;
+  color: #f1f5f6;
+  font-size: clamp(1rem, 1.3vw, 1.35rem);
+}
+
+body.mission-active .topbar .eyebrow {
+  margin: 0;
+  font-size: .56rem;
+}
+
+body.mission-active .topbar-actions button {
+  min-height: 31px;
+  border-color: var(--console-line-bright);
+  background: rgba(3, 10, 14, .9);
+}
+
+body.mission-active .topbar-actions .danger {
+  color: var(--console-red);
+  border-color: rgba(255, 74, 69, .65);
+}
+
+@media (min-width: 1180px) {
+  body.mission-active .layout {
+    display: block;
+    flex: 1 1 auto;
+    width: 100%;
+    min-height: 0;
+    height: auto;
+    padding: 0;
+    overflow: hidden;
+  }
+
+  body.mission-active .setup-panel { display: none !important; }
+  body.mission-active .map-panel.live-console-dashboard {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(244px, 18fr) minmax(620px, 58fr) minmax(312px, 24fr);
+    grid-template-rows: 46px minmax(310px, 1fr) 68px 34px 92px 32px 32px;
+    gap: 7px 9px;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    max-height: none;
+    padding: 0;
+    overflow: hidden;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  body.mission-active .map-main,
+  body.mission-active .map-sidebar,
+  body.mission-active .play-panel { display: contents; }
+
+  body.mission-active .map-main > .panel-header { grid-column: 2; grid-row: 1; }
+  body.mission-active .map-main > .map-wrap { grid-column: 2; grid-row: 2; }
+  body.mission-active .map-main > .initiative-timeline { grid-column: 2; grid-row: 3; }
+  body.mission-active .map-main > .legend { grid-column: 2; grid-row: 4; }
+  body.mission-active .map-main > .map-control-dock,
+  body.mission-active .play-panel > .play-control-dock { grid-column: 2; grid-row: 5; }
+  body.mission-active .map-main > .route-telemetry { grid-column: 2; grid-row: 6; }
+  body.mission-active .map-main > .map-emergency-timer { grid-column: 2; grid-row: 7; }
+
+  body.mission-active .map-sidebar > .mission-progress { grid-column: 1; grid-row: 1; }
+  body.mission-active .map-sidebar > .status-grid { grid-column: 1; grid-row: 2 / span 2; }
+  body.mission-active .map-sidebar > .inventory-actions { grid-column: 1; grid-row: 4 / span 2; }
+  body.mission-active .map-sidebar > .player-session-panel { grid-column: 1; grid-row: 6 / span 2; }
+
+  body.mission-active .play-panel > .mission-log-heading { grid-column: 3; grid-row: 1; }
+  body.mission-active .play-panel > .encounter { grid-column: 3; grid-row: 2; }
+  body.mission-active .play-panel > .status-update-panel { grid-column: 3; grid-row: 3 / span 2; }
+  body.mission-active .play-panel > .mission-utility-shell { grid-column: 3; grid-row: 5 / span 3; }
+  body.mission-active .play-panel > .briefing { display: none; }
+}
+
+body.mission-active .map-main > .panel-header,
+body.mission-active .mission-progress,
+body.mission-active .mission-log-heading,
+body.mission-active .map-wrap,
+body.mission-active .initiative-timeline,
+body.mission-active .legend,
+body.mission-active .map-control-dock,
+body.mission-active .play-control-dock,
+body.mission-active .route-telemetry,
+body.mission-active .map-emergency-timer,
+body.mission-active .status-card,
+body.mission-active .inventory-actions,
+body.mission-active .player-session-panel,
+body.mission-active .encounter,
+body.mission-active .status-update-panel,
+body.mission-active .mission-utility-shell {
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--console-line);
+  border-radius: 4px;
+  background:
+    linear-gradient(135deg, rgba(32, 103, 120, .055), transparent 38%),
+    rgba(3, 10, 14, .96);
+  box-shadow: inset 0 1px rgba(120, 208, 226, .035), 0 8px 24px rgba(0, 0, 0, .22);
+}
+
+body.mission-active .map-main > .panel-header {
+  display: grid;
+  grid-template-columns: minmax(150px, .55fr) minmax(330px, 1.45fr);
+  align-items: center;
+  padding: 4px 10px;
+  border-top-color: rgba(80, 209, 237, .7);
+}
+
+body.mission-active .map-main > .panel-header h2 {
+  overflow: hidden;
+  margin: 0;
+  font-size: .86rem;
+  letter-spacing: .08em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+body.mission-active .map-header-status {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 68px;
+  min-width: 0;
+  gap: 8px;
+}
+
+body.mission-active .map-last-answer {
+  display: grid;
+  grid-template-columns: .75fr 1.25fr;
+  align-items: center;
+  min-height: 34px;
+  padding: 3px 8px;
+  border-color: rgba(80, 209, 237, .14);
+  background: rgba(0, 0, 0, .28);
+}
+
+body.mission-active .last-answer-heading,
+body.mission-active .last-answer-grid { min-width: 0; }
+body.mission-active .last-answer-heading span,
+body.mission-active .last-answer-grid span { font-size: .48rem; }
+body.mission-active .last-answer-heading strong,
+body.mission-active .last-answer-grid strong { overflow: hidden; font-size: .58rem; text-overflow: ellipsis; white-space: nowrap; }
+
+body.mission-active .progress-pill {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  min-height: 34px;
+  padding: 0 7px;
+  color: var(--console-gold);
+  border: 1px solid rgba(226, 184, 95, .24);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, .28);
+  font-family: Consolas, monospace;
+  font-size: .72rem;
+}
+
+body.mission-active .mission-progress,
+body.mission-active .mission-log-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  color: var(--console-cyan);
+  font-family: Consolas, monospace;
+  font-size: .62rem;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+body.mission-active .mission-progress {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 35px;
+  grid-template-rows: 16px minmax(0, 1fr);
+  align-content: center;
+  gap: 3px 0;
+  padding-right: 7px;
+}
+
+body.mission-active .mission-progress::after {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  justify-self: end;
+  width: 27px;
+  height: 27px;
+  border: 3px solid #26343a;
+  border-top-color: var(--console-red);
+  border-right-color: var(--console-gold);
+  border-bottom-color: var(--console-green);
+  border-radius: 50%;
+  content: "";
+  box-shadow: 0 0 9px rgba(255, 74, 69, .16);
+}
+
+body.mission-active .mission-progress > span,
+body.mission-active .mission-progress > strong { grid-column: 1; }
+body.mission-active .mission-progress > span { grid-row: 1; align-self: start; }
+body.mission-active .mission-progress strong { grid-row: 2; align-self: start; color: #d8e2e6; font-size: .48rem; line-height: 1.35; text-align: left; }
+body.mission-active .mission-log-heading { color: var(--console-gold); }
+
+body.mission-active .status-grid {
+  position: relative;
+  display: grid;
+  grid-template-rows: 24px repeat(6, minmax(58px, auto));
+  align-content: start;
+  gap: 5px;
+  padding: 7px;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: clip !important;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+body.mission-active .live-roster-heading {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 0 3px 4px;
+  color: var(--console-cyan);
+  border-bottom: 1px solid rgba(80, 209, 237, .17);
+  background: #02080b;
+  font-family: Consolas, monospace;
+  font-size: .52rem;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+body.mission-active .live-roster-heading strong { color: #7f9198; font-size: .45rem; }
+
+body.mission-active .status-card {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto auto auto;
+  align-content: center;
+  gap: 3px;
+  min-height: 58px;
+  padding: 6px 7px;
+  border-color: color-mix(in srgb, var(--player-color) 64%, #182d35);
+  border-left: 3px solid var(--player-color);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--player-color) 8%, #03080b), #020609 56%);
+  box-shadow: inset 0 0 16px rgba(0, 0, 0, .75), 0 0 8px color-mix(in srgb, var(--player-color) 10%, transparent);
+  overflow: hidden !important;
+}
+
+body.mission-active .status-card-heading { min-height: 18px; }
+body.mission-active .status-card-heading strong { font-size: .62rem; }
+body.mission-active .status-card-heading strong small { font-size: .43rem; }
+body.mission-active .player-class-icon {
+  display: grid;
+  place-items: center;
+  width: 23px;
+  height: 23px;
+  color: var(--player-color);
+  border: 1px solid var(--player-color);
+  background: #020608;
+  clip-path: polygon(25% 4%, 75% 4%, 100% 25%, 100% 75%, 75% 96%, 25% 96%, 0 75%, 0 25%);
+}
+
+body.mission-active .player-colored-name { color: var(--player-color); }
+body.mission-active .player-card-stats { font-family: Consolas, monospace; font-size: .48rem; }
+body.mission-active .player-loadout { font-size: .47rem; }
+body.mission-active .player-ability-label { font-size: .46rem; }
+body.mission-active .player-ability-state { font-size: .4rem; }
+body.mission-active .player-item-slots { margin-top: 0; }
+body.mission-active .player-item-notice-inline,
+body.mission-active .player-ability-notice-inline { display: none; }
+
+body.mission-active .inventory-actions {
+  display: grid;
+  grid-template-rows: auto auto;
+  align-content: start;
+  gap: 5px;
+  padding: 7px 8px;
+}
+
+body.mission-active .inventory-supplies {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 4px 7px;
+  min-width: 0;
+  font-size: .52rem;
+}
+
+body.mission-active .inventory-supplies strong { color: var(--console-cyan); font-family: Consolas, monospace; text-transform: uppercase; }
+body.mission-active .inventory-codex-btn { grid-column: 1 / -1; min-height: 22px; }
+body.mission-active .inventory-action-row { display: grid; grid-template-columns: minmax(0, 1fr) 1fr 1fr; gap: 4px; }
+body.mission-active .inventory-action-row select,
+body.mission-active .inventory-action-row button { width: 100%; min-width: 0; min-height: 25px; padding: 0 4px; font-size: .48rem; }
+
+body.mission-active .player-session-panel { padding: 7px 8px; }
+body.mission-active .player-session-heading { margin: 0; }
+body.mission-active .player-session-heading strong { color: var(--console-gold); }
+body.mission-active .player-session-content { max-height: 0; overflow: hidden; }
+
+body.mission-active .map-wrap {
+  position: relative;
+  height: auto;
+  border-color: rgba(255, 74, 69, .42);
+  background: #000;
+  box-shadow: inset 0 0 48px rgba(115, 13, 22, .09), 0 0 18px rgba(255, 50, 50, .04);
+}
+
+body.mission-active .map-boss-eyes::before {
+  background: #000 url("assets/boss-eyes-red-black.png") center / 100% auto no-repeat;
+  background-blend-mode: normal;
+  filter: none;
+  mix-blend-mode: screen;
+}
+
+body.mission-active .map-failure-overlay::before {
+  background: #000 url("assets/boss-eyes-red-black.png") center / 100% auto no-repeat;
+  background-blend-mode: normal;
+  filter: brightness(.58);
+  mix-blend-mode: screen;
+}
+
+body.mission-active .combat-stage {
+  border-radius: 0;
+  background: #000;
+}
+
+body.mission-active[data-mission-theme="bunker"] .combat-stage:not(.boss-fight)::before,
+body.mission-active[data-mission-theme="space-station"] .combat-stage:not(.boss-fight)::before {
+  inset: 0;
+  opacity: .82;
+  transform: none;
+  transform-origin: center;
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+  mix-blend-mode: normal;
+}
+
+body.mission-active[data-mission-theme="bunker"] .combat-stage:not(.boss-fight)::before {
+  background-image:
+    linear-gradient(180deg, rgba(0, 0, 0, .2), rgba(7, 10, 4, .46)),
+    url("assets/combat-background-decayed-bunker.webp");
+  filter: saturate(.8) contrast(1.08) brightness(.72);
+}
+
+body.mission-active[data-mission-theme="space-station"] .combat-stage:not(.boss-fight)::before {
+  background-image:
+    linear-gradient(180deg, rgba(0, 0, 0, .2), rgba(4, 7, 9, .48)),
+    url("assets/combat-background-abandoned-space-station.webp");
+  filter: saturate(.68) contrast(1.12) brightness(.7);
+}
+
+body.mission-active .combat-stage-header {
+  border: 1px solid rgba(255, 74, 69, .5);
+  border-left: 4px solid var(--console-red);
+  background: rgba(15, 3, 5, .9);
+}
+
+body.mission-active .combat-stage.boss-fight { background: #000; }
+body.mission-active .combat-stage.boss-fight::before {
+  inset: 0;
+  opacity: 1;
+  background: #000 url("assets/boss-eyes-red-black.png") center -10rem / 140% auto no-repeat;
+  background-blend-mode: normal;
+  filter: none;
+  mix-blend-mode: screen;
+  animation: live-console-boss-eyes-idle 3s ease-in-out infinite;
+}
+
+body.mission-active .combat-stage.entering.boss-fight::before {
+  animation: combat-boss-eyes-menacing-entry 1.15s linear 3.05s both;
+}
+
+body.mission-active .combat-boss-intro {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  overflow: hidden;
+  opacity: 1;
+  pointer-events: none;
+  background: #000;
+  transition: opacity 650ms ease-in;
+}
+body.mission-active .combat-boss-intro[hidden] { display: none; }
+body.mission-active .combat-boss-intro.fading { opacity: 0; }
+body.mission-active .combat-boss-intro video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  filter: contrast(1.08) saturate(1.04);
+}
+body.mission-active .combat-stage.boss-fight.boss-intro-playing::before {
+  opacity: 0;
+  animation: none !important;
+}
+body.mission-active .combat-stage.boss-fight.boss-intro-playing .combat-enemy-formation {
+  opacity: 0 !important;
+  animation: none !important;
+}
+body.mission-active .combat-stage.boss-fight.boss-intro-handoff::before {
+  animation: boss-intro-image-handoff 950ms ease-out both !important;
+}
+body.mission-active .combat-stage.boss-fight.boss-intro-handoff .combat-enemy-formation {
+  animation: boss-intro-hud-handoff 620ms ease-out 360ms both !important;
+}
+body.mission-active .combat-stage.entering.boss-fight.boss-intro-complete::before {
+  animation: live-console-boss-eyes-idle 3s ease-in-out infinite;
+}
+
+@keyframes boss-intro-image-handoff {
+  0% { opacity: 0; transform: scale(1.018); filter: brightness(.45) contrast(1.12); }
+  48% { opacity: .38; transform: scale(1.008); filter: brightness(.72) contrast(1.08); }
+  100% { opacity: .68; transform: scale(1); filter: none; }
+}
+
+@keyframes boss-intro-hud-handoff {
+  from { opacity: 0; transform: translateX(-50%) translateY(-7px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+body.mission-active .combat-stage.boss-fight.boss-eyes-attacking::before {
+  animation: combat-boss-background-attack 1.02s cubic-bezier(.2, .8, .25, 1) both;
+}
+
+body.mission-active .combat-stage.boss-fight.boss-eyes-hit::before {
+  animation: combat-boss-background-hit .78s steps(2, end) both;
+}
+
+@keyframes live-console-boss-eyes-idle {
+  0%, 100% { opacity: .62; transform: scale(1); }
+  50% { opacity: .92; transform: scale(1.012); }
+}
+
+body.mission-active .combat-party-unit {
+  overflow: visible;
+  border: 1px solid color-mix(in srgb, var(--player-color) 78%, #182d35);
+  border-top: 2px solid var(--player-color);
+  border-radius: 3px;
+  background: linear-gradient(180deg, rgba(3, 7, 9, .98), rgba(0, 2, 4, .98));
+  box-shadow: inset 0 0 15px rgba(0, 0, 0, .85), 0 0 9px color-mix(in srgb, var(--player-color) 22%, transparent);
+}
+
+body.mission-active .combat-party-unit .combat-damage-float {
+  top: -0.35rem;
+  z-index: 20;
+  pointer-events: none;
+}
+
+body.mission-active .combat-action-banner { display: none !important; }
+
+body.mission-active .combat-party-unit strong { color: var(--player-color); }
+body.mission-active .combat-party-unit small,
+body.mission-active .combat-party-unit em { color: #85959c; }
+body.mission-active .combat-party-unit.answer-correct { border-color: var(--console-green); }
+body.mission-active .combat-party-unit.answer-wrong { border-color: var(--console-red); }
+
+body.mission-active .initiative-timeline {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  border-top-color: rgba(226, 184, 95, .65);
+}
+
+body.mission-active .initiative-timeline-heading {
+  display: block;
+  margin: 0;
+}
+body.mission-active .initiative-timeline-heading > div { display: grid; gap: 1px; }
+body.mission-active .initiative-timeline-heading small { display: block; margin-top: 2px; font-size: .46rem; white-space: normal; }
+body.mission-active .initiative-timeline-track { overflow: hidden; }
+body.mission-active .initiative-actor { min-width: 54px; min-height: 40px; padding: 3px 4px; border-radius: 2px; }
+body.mission-active .initiative-actor + .initiative-actor { margin-left: 5px; }
+body.mission-active .initiative-actor-glyph { flex-basis: 23px; width: 23px; height: 23px; border-radius: 2px; clip-path: polygon(20% 4%, 80% 4%, 100% 50%, 80% 96%, 20% 96%, 0 50%); }
+body.mission-active .initiative-actor-copy strong { font-size: .52rem; }
+body.mission-active .initiative-actor-copy small { font-size: .44rem; }
+body.mission-active .initiative-link { display: none; }
+
+body.mission-active .legend {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 0;
+  padding: 3px 8px;
+}
+body.mission-active .map-legend-dots { display: flex; align-items: center; flex-wrap: nowrap; gap: 9px; font-size: .46rem; }
+body.mission-active .sim-legend-panel { min-width: 0; padding: 0; border: 0; background: transparent; }
+
+body.mission-active .map-control-dock,
+body.mission-active .play-control-dock { padding: 5px 7px; }
+body.mission-active .map-control-dock:empty,
+body.mission-active .play-control-dock:empty { visibility: hidden; }
+
+body.mission-active.single-device-mode .map-main > .map-control-dock .single-device-submission-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(250px, .85fr);
+  gap: 8px;
+}
+
+body.mission-active.single-device-mode .map-main > .map-control-dock .answer-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+body.mission-active.single-device-mode .map-main > .map-control-dock .answer-grid button {
+  min-width: 0;
+  min-height: 34px;
+}
+
+body.mission-active.single-device-mode .map-main > .map-control-dock .side-action-form {
+  padding: 5px 7px;
+}
+
+@media (max-width: 920px) {
+  body.mission-active.single-device-mode .map-main > .map-control-dock .single-device-submission-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+body.mission-active .route-telemetry,
+body.mission-active .map-emergency-timer { padding: 3px 8px; }
+body.mission-active .route-telemetry-header { margin: 0 0 2px; font-size: .48rem; }
+body.mission-active .route-progress-track { height: 4px; }
+
+body.mission-active .encounter {
+  padding: 10px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border-left: 2px solid rgba(226, 184, 95, .58);
+  scrollbar-width: thin;
+}
+
+body.mission-active .encounter,
+body.mission-active .encounter p,
+body.mission-active .transmission-display p {
+  font-size: .65rem;
+  line-height: 1.48;
+}
+
+body.mission-active .transmission-tag,
+body.mission-active .transmission-heading strong { font-size: .52rem; letter-spacing: .07em; }
+
+body.mission-active .transmission-display { min-height: 0; padding: 10px; }
+body.mission-active .status-update-panel {
+  display: grid;
+  grid-template-rows: 30px minmax(0, 1fr);
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  padding: 0;
+}
+body.mission-active .status-update-heading { padding: 5px 9px; color: var(--console-gold); font-family: Consolas, monospace; font-size: .58rem; }
+body.mission-active .status-update-feed { min-height: 0; padding: 7px 9px; overflow-x: hidden; overflow-y: auto; scrollbar-width: thin; }
+body.mission-active .status-update-feed,
+body.mission-active .status-update-feed p,
+body.mission-active .status-update-feed li { font-size: .56rem; line-height: 1.42; }
+
+body.mission-active .mission-utility-shell { padding: 7px; overflow: auto; scrollbar-width: thin; }
+body.mission-active .mission-utility-buttons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
+body.mission-active .mission-utility-buttons button { min-width: 0; min-height: 28px; padding: 0 4px; font-size: .48rem; }
+
+@media (max-width: 1179px) {
+  body.mission-active { overflow: auto; }
+  body.mission-active .app-shell {
+    width: min(100%, 980px);
+    height: auto;
+    min-height: 100vh;
+    padding-bottom: 48px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.mission-active::after { display: none; }
+}
+
+/* Final live-console alignment/readability layer. Keep this after the concept
+   parity rules so the instructor's text-size choice is authoritative. */
+body.mission-active .status-card.roster-card > .ready-mark {
+  top: 27px;
+}
+body.mission-active .status-card.roster-card > .ready-mark.answer-neutral {
+  visibility: hidden;
+}
+
+body.mission-active .roster-item-dot.empty {
+  color: #34464d;
+  background: transparent;
+  opacity: .8;
+}
+
+body.mission-active .live-mission-strip .map-last-answer {
+  align-items: center;
+  justify-items: stretch;
+  text-align: center;
+}
+body.mission-active .live-mission-strip .last-answer-heading,
+body.mission-active .live-mission-strip .last-answer-grid,
+body.mission-active .live-mission-strip .last-answer-grid > div {
+  align-items: center;
+  justify-content: center;
+  justify-items: center;
+  text-align: center;
+}
+
+body.mission-active .sim-tool-panel.sim-legend-panel {
+  align-items: center;
+  justify-items: stretch;
+  text-align: center;
+}
+body.mission-active .sim-tool-panel .sim-left,
+body.mission-active .sim-tool-panel .aware-copy,
+body.mission-active .sim-tool-panel .auto-answer {
+  align-content: center;
+  justify-items: center;
+  text-align: center;
+}
+body.mission-active .sim-tool-panel .sim-left > strong,
+body.mission-active .sim-tool-panel .aware-copy p,
+body.mission-active .sim-tool-panel .auto-answer small {
+  margin-right: auto;
+  margin-left: auto;
+}
+
+body.mission-active .mission-log-heading,
+body.mission-active .status-update-heading {
+  min-height: 38px;
+  font-size: calc(15px * var(--dashboard-text-scale, 1)) !important;
+}
+body.mission-active .encounter,
+body.mission-active .encounter p,
+body.mission-active .transmission-display p,
+body.mission-active .transcript-entry,
+body.mission-active .transcript-entry p,
+body.mission-active .status-update-feed,
+body.mission-active .status-update-feed p,
+body.mission-active .status-update-feed li {
+  font-size: calc(16px * var(--dashboard-text-scale, 1)) !important;
+  line-height: 1.5;
+}
+body.mission-active .question-text,
+body.mission-active .question-text p {
+  font-size: calc(19px * var(--dashboard-text-scale, 1)) !important;
+}
+body.mission-active .choices .choice-chip,
+body.mission-active .map-question-choices span,
+body.mission-active .map-question-fill {
+  font-size: calc(17px * var(--dashboard-text-scale, 1)) !important;
+}
+
+@media (min-width: 1180px) {
+  body.mission-active .app-shell {
+    padding-bottom: 28px;
+  }
+}
+
+/* Console-test parity pass ------------------------------------------------- */
+@media (min-width: 1180px) {
+  body.mission-active .app-shell {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    display: grid;
+    grid-template-rows: 58px minmax(0, 1fr);
+    gap: 8px;
+    width: 1700px;
+    height: 960px;
+    box-sizing: border-box;
+    padding: 10px 12px 24px;
+    transform: translate(-50%, -50%) scale(var(--live-console-scale, 1));
+    transform-origin: center;
+  }
+
+  body.mission-active .topbar {
+    position: relative;
+    z-index: 30;
+    display: grid;
+    grid-template-columns: 290px minmax(0, 1fr) 390px;
+    align-items: center;
+    width: 100%;
+    min-height: 0;
+    height: 58px;
+    padding: 0;
+  }
+
+  body.mission-active .topbar > div:first-child { grid-column: 1; padding-left: 12px; }
+  body.mission-active .topbar-actions { grid-column: 3; justify-self: end; }
+  body.mission-active .layout {
+    grid-row: 2;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  body.mission-active .map-panel.live-console-dashboard {
+    grid-template-columns: 296px minmax(640px, 1fr) 386px;
+    grid-template-rows: minmax(0, 1fr);
+    gap: 10px;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    box-sizing: border-box;
+    overflow: visible;
+  }
+
+  body.mission-active .map-main,
+  body.mission-active .map-sidebar,
+  body.mission-active .play-panel { display: grid; min-width: 0; min-height: 0; gap: 8px; }
+  body.mission-active .map-main { grid-column: 2; grid-row: 1; grid-template-rows: minmax(500px, 1fr) 62px 36px 122px 42px 36px; }
+  body.mission-active .map-sidebar { grid-column: 1; grid-row: 1; grid-template-rows: 76px minmax(0, 1fr) 126px 80px; }
+  body.mission-active .play-panel { grid-column: 3; grid-row: 1; grid-template-rows: minmax(0, 1fr) minmax(190px, .5fr) 100px; padding: 0; border: 0; background: transparent; box-shadow: none; }
+
+  body.mission-active .map-main > .panel-header {
+    position: absolute;
+    top: -66px;
+    left: 0;
+    z-index: 40;
+    display: grid;
+    width: 972px;
+    height: 58px;
+    grid-template-columns: 260px minmax(0, 1fr);
+    padding: 6px 14px;
+  }
+
+  body.mission-active .map-main > .map-wrap { grid-column: 1; grid-row: 1; }
+  body.mission-active .map-main > .initiative-timeline { grid-column: 1; grid-row: 2; }
+  body.mission-active .map-main > .legend { grid-column: 1; grid-row: 3; }
+  body.mission-active .map-main > .sim-tool-panel { grid-column: 1; grid-row: 4; }
+  body.mission-active .map-main > .route-telemetry { grid-column: 1; grid-row: 5; }
+  body.mission-active .map-main > .map-emergency-timer { grid-column: 1; grid-row: 6; }
+  body.mission-active .map-main > .map-control-dock,
+  body.mission-active .play-panel > .play-control-dock { display: none !important; }
+
+  body.mission-active.single-device-mode .map-main > .map-control-dock {
+    grid-column: 1;
+    grid-row: 4;
+    z-index: 2;
+    display: block !important;
+    align-self: stretch;
+    width: 100%;
+    min-height: 0;
+    padding: 8px;
+    overflow: auto;
+    border-color: rgba(226, 184, 95, .58);
+    background: rgba(3, 9, 12, .96);
+    box-shadow: inset 0 0 18px rgba(226, 184, 95, .05);
+  }
+
+  body.mission-active.single-device-mode .map-main > .map-control-dock:empty {
+    visibility: hidden;
+  }
+
+  body.mission-active.single-device-mode .map-main > .sim-tool-panel {
+    display: none !important;
+  }
+
+  body.mission-active .map-sidebar > .mission-progress { grid-column: 1; grid-row: 1; }
+  body.mission-active .map-sidebar > .status-grid { grid-column: 1; grid-row: 2; }
+  body.mission-active .map-sidebar > .inventory-actions { grid-column: 1; grid-row: 3; }
+  body.mission-active .map-sidebar > .player-session-panel { grid-column: 1; grid-row: 4; }
+
+  body.mission-active .play-panel > .mission-log-heading,
+  body.mission-active .play-panel > .encounter { grid-column: 1; grid-row: 1; }
+  body.mission-active .play-panel > .status-update-panel { grid-column: 1; grid-row: 2; }
+  body.mission-active .play-panel > .mission-utility-shell { grid-column: 1; grid-row: 3; }
+  body.mission-active .play-panel > .mission-effects-panel { display: none; }
+}
+
+body.mission-active .map-main > .panel-header.compact {
+  overflow: hidden;
+  border: 1px solid var(--console-line);
+  border-radius: 5px;
+  background: rgba(4,11,15,.94);
+  box-shadow: none;
+}
+body.mission-active .map-main > .panel-header.compact > div:first-child { display: grid; align-content: center; min-width: 0; }
+body.mission-active .map-main > .panel-header.compact .eyebrow { color: #7f9198; font: 10px Consolas,monospace; text-transform: uppercase; }
+body.mission-active .map-main > .panel-header.compact h2 { color: #dce5e8; font-size: 13px; }
+body.mission-active .map-main > .panel-header.compact .map-header-status { grid-template-columns: minmax(0,1fr) 82px; }
+body.mission-active .map-main > .panel-header.compact .map-last-answer { min-height: 44px; border-left: 1px solid #10252f; border-right: 1px solid #10252f; }
+body.mission-active .map-main > .panel-header.compact .progress-pill { min-height: 44px; font-size: 16px; }
+
+body.mission-active .status-grid {
+  display: grid;
+  grid-template-rows: 28px repeat(6, minmax(58px, 1fr));
+  gap: 5px;
+  padding: 8px;
+  overflow: hidden !important;
+  border: 1px solid var(--console-line);
+  border-radius: 5px;
+  background: rgba(3, 11, 15, .94);
+}
+
+body.mission-active .live-roster-heading {
+  position: static;
+  min-height: 22px;
+  padding: 0 3px;
+  background: transparent;
+}
+
+body.mission-active .status-card.roster-card {
+  --role: var(--player-color);
+  position: relative;
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) 21px;
+  grid-template-rows: 1fr 18px;
+  gap: 0;
+  min-height: 0;
+  padding: 7px 6px 3px 7px;
+  overflow: hidden !important;
+  border: 1px solid color-mix(in srgb, var(--role) 52%, #152a32);
+  border-left: 3px solid var(--role);
+  border-radius: 4px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--role) 11%, #051015), #061016 55%);
+  box-shadow: inset 0 0 16px rgba(0, 0, 0, .62);
+}
+
+body.mission-active .status-card .role-hex {
+  display: grid;
+  place-items: center;
+  align-self: center;
+  width: 31px;
+  height: 35px;
+  color: var(--role);
+  border: 1px solid var(--role);
+  background: #071016;
+  clip-path: polygon(25% 4%,75% 4%,100% 25%,100% 75%,75% 96%,25% 96%,0 75%,0 25%);
+  font: 700 17px Consolas, monospace;
+}
+
+body.mission-active .roster-main { min-width: 0; }
+body.mission-active .roster-name { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+body.mission-active .roster-name strong { overflow: hidden; color: var(--role); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+body.mission-active .roster-name small { color: var(--console-gold); font: 9px Consolas, monospace; }
+body.mission-active .roster-vitals { display: flex; align-items: center; gap: 7px; margin-top: 3px; font: 9px Consolas, monospace; }
+body.mission-active .state-pill { padding: 1px 7px; border-radius: 9px; background: #172126; }
+body.mission-active .ready-mark { position: relative; z-index: 4; display: grid; place-items: center; align-self: start; width: 19px; height: 19px; color: var(--console-green); border: 1px solid var(--console-green); border-radius: 50%; background: #061016; font-size: 12px; }
+body.mission-active .ready-mark.bad { color: var(--console-red); border-color: var(--console-red); }
+body.mission-active .gear-line { grid-column: 1 / -1; display: flex; align-items: center; gap: 7px; min-width: 0; color: var(--role); border-top: 1px solid color-mix(in srgb, var(--role) 25%, transparent); font: 9px Consolas, monospace; letter-spacing: .05em; text-transform: uppercase; }
+body.mission-active .gear-line::before { display: grid; place-items: center; flex: 0 0 14px; width: 14px; height: 14px; border: 1px solid currentColor; border-radius: 2px; content: "+"; }
+body.mission-active .gear-line > span:first-of-type { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+body.mission-active .gear-line b { margin-left: auto; font-size: 8px; }
+body.mission-active .roster-item-dots { display: flex; gap: 3px; }
+body.mission-active .roster-item-dot { width: 7px; height: 7px; flex: 0 0 7px; border: 1px solid currentColor; border-radius: 50%; background: currentColor; }
+body.mission-active .roster-card-badges {
+  position: absolute;
+  top: 27px;
+  right: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  max-width: 72px;
+  height: 14px;
+  gap: 3px;
+  overflow: hidden;
+  pointer-events: none;
+}
+body.mission-active .roster-card-badges .answer-result-badge,
+body.mission-active .roster-card-badges .ability-armed-badge { display: none; }
+body.mission-active .roster-card-badges .answer-submit-badge {
+  width: 9px;
+  min-width: 9px;
+  height: 9px;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 0;
+}
+
+/* Keep the answer outcome in a reserved lower-right slot. The card's top-right
+   area is reserved for the operator identity and no longer gets covered by a
+   late correct/incorrect response marker. */
+body.mission-active .status-card.roster-card > .ready-mark {
+  position: absolute;
+  top: 31px;
+  right: auto;
+  bottom: auto;
+  left: 68%;
+  align-self: auto;
+  width: 22px;
+  height: 22px;
+  font-size: 14px;
+  line-height: 1;
+  box-shadow: 0 0 8px color-mix(in srgb, currentColor 28%, transparent);
+}
+
+/* The ring is the mission-wide response state, not a static decoration. */
+body.mission-active .mission-progress::after {
+  content: attr(data-accuracy-label);
+  display: grid;
+  place-items: center;
+  width: 31px;
+  height: 31px;
+  border: 1px solid #26343a;
+  color: #dbe7e9;
+  background:
+    radial-gradient(circle, #061016 0 52%, transparent 55%),
+    conic-gradient(var(--console-green) 0 var(--mission-accuracy-angle, 0deg), var(--console-red) var(--mission-accuracy-angle, 0deg) 360deg);
+  font: 700 7px/1 Consolas, monospace;
+  box-shadow: 0 0 9px rgba(86, 213, 155, .22);
+  transition: background .35s ease, box-shadow .35s ease;
+}
+
+/* Readable console typography. All dashboard text inherits the preflight
+   setting through --dashboard-text-scale, including explicit pixel-sized UI. */
+body.mission-active {
+  font-size: calc(1rem * var(--dashboard-text-scale, 1));
+}
+body.mission-active .live-mission-strip .map-last-answer,
+body.mission-active .live-mission-strip .map-last-answer span,
+body.mission-active .live-mission-strip .map-last-answer strong,
+body.mission-active .live-mission-strip .progress-pill,
+body.mission-active .mission-log-heading,
+body.mission-active .status-update-heading,
+body.mission-active .mission-progress > span,
+body.mission-active .mission-progress strong {
+  font-size: calc(12px * var(--dashboard-text-scale, 1));
+}
+body.mission-active .mission-log-heading,
+body.mission-active .status-update-heading { min-height: 36px; }
+body.mission-active .encounter,
+body.mission-active .encounter p,
+body.mission-active .status-update-feed,
+body.mission-active .status-update-feed p,
+body.mission-active .status-update-feed li {
+  font-size: calc(15px * var(--dashboard-text-scale, 1));
+  line-height: 1.5;
+}
+body.mission-active .question-text,
+body.mission-active .question-text p {
+  font-size: calc(18px * var(--dashboard-text-scale, 1));
+  line-height: 1.42;
+}
+body.mission-active .choices .choice-chip,
+body.mission-active .map-question-choices span,
+body.mission-active .map-question-fill {
+  font-size: calc(16px * var(--dashboard-text-scale, 1));
+  line-height: 1.35;
+}
+body.mission-active .roster-card-badges .action-turn-badge {
+  min-width: 13px;
+  width: 13px;
+  height: 13px;
+  font-size: 8px;
+}
+body.mission-active .roster-card-badges .ems-player-badge,
+body.mission-active .roster-card-badges .second-wind-badge {
+  min-height: 13px;
+  padding: 0 3px;
+  font-size: 7px;
+}
+body.mission-active .roster-card-controls { position: absolute; z-index: 5; inset: 0; display: none; padding: 5px; background: rgba(2,8,11,.97); }
+body.mission-active .status-card:hover .roster-card-controls,
+body.mission-active .status-card:focus-within .roster-card-controls { display: block; }
+
+body.mission-active .initiative-timeline {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+}
+body.mission-active .initiative-timeline-heading strong { color: var(--console-cyan); font: 700 9px Consolas, monospace; text-transform: uppercase; }
+body.mission-active .initiative-timeline-heading .eyebrow,
+body.mission-active .initiative-timeline-heading small { display: none; }
+body.mission-active .initiative-timeline-track { display: flex; align-items: center; gap: 3px; min-width: 0; overflow: hidden; }
+body.mission-active .initiative-actor {
+  display: grid;
+  flex: 1 1 0;
+  place-items: center;
+  min-width: 31px;
+  height: 34px;
+  padding: 0;
+  color: var(--initiative-color);
+  border: 1px solid var(--initiative-color);
+  border-radius: 0;
+  background: #071016;
+  clip-path: polygon(20% 4%,80% 4%,100% 50%,80% 96%,20% 96%,0 50%);
+}
+body.mission-active .initiative-actor.current {
+  z-index: 2;
+  color: #fff;
+  border-color: #fff;
+  background: color-mix(in srgb, var(--initiative-color) 52%, #071016);
+  filter: brightness(1.35) drop-shadow(0 0 7px var(--initiative-color));
+  transform: scale(1.16);
+  animation: initiative-current-turn 760ms ease-in-out infinite alternate;
+}
+body.mission-active .initiative-timeline.turn-in-progress .initiative-actor:not(.current) { opacity: .5; filter: saturate(.62); }
+body.mission-active .initiative-timeline.turn-in-progress .initiative-actor.completed:not(.current) { opacity: .3; }
+body.mission-active .initiative-actor.current .initiative-actor-glyph { color: #fff; text-shadow: 0 0 6px #fff, 0 0 10px var(--initiative-color); }
+@keyframes initiative-current-turn {
+  from { filter: brightness(1.2) drop-shadow(0 0 4px var(--initiative-color)); }
+  to { filter: brightness(1.55) drop-shadow(0 0 10px var(--initiative-color)); }
+}
+body.mission-active .initiative-actor-glyph { display: grid; place-items: center; width: auto; height: auto; color: inherit; border: 0; background: transparent; clip-path: none; font: 700 12px Consolas, monospace; }
+body.mission-active .initiative-actor.enemy .initiative-actor-glyph { font-size: 0; }
+body.mission-active .initiative-actor.enemy .initiative-actor-glyph::after { content: "H"; font-size: 12px; }
+body.mission-active .initiative-actor-copy { display: none; }
+body.mission-active .initiative-view-button { min-height: 34px; padding: 0; color: var(--console-cyan); border-color: #285060; font: 9px Consolas, monospace; text-transform: uppercase; }
+
+body.mission-active .sim-tool-panel {
+  display: grid;
+  grid-template-columns: 185px 1fr 158px;
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 8px 12px;
+  min-width: 0;
+  min-height: 0;
+  padding: 8px 10px;
+  overflow: hidden;
+  border: 1px solid var(--console-line);
+  border-radius: 5px;
+  background: rgba(3,11,15,.94);
+}
+body.mission-active .sim-tool-panel > strong { grid-column: 1; grid-row: 1; color: var(--console-gold); font: 700 10px Consolas, monospace; text-transform: uppercase; }
+body.mission-active .sim-tool-panel > p { margin: 0; color: #7f9198; font-size: 10px; }
+body.mission-active .sim-tool-panel > p:nth-of-type(1) { grid-column: 1; grid-row: 2; }
+body.mission-active .sim-tool-panel > .sim-auto-toggle:nth-of-type(1) { grid-column: 3; grid-row: 1; }
+body.mission-active .sim-tool-panel > .sim-auto-toggle:nth-of-type(2) { grid-column: 2; grid-row: 1; }
+body.mission-active .sim-tool-panel > p:nth-of-type(2) { grid-column: 2; grid-row: 2; }
+body.mission-active .sim-tool-panel > p:nth-of-type(3) { grid-column: 3; grid-row: 2; text-align: right; }
+body.mission-active .sim-tool-actions { grid-column: 1; grid-row: 2; align-self: end; display: flex; gap: 5px; }
+body.mission-active .sim-tool-panel > p:nth-of-type(1) { display: none; }
+body.mission-active .sim-tool-actions button { flex: 1 1 0; min-width: 0; min-height: 26px; padding: 0 3px; font-size: 8px; white-space: nowrap; }
+body.mission-active #simulatorStatus { display: none; }
+body.mission-active .sim-tool-panel .sim-left { grid-column: 1; color: var(--console-gold); font: 10px Consolas, monospace; }
+body.mission-active .sim-tool-panel .sim-left > strong { display: block; margin-bottom: 15px; text-transform: uppercase; }
+body.mission-active .sim-tool-panel .sim-left .sim-tool-actions { display: flex; gap: 5px; }
+body.mission-active .sim-tool-panel .aware-copy { grid-column: 2; min-width: 0; }
+body.mission-active .sim-tool-panel .aware-copy .sim-auto-toggle { color: #a7b3b8; font: 700 11px Consolas, monospace; text-transform: uppercase; }
+body.mission-active .sim-tool-panel .aware-copy p { margin: 7px 0 0; color: #7f9198; font-size: 10px; }
+body.mission-active .sim-tool-panel .auto-answer { grid-column: 3; display: grid; justify-items: end; color: var(--console-green); font: 10px Consolas, monospace; text-transform: uppercase; }
+body.mission-active .sim-tool-panel .auto-answer small { margin-top: 5px; color: #7f9198; font-size: 9px; text-transform: none; }
+
+body.mission-active .combat-party-formation { left: 10px; right: 10px; bottom: 10px; width: auto; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; transform: none; }
+body.mission-active .combat-stage.boss-fight .combat-party-formation,
+body.mission-active .combat-stage.boss-fight.combat-question-open .combat-party-formation {
+  left: 10px;
+  right: 10px;
+  bottom: 10px;
+  width: auto;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+  transform: none;
+}
+body.mission-active .combat-party-unit {
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-rows: 44px auto auto 6px 22px;
+  justify-items: center;
+  min-width: 0;
+  height: 166px;
+  padding: 8px 8px 6px;
+}
+body.mission-active .combat-party-avatar { width: 38px; height: 43px; margin: 0; }
+body.mission-active .combat-party-unit > div:last-child { display: contents; }
+body.mission-active .combat-party-unit strong { overflow: hidden; width: 100%; margin-top: 3px; font-size: 11px; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+body.mission-active .combat-party-unit small,
+body.mission-active .combat-party-unit em { width: 100%; font: 8px/1.35 Consolas, monospace; text-align: center; text-transform: uppercase; }
+body.mission-active .combat-party-unit .combat-item-label { display: none; }
+body.mission-active .combat-party-unit .combat-unit-hp.party { align-self: end; width: 100%; height: 3px; }
+
+body.mission-active .mission-log-heading { z-index: 2; align-self: start; height: 34px; border: 0; background: transparent; pointer-events: none; }
+body.mission-active .encounter { padding: 42px 12px 10px; }
+
+/* Keep transient typewriter content from widening the mission-log column. */
+body.mission-active .play-panel,
+body.mission-active .play-panel > .encounter,
+body.mission-active .chat-transcript,
+body.mission-active .chat-transcript-scroll-inner,
+body.mission-active .transcript-entry,
+body.mission-active .transmission-display,
+body.mission-active .typewriter,
+body.mission-active .mission-continuation {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+body.mission-active .play-panel > .encounter,
+body.mission-active .chat-transcript {
+  overflow-x: clip;
+}
+
+body.mission-active .transcript-entry,
+body.mission-active .transcript-entry p,
+body.mission-active .transmission-display,
+body.mission-active .transmission-display p,
+body.mission-active .typewriter,
+body.mission-active .mission-continuation {
+  overflow-wrap: anywhere;
+}
+body.mission-active .mission-receiver-strip,
+body.mission-active .mission-effects-panel {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--console-line);
+  border-radius: 5px;
+  background: rgba(3,11,15,.94);
+}
+body.mission-active .mission-receiver-strip { display: flex; align-items: center; justify-content: space-between; padding: 0 12px; color: #7f9198; font-size: 11px; }
+body.mission-active .mission-receiver-strip i { width: 14px; height: 14px; border: 2px dotted #55717d; border-radius: 50%; }
+body.mission-active .mission-utility-shell { padding: 8px; overflow: visible !important; }
+body.mission-active .mission-utility-buttons { height: 100%; gap: 7px; }
+body.mission-active .mission-utility-buttons button { min-height: 38px; font-size: 10px; }
+body.mission-active .mission-utility-overlay {
+  position: absolute;
+  z-index: 500;
+  top: auto;
+  right: calc(100% + 10px);
+  bottom: 0;
+  left: auto;
+  width: 520px;
+  height: auto;
+  max-height: 560px;
+  padding: 0;
+  overflow: visible;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  pointer-events: auto;
+}
+body.mission-active .mission-utility-panel { position: static; width: auto; max-height: 560px; }
+body.mission-active .mission-effects-panel { padding: 10px 12px; }
+body.mission-active .mission-effects-list { display: grid; gap: 6px; margin-top: 8px; }
+body.mission-active .mission-effect-row { display: grid; grid-template-columns: 32px 1fr; align-items: center; min-height: 46px; padding: 6px 9px; border: 1px solid color-mix(in srgb,var(--effect-color) 24%,#172832); border-radius: 4px; background: color-mix(in srgb,var(--effect-color) 6%,#071116); }
+body.mission-active .mission-effect-row > span { color: var(--effect-color); font-size: 22px; text-align: center; }
+body.mission-active .mission-effect-row strong { display: block; color: var(--effect-color); font: 700 11px Consolas, monospace; text-transform: uppercase; }
+body.mission-active .mission-effect-row small { color: #7f9198; font-size: 9px; }
+
+/* Mission strip is mounted directly into the real topbar. */
+.live-mission-strip-mount { display: none; }
+body.mission-active .live-mission-strip-mount {
+  grid-column: 2;
+  display: block;
+  min-width: 0;
+  height: 58px;
+}
+body.mission-active .live-mission-strip {
+  position: static;
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  width: 100%;
+  height: 58px;
+  margin: 0;
+  padding: 6px 14px;
+  overflow: hidden;
+  border: 1px solid var(--console-line);
+  border-radius: 5px;
+  background: rgba(4, 11, 15, .94);
+  box-shadow: none;
+}
+body.mission-active .live-mission-strip > div:first-child { display: grid; align-content: center; min-width: 0; }
+body.mission-active .live-mission-strip .eyebrow { color: #7f9198; font: 10px Consolas, monospace; text-transform: uppercase; }
+body.mission-active .live-mission-strip h2 { overflow: hidden; margin: 2px 0 0; color: #dce5e8; font-size: 13px; letter-spacing: .04em; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
+body.mission-active .live-mission-strip .map-header-status { display: grid; grid-template-columns: minmax(0, 1fr) 82px; gap: 8px; }
+body.mission-active .live-mission-strip .map-last-answer { min-height: 44px; border-right: 1px solid #10252f; border-left: 1px solid #10252f; }
+body.mission-active .live-mission-strip .progress-pill { min-height: 44px; font-size: 16px; }
+
+@media (min-width: 1180px) {
+  body.mission-active .play-panel {
+    grid-template-rows: minmax(0, 1fr) minmax(190px, .5fr) 100px;
+    align-content: stretch;
+  }
+}
+
+/* Initiative is an action queue, not a stretched roster. */
+body.mission-active .initiative-timeline-track { justify-content: flex-start; }
+body.mission-active .initiative-actor {
+  flex: 0 0 34px;
+  width: 34px;
+  min-width: 34px;
+  max-width: 34px;
+}
+body.mission-active .initiative-actor.enemy .initiative-actor-glyph { font-size: 12px; }
+body.mission-active .initiative-actor.enemy .initiative-actor-glyph::after { display: none; content: none; }
+body.mission-active .initiative-actor.ability { filter: brightness(1.22); box-shadow: inset 0 0 12px color-mix(in srgb, var(--initiative-color) 28%, transparent), 0 0 7px color-mix(in srgb, var(--initiative-color) 20%, transparent); }
+body.mission-active .initiative-timeline.awaiting-order .initiative-timeline-track::before {
+  color: #71838b;
+  content: "AWAITING FINAL SUBMISSIONS — ORDER UNRESOLVED";
+  font: 9px Consolas, monospace;
+  letter-spacing: .08em;
+}
+body.mission-active .initiative-timeline.initiative-standby .initiative-timeline-track::before {
+  color: #52666f;
+  content: "TACTICAL QUEUE STANDBY — NO ACTIVE COMBAT";
+  font: 9px Consolas, monospace;
+  letter-spacing: .08em;
+}
+
+/* Typography, color, and depth parity with the approved console concept. */
+body.mission-active .mission-progress > span,
+body.mission-active .live-roster-heading,
+body.mission-active .mission-log-heading,
+body.mission-active .status-update-heading { font-size: 10px; }
+body.mission-active .mission-progress strong { color: #c9d6da; font-size: 10px; line-height: 1.35; }
+body.mission-active .last-answer-heading span,
+body.mission-active .last-answer-grid span { color: #81939a; font-size: 9px; letter-spacing: .055em; }
+body.mission-active .last-answer-heading strong,
+body.mission-active .last-answer-grid strong { color: #dce5e8; font-size: 11px; }
+body.mission-active .last-answer-panel.accepted .last-answer-heading strong { color: var(--console-green); }
+body.mission-active .last-answer-panel.rejected .last-answer-heading strong { color: var(--console-red); }
+body.mission-active .encounter,
+body.mission-active .encounter p,
+body.mission-active .transmission-display p { font-size: 12px; line-height: 1.46; }
+body.mission-active .transmission-tag,
+body.mission-active .transmission-heading strong { font-size: 10px; }
+body.mission-active .status-update-feed,
+body.mission-active .status-update-feed p,
+body.mission-active .status-update-feed li { font-size: 11px; line-height: 1.4; }
+body.mission-active .map-legend-dots { gap: 18px; color: #829299; font-size: 9px; }
+body.mission-active .route-telemetry-header,
+body.mission-active .map-emergency-timer { font-size: 9px; }
+body.mission-active .inventory-supplies,
+body.mission-active .inventory-action-row select,
+body.mission-active .inventory-action-row button { font-size: 9px; }
+body.mission-active .mission-receiver-strip { color: #8b9ba1; font-size: 11px; }
+body.mission-active .map-wrap,
+body.mission-active .initiative-timeline,
+body.mission-active .legend,
+body.mission-active .sim-tool-panel,
+body.mission-active .route-telemetry,
+body.mission-active .map-emergency-timer,
+body.mission-active .status-grid,
+body.mission-active .inventory-actions,
+body.mission-active .player-session-panel,
+body.mission-active .encounter,
+body.mission-active .status-update-panel,
+body.mission-active .mission-receiver-strip,
+body.mission-active .mission-utility-shell {
+  border-color: #1a3642;
+  background:
+    linear-gradient(135deg, rgba(42, 113, 131, .065), transparent 42%),
+    rgba(3, 11, 15, .96);
+  box-shadow: inset 0 1px rgba(126, 215, 232, .045), 0 8px 25px rgba(0, 0, 0, .26);
+}
+body.mission-active .map-wrap { border-color: rgba(151, 38, 43, .68); box-shadow: inset 0 0 52px rgba(133, 16, 25, .11), 0 0 24px rgba(255, 60, 60, .055); }
+body.mission-active .mission-log-heading,
+body.mission-active .status-update-heading { letter-spacing: .09em; text-transform: uppercase; }
+body.mission-active .mission-utility-buttons button { color: #b6c2c6; border-color: #28434e; background: linear-gradient(180deg, #0a151a, #061015); }
+body.mission-active .mission-utility-buttons button:hover,
+body.mission-active .mission-utility-buttons button.active { color: var(--console-gold); border-color: #7b6335; }
+
+/* Readability pass: the fixed console is scaled to the viewport, so its
+   logical type needs to stay above the small-label floor before scaling. */
+body.mission-active .topbar .eyebrow { font-size: 11px; }
+body.mission-active .topbar h1 { font-size: 21px; }
+body.mission-active .topbar-actions button { font-size: 12px; }
+body.mission-active .live-mission-strip .eyebrow { font-size: 11px; }
+body.mission-active .live-mission-strip h2 { font-size: 15px; }
+body.mission-active .last-answer-heading span,
+body.mission-active .last-answer-grid span { font-size: 11.5px; }
+body.mission-active .last-answer-heading strong,
+body.mission-active .last-answer-grid strong { font-size: 12.5px; }
+body.mission-active .live-mission-strip .progress-pill { font-size: 18px; }
+
+body.mission-active .mission-progress > span,
+body.mission-active .live-roster-heading,
+body.mission-active .mission-log-heading,
+body.mission-active .status-update-heading { font-size: 12px; }
+body.mission-active .mission-progress strong { font-size: 13px; line-height: 1.35; }
+body.mission-active .live-roster-heading strong { font-size: 10px; }
+body.mission-active .roster-name strong { font-size: 15px; }
+body.mission-active .roster-name small { font-size: 11px; }
+body.mission-active .roster-vitals { font-size: 12px; }
+body.mission-active .state-pill { padding-inline: 8px; }
+body.mission-active .gear-line { font-size: 11.5px; }
+body.mission-active .gear-line b { font-size: 10px; }
+
+body.mission-active .initiative-timeline-heading strong { font-size: 12px; }
+body.mission-active .initiative-timeline.awaiting-order .initiative-timeline-track::before,
+body.mission-active .initiative-timeline.initiative-standby .initiative-timeline-track::before { font-size: 12px; }
+body.mission-active .initiative-actor-glyph,
+body.mission-active .initiative-actor.enemy .initiative-actor-glyph { font-size: 13px; }
+body.mission-active .initiative-view-button { font-size: 11.5px; }
+
+body.mission-active .map-legend-dots { font-size: 12px; }
+body.mission-active .route-telemetry-header,
+body.mission-active .map-emergency-timer { font-size: 12px; }
+body.mission-active .inventory-supplies,
+body.mission-active .inventory-action-row select,
+body.mission-active .inventory-action-row button { font-size: 12px; }
+body.mission-active .inventory-actions > strong,
+body.mission-active .player-session-heading span { font-size: 12px; }
+
+body.mission-active .sim-tool-panel .sim-left,
+body.mission-active .sim-tool-panel > strong { font-size: 12px; }
+body.mission-active .sim-tool-actions button { font-size: 11px; }
+body.mission-active .sim-tool-panel .aware-copy .sim-auto-toggle { font-size: 12px; }
+body.mission-active .sim-tool-panel .aware-copy p { font-size: 12px; line-height: 1.3; }
+body.mission-active .sim-tool-panel .auto-answer { font-size: 12px; }
+body.mission-active .sim-tool-panel .auto-answer small { font-size: 11px; }
+
+/* Simulator command pods: separate outcome, ability, and automation controls
+   so the instructor can scan the panel instead of reading one long row. */
+body.mission-active .sim-tool-panel.sim-legend-panel {
+  grid-template-columns: minmax(220px, .9fr) minmax(300px, 1.35fr) minmax(190px, .82fr);
+  grid-template-rows: minmax(0, 1fr);
+  align-items: stretch;
+  gap: 10px;
+  padding: 9px 10px;
+}
+body.mission-active .sim-tool-panel .sim-left,
+body.mission-active .sim-tool-panel .aware-copy,
+body.mission-active .sim-tool-panel .auto-answer {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  padding: 9px 10px;
+  overflow: hidden;
+  border: 1px solid #1d3d49;
+  border-radius: 4px;
+  background: linear-gradient(135deg, rgba(28, 84, 99, .13), rgba(3, 10, 14, .94) 62%);
+  box-shadow: inset 0 1px rgba(129, 216, 232, .05);
+}
+body.mission-active .sim-tool-panel .sim-left {
+  grid-column: 1;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  color: var(--console-gold);
+  border-color: rgba(207, 169, 91, .32);
+}
+body.mission-active .sim-tool-panel .sim-left > strong {
+  margin: 0 0 8px;
+  letter-spacing: .09em;
+}
+body.mission-active .sim-tool-panel .sim-left .sim-tool-actions {
+  align-self: end;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+body.mission-active .sim-tool-panel .sim-tool-actions button {
+  min-height: 30px;
+  border-color: rgba(207, 169, 91, .28);
+  background: rgba(207, 169, 91, .055);
+}
+body.mission-active .sim-tool-panel .aware-copy {
+  grid-column: 2;
+  display: grid;
+  align-content: center;
+  border-color: rgba(72, 201, 151, .3);
+  background: linear-gradient(135deg, rgba(37, 126, 93, .12), rgba(3, 10, 14, .94) 62%);
+}
+body.mission-active .sim-tool-panel .aware-copy .sim-auto-toggle {
+  color: #8fe4c3;
+  letter-spacing: .055em;
+}
+body.mission-active .sim-tool-panel .aware-copy p {
+  max-width: 44ch;
+  margin-top: 6px;
+}
+body.mission-active .sim-tool-panel .auto-answer {
+  grid-column: 3;
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  color: #72e5a6;
+  border-color: rgba(72, 201, 151, .34);
+  background: linear-gradient(135deg, rgba(37, 126, 93, .14), rgba(3, 10, 14, .94) 66%);
+}
+body.mission-active .sim-tool-panel .auto-answer small {
+  margin-top: 7px;
+  color: #91a3aa;
+}
+
+body.mission-active .encounter,
+body.mission-active .encounter p,
+body.mission-active .transmission-display p { font-size: 13px; line-height: 1.5; }
+body.mission-active .transmission-tag,
+body.mission-active .transmission-heading strong { font-size: 11px; }
+body.mission-active .status-update-feed,
+body.mission-active .status-update-feed p,
+body.mission-active .status-update-feed li { font-size: 13px; line-height: 1.45; }
+body.mission-active .mission-utility-buttons button { font-size: 12px; line-height: 1.2; }
+
+/* Compact tactical operator tokens on the combat screen. */
+body.mission-active .combat-party-formation,
+body.mission-active .combat-stage.boss-fight .combat-party-formation,
+body.mission-active .combat-stage.boss-fight.combat-question-open .combat-party-formation {
+  left: 50%;
+  right: auto;
+  bottom: 12px;
+  width: max-content;
+  max-width: calc(100% - 20px);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: flex-end;
+  gap: 8px;
+  transform: translateX(-50%);
+}
+body.mission-active .combat-party-unit {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-rows: 48px 12px;
+  justify-items: center;
+  width: 88px;
+  min-width: 88px;
+  height: 82px;
+  min-height: 82px;
+  padding: 6px 7px 7px;
+  gap: 4px;
+  transition:
+    border-color .38s ease,
+    background-color .38s ease,
+    box-shadow .38s ease,
+    filter .28s ease,
+    transform .28s ease;
+}
+body.mission-active .combat-party-avatar { position: relative; width: 37px; height: 42px; margin: 0; font-size: 16px; }
+body.mission-active .combat-party-unit > div:last-child { display: block; width: 100%; min-width: 0; }
+body.mission-active .combat-party-unit strong,
+body.mission-active .combat-party-unit small,
+body.mission-active .combat-party-unit em,
+body.mission-active .combat-party-unit .combat-answer-cue { display: none !important; }
+body.mission-active .combat-party-unit .combat-unit-hp.party { display: block; width: 100%; height: 5px; margin: 2px 0 0; }
+body.mission-active .combat-party-unit.class-armed .combat-party-avatar::before,
+body.mission-active .combat-party-unit.item-armed .combat-party-avatar::after {
+  position: absolute;
+  bottom: -4px;
+  display: grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  color: #031014;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  background: var(--player-color);
+  font: 700 8px Consolas, monospace;
+  box-shadow: 0 0 8px var(--player-color);
+}
+body.mission-active .combat-party-unit.class-armed .combat-party-avatar::before { left: -9px; content: "A"; }
+body.mission-active .combat-party-unit.item-armed .combat-party-avatar::after { right: -9px; content: "I"; }
+
+/* Answer-state cards are rebuilt as turns resolve. Animate the newly inserted
+   card from its class color so correct/vulnerable states still blend in. */
+body.mission-active .combat-party-unit.answer-correct {
+  animation: combat-card-correct-shift .44s ease-out both;
+}
+body.mission-active .combat-party-unit.answer-wrong {
+  animation: combat-card-wrong-shift .44s ease-out both;
+}
+@keyframes combat-card-correct-shift {
+  0% {
+    border-color: var(--player-color);
+    background-color: rgba(3, 10, 14, .92);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--player-color) 38%, transparent);
+  }
+  100% {
+    border-color: #56d59b;
+    background-color: rgba(19, 72, 54, .46);
+    box-shadow: 0 0 18px rgba(86, 213, 155, .34), inset 0 0 14px rgba(86, 213, 155, .12);
+  }
+}
+@keyframes combat-card-wrong-shift {
+  0% {
+    border-color: var(--player-color);
+    background-color: rgba(3, 10, 14, .92);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--player-color) 38%, transparent);
+  }
+  100% {
+    border-color: #f05959;
+    background-color: rgba(92, 20, 23, .5);
+    box-shadow: 0 0 18px rgba(240, 89, 89, .34), inset 0 0 14px rgba(240, 89, 89, .12);
+  }
+}
+
+/* Give the interference layer visible travel instead of only changing opacity. */
+body.mission-active .combat-stage-scanlines {
+  background-size: 100% 8px;
+  animation:
+    combat-scanline-drift 3.2s linear infinite,
+    combat-screen-flicker 2.7s steps(1, end) infinite;
+  will-change: background-position, opacity;
+}
+@keyframes combat-scanline-drift {
+  from { background-position: 0 0; }
+  to { background-position: 0 48px; }
+}
+
+/* Resolve-feed entries arrive with their matching action rather than appearing
+   as a prebuilt block at the start of the combat turn. */
+body.mission-active .combat-status-live-line {
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity .24s ease, transform .24s ease;
+}
+body.mission-active .combat-status-live-line.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* The compact roster submitted marker must pulse in place. The legacy badge
+   animation translates centered pills and made this dot jump sideways. */
+body.mission-active .roster-card-badges .answer-submit-badge {
+  transform: none !important;
+  animation: roster-submitted-fixed-pulse .75s ease-out !important;
+}
+@keyframes roster-submitted-fixed-pulse {
+  0% { opacity: 0; box-shadow: 0 0 0 0 rgba(86, 213, 155, 0); }
+  45% { opacity: 1; box-shadow: 0 0 0 4px rgba(86, 213, 155, .22); }
+  100% { opacity: 1; box-shadow: 0 0 7px rgba(86, 213, 155, .45); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.mission-active .combat-stage-scanlines,
+  body.mission-active .combat-party-unit.answer-correct,
+  body.mission-active .combat-party-unit.answer-wrong,
+  body.mission-active .roster-card-badges .answer-submit-badge {
+    animation: none !important;
+  }
+}
+
+/* Authoritative dashboard overrides: intentionally last in the stylesheet. */
+body.mission-active .status-card.roster-card > .ready-mark {
+  top: 28px;
+}
+body.mission-active .status-card.roster-card > .ready-mark.answer-neutral {
+  visibility: hidden;
+}
+
+body.mission-active .live-mission-strip .map-last-answer {
+  align-items: center;
+  justify-items: stretch;
+  text-align: center;
+}
+body.mission-active .live-mission-strip .last-answer-heading,
+body.mission-active .live-mission-strip .last-answer-grid,
+body.mission-active .live-mission-strip .last-answer-grid > div {
+  align-items: center;
+  justify-content: center;
+  justify-items: center;
+  text-align: center;
+}
+
+body.mission-active .sim-tool-panel.sim-legend-panel {
+  align-items: center;
+  justify-items: stretch;
+  text-align: center;
+}
+body.mission-active .sim-tool-panel .sim-left,
+body.mission-active .sim-tool-panel .aware-copy,
+body.mission-active .sim-tool-panel .auto-answer {
+  align-content: center;
+  justify-items: center;
+  text-align: center;
+}
+body.mission-active .sim-tool-panel .sim-left > strong,
+body.mission-active .sim-tool-panel .aware-copy p,
+body.mission-active .sim-tool-panel .auto-answer small {
+  margin-right: auto;
+  margin-left: auto;
+}
+
+body.mission-active .mission-log-heading,
+body.mission-active .status-update-heading {
+  min-height: 38px;
+  font-size: calc(15px * var(--dashboard-text-scale, 1)) !important;
+}
+body.mission-active .encounter,
+body.mission-active .encounter p,
+body.mission-active .transmission-display p,
+body.mission-active .transcript-entry,
+body.mission-active .transcript-entry p,
+body.mission-active .status-update-feed,
+body.mission-active .status-update-feed p,
+body.mission-active .status-update-feed li {
+  font-size: calc(16px * var(--dashboard-text-scale, 1)) !important;
+  line-height: 1.5;
+}
+body.mission-active .question-text,
+body.mission-active .question-text p {
+  font-size: calc(19px * var(--dashboard-text-scale, 1)) !important;
+}
+body.mission-active .choices .choice-chip,
+body.mission-active .map-question-choices span,
+body.mission-active .map-question-fill {
+  font-size: calc(17px * var(--dashboard-text-scale, 1)) !important;
+}
+
+@media (min-width: 1180px) {
+  body.mission-active .app-shell {
+    padding-bottom: 28px;
+  }
+}
+
+/* Keep action motion authoritative after the answer-state color animations. */
+body.mission-active .combat-party-unit.attacking:not(.soldier-double-attack) {
+  z-index: 8;
+  animation: party-attack-lunge .5s ease both;
+}
+body.mission-active .combat-party-unit.attacking.soldier-double-attack {
+  z-index: 10;
+  animation: soldier-double-tap .52s ease both;
+}
+
+/* The legacy corner light was decorative. Reserve that exact corner for the
+   previous-answer result; the separate submission dot remains in its badge row. */
+body.mission-active .status-card.roster-card::after {
+  display: none;
+}
+body.mission-active .status-card.roster-card > .ready-mark {
+  top: 4px;
+  right: 5px;
+  left: auto;
+}
+
+body.mission-active .status-card-ability-armed .gear-line b {
+  padding: 2px 6px;
+  color: #fff1a5;
+  border: 1px solid rgba(255, 220, 103, .72);
+  border-radius: 3px;
+  background: rgba(104, 72, 10, .58);
+  text-shadow: 0 0 7px rgba(255, 232, 132, .8);
+  animation: roster-armed-text-glow 1.15s ease-in-out infinite;
+}
+
+@keyframes roster-armed-text-glow {
+  0%, 100% {
+    box-shadow: 0 0 4px rgba(255, 220, 103, .28), inset 0 0 4px rgba(255, 220, 103, .08);
+  }
+  50% {
+    color: #fffbd2;
+    border-color: #ffe477;
+    box-shadow: 0 0 14px rgba(255, 220, 103, .78), inset 0 0 9px rgba(255, 220, 103, .22);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.mission-active .status-card-ability-armed .gear-line b {
+    animation: none;
+    box-shadow: 0 0 9px rgba(255, 220, 103, .56);
+  }
+}
+
+/* Balanced mission strip: operation | result | submitted | required | progress. */
+body.mission-active .live-mission-strip {
+  grid-template-columns: minmax(178px, .72fr) minmax(0, 1.9fr);
+  align-items: center;
+  gap: 12px;
+  padding-block: 5px;
+}
+
+body.mission-active .live-mission-strip > div:first-child {
+  height: 46px;
+  padding-right: 12px;
+  border-right: 1px solid rgba(80, 209, 237, .16);
+}
+
+body.mission-active .live-mission-strip .map-header-status {
+  grid-template-columns: minmax(0, 1fr) 88px;
+  align-items: center;
+  gap: 10px;
+  height: 46px;
+}
+
+body.mission-active .live-mission-strip .map-last-answer {
+  grid-template-columns: minmax(112px, .8fr) minmax(0, 1.55fr);
+  align-items: stretch;
+  gap: 0;
+  width: 100%;
+  height: 46px;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid rgba(80, 209, 237, .15);
+  border-radius: 4px;
+  background: linear-gradient(90deg, rgba(10, 25, 31, .72), rgba(2, 8, 11, .72));
+}
+
+body.mission-active .live-mission-strip .last-answer-heading {
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  gap: 2px;
+  padding: 5px 12px;
+  text-align: left;
+}
+
+body.mission-active .live-mission-strip .last-answer-grid {
+  display: grid;
+  grid-template-columns: 68px minmax(92px, 1fr);
+  align-items: stretch;
+  gap: 0;
+  min-width: 0;
+  overflow: visible;
+}
+
+body.mission-active .live-mission-strip .last-answer-grid > div {
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 1px;
+  min-width: 0;
+  padding: 4px 9px;
+  border: 0;
+  border-left: 1px solid rgba(80, 209, 237, .12);
+  background: rgba(0, 0, 0, .16);
+}
+
+body.mission-active .live-mission-strip .last-answer-grid > div:last-child {
+  justify-items: start;
+  padding-inline: 13px;
+  text-align: left;
+}
+
+body.mission-active .live-mission-strip .last-answer-grid span,
+body.mission-active .live-mission-strip .last-answer-heading span {
+  line-height: 1;
+}
+
+body.mission-active .live-mission-strip #lastSubmittedDisplay {
+  font-size: calc(17px * var(--dashboard-text-scale, 1));
+  line-height: 1;
+  color: #f1f6f7;
+}
+
+body.mission-active .live-mission-strip #lastCorrectDisplay {
+  display: -webkit-box;
+  width: 100%;
+  max-height: 2.25em;
+  overflow: hidden;
+  font-size: calc(11.5px * var(--dashboard-text-scale, 1));
+  line-height: 1.08;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+body.mission-active .live-mission-strip .progress-pill {
+  align-self: center;
+  width: 88px;
+  height: 40px;
+  min-height: 0;
+  margin: 0;
+  padding: 0 8px;
+  border-color: rgba(226, 184, 95, .34);
+  background: linear-gradient(180deg, rgba(42, 31, 10, .36), rgba(0, 0, 0, .34));
+  box-shadow: inset 0 0 14px rgba(226, 184, 95, .045);
+  line-height: 1;
+}
+
+/* Boss phase identity: midpoint remains red; final hostile is spectral green. */
+body.mission-active .map-panel.boss-final-visual .map-boss-eyes::before,
+body.mission-active .map-panel.boss-final-visual .map-failure-overlay::before {
+  background: #000 url("assets/boss-eyes-final-green.png?v=1") center / 100% auto no-repeat;
+  background-blend-mode: normal;
+  mix-blend-mode: screen;
+}
+
+body.mission-active .map-panel.boss-final-visual .map-boss-eyes::before {
+  filter: drop-shadow(0 0 24px rgba(62, 255, 112, .38));
+}
+
+body.mission-active .map-panel.boss-final-visual.boss-eyes-active .map-boss-eyes::before {
+  animation:
+    final-map-eyes-reveal 1.65s cubic-bezier(.16, .78, .2, 1) both,
+    final-map-eyes-idle 5.4s 1.65s ease-in-out infinite;
+}
+
+body.mission-active .map-panel.boss-final-visual.boss-eyes-strike .map-boss-eyes::before {
+  animation: final-map-eyes-strike 1.15s cubic-bezier(.18, .76, .24, 1) both;
+}
+
+body.mission-active .map-panel.boss-final-visual.boss-eyes-exiting .map-boss-eyes::before {
+  animation: bossEyesVisualExit 1.35s ease-in both;
+}
+
+body.mission-active .map-panel.boss-final-visual .map-failure-overlay::before {
+  filter: brightness(.54) drop-shadow(0 0 18px rgba(62, 255, 112, .25));
+}
+
+body.mission-active .combat-stage.final-boss-visual {
+  background:
+    radial-gradient(circle at 50% 43%, rgba(17, 133, 65, .22), transparent 42%),
+    linear-gradient(180deg, #000 0%, #020b06 62%, #000 100%);
+  box-shadow: inset 0 0 62px rgba(28, 220, 93, .075);
+}
+
+body.mission-active .combat-stage.boss-fight.final-boss-visual::before {
+  background: #000 url("assets/boss-eyes-final-green.png?v=1") center 43% / cover no-repeat;
+  background-blend-mode: normal;
+  filter: drop-shadow(0 0 25px rgba(66, 255, 119, .32));
+  mix-blend-mode: screen;
+}
+
+body.mission-active .combat-stage.final-boss-visual .combat-stage-header {
+  border-color: rgba(70, 255, 126, .48);
+  border-left-color: #46ff7e;
+  background: rgba(2, 17, 8, .92);
+  box-shadow: inset 0 -8px 22px rgba(37, 255, 103, .055);
+}
+
+body.mission-active .combat-stage.entering.boss-fight.final-boss-visual::before {
+  animation: combat-final-eyes-entry 1.15s linear 3.05s both;
+}
+
+body.mission-active .combat-stage.entering.boss-fight.final-boss-visual.boss-intro-complete::before {
+  animation: live-console-final-eyes-idle 3s ease-in-out infinite;
+}
+
+body.mission-active .combat-stage.boss-fight.final-boss-visual.boss-eyes-attacking::before {
+  animation: combat-final-eyes-attack 1.02s cubic-bezier(.2, .8, .25, 1) both;
+}
+
+body.mission-active .combat-stage.boss-fight.final-boss-visual.boss-eyes-hit::before {
+  animation: combat-final-eyes-hit .78s steps(2, end) both;
+}
+
+body.mission-active .combat-stage.boss-fight.final-boss-visual.final-boss-defeated::before {
+  animation: combat-final-green-defeat 2.2s ease-out both !important;
+}
+
+@keyframes live-console-final-eyes-idle {
+  0%, 100% { opacity: .62; transform: scale(1); filter: brightness(.9) drop-shadow(0 0 18px rgba(57, 255, 111, .28)); }
+  50% { opacity: .94; transform: scale(1.012); filter: brightness(1.12) drop-shadow(0 0 34px rgba(57, 255, 111, .5)); }
+}
+
+@keyframes final-map-eyes-reveal {
+  0% { opacity: 0; transform: scale(.97); filter: brightness(.08) blur(7px); }
+  48% { opacity: .9; transform: scale(1.018); filter: brightness(1.55) contrast(1.45) drop-shadow(0 0 40px rgba(57, 255, 111, .82)); }
+  100% { opacity: .68; transform: scale(1); filter: brightness(.92) drop-shadow(0 0 24px rgba(57, 255, 111, .4)); }
+}
+
+@keyframes final-map-eyes-idle {
+  0%, 100% { opacity: .62; transform: scale(1); filter: brightness(.88) drop-shadow(0 0 20px rgba(57, 255, 111, .32)); }
+  50% { opacity: .94; transform: scale(1.014); filter: brightness(1.17) drop-shadow(0 0 38px rgba(57, 255, 111, .58)); }
+}
+
+@keyframes final-map-eyes-strike {
+  0%, 100% { opacity: .68; transform: scale(1); filter: brightness(.94) drop-shadow(0 0 22px rgba(57, 255, 111, .38)); }
+  20% { opacity: 1; transform: scale(1.035); filter: brightness(2.25) contrast(1.62) drop-shadow(0 0 58px rgba(57, 255, 111, 1)); }
+  46% { opacity: .62; transform: scale(.99); filter: brightness(.7); }
+  64% { opacity: 1; transform: scale(1.02); filter: brightness(2) drop-shadow(0 0 50px rgba(57, 255, 111, .92)); }
+}
+
+@keyframes combat-final-eyes-entry {
+  0%, 10% { opacity: 0; clip-path: inset(0 0 100% 0); transform: scale(.96); filter: blur(7px) brightness(.08); }
+  16% { opacity: .42; clip-path: inset(20% 0 62% 0); transform: translateX(-12px) scale(1); filter: blur(1px) brightness(1.4) contrast(1.55) drop-shadow(0 0 18px rgba(57, 255, 111, .72)); }
+  23% { opacity: .08; clip-path: inset(48% 0 36% 0); transform: translateX(10px) scale(1.015); }
+  34% { opacity: .72; clip-path: inset(8% 0 46% 0); transform: translateX(5px) scale(1.025); filter: brightness(1.7) contrast(1.7) drop-shadow(0 0 28px rgba(57, 255, 111, .82)); }
+  44% { opacity: 0; clip-path: inset(0); transform: scale(.88); filter: blur(5px) brightness(.14); }
+  54% { opacity: 1; clip-path: inset(0); transform: scale(1.15); filter: brightness(2.2) contrast(1.8) drop-shadow(0 0 42px rgba(57, 255, 111, 1)); }
+  68% { opacity: .35; transform: scale(.96); filter: brightness(.58); }
+  82% { opacity: .86; transform: scale(1.035); filter: brightness(1.4) drop-shadow(0 0 25px rgba(57, 255, 111, .72)); }
+  100% { opacity: .68; clip-path: inset(0); transform: scale(1); filter: brightness(.92) drop-shadow(0 0 19px rgba(57, 255, 111, .34)); }
+}
+
+@keyframes combat-final-eyes-attack {
+  0%, 100% { opacity: .66; transform: scale(1); filter: brightness(.9) drop-shadow(0 0 18px rgba(57, 255, 111, .3)); }
+  24% { opacity: 1; transform: scale(1.024); filter: brightness(1.65) contrast(1.55) drop-shadow(0 0 38px rgba(57, 255, 111, .92)); }
+  54% { opacity: .74; transform: scale(1); filter: brightness(.78); }
+  72% { opacity: 1; transform: scale(1.014); filter: brightness(1.38) drop-shadow(0 0 30px rgba(57, 255, 111, .78)); }
+}
+
+@keyframes combat-final-eyes-hit {
+  0% { opacity: .6; transform: translate(0); filter: brightness(.82); }
+  18% { opacity: 1; transform: translate(-3px, 1px); filter: brightness(1.8) contrast(1.7) drop-shadow(0 0 38px rgba(89, 255, 137, .95)); }
+  38% { opacity: .28; transform: translate(4px, -2px); filter: brightness(.45); }
+  58% { opacity: .9; transform: translate(-2px, 2px); filter: brightness(1.42) contrast(1.55); }
+  100% { opacity: .58; transform: translate(0); filter: brightness(.86) drop-shadow(0 0 17px rgba(57, 255, 111, .3)); }
+}
+
+@keyframes combat-final-green-defeat {
+  0% { opacity: .7; transform: scale(1); filter: brightness(.9) drop-shadow(0 0 20px rgba(57, 255, 111, .4)); }
+  18% { opacity: 1; transform: scale(1.028); filter: brightness(1.85) contrast(1.8) drop-shadow(0 0 44px rgba(57, 255, 111, 1)); }
+  42% { opacity: .68; transform: scale(1.01); filter: saturate(.65) brightness(1); }
+  100% { opacity: 0; transform: scale(1.12); filter: grayscale(1) saturate(0) brightness(.05) blur(7px); }
+}

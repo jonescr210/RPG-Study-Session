@@ -19,7 +19,9 @@ const SERVER_LOG_ROTATIONS = 3;
 const ollamaHost = process.env.OLLAMA_HOST || "http://localhost:11434";
 const lmStudioHost = process.env.LM_STUDIO_HOST || "http://127.0.0.1:1234";
 const DEFAULT_PLAYER_ACTION_COOLDOWN_MS = 120_000;
-const PLAYER_PROMPT_SERVER_ARM_MS = 2_000;
+// Keep a short mount/animation guard without making players wait through a
+// full two-second dead zone before their input can be accepted.
+const PLAYER_PROMPT_SERVER_ARM_MS = 900;
 const PLAYER_CLASS_IDS = ["soldier", "medic", "scout", "enforcer", "engineer", "tactician"];
 const EXTERNAL_REQUEST_TIMEOUT_MS = 60_000;
 const STATUS_REQUEST_TIMEOUT_MS = 10_000;
@@ -912,6 +914,48 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    if (url.pathname === "/api/debug/client-trace" && req.method === "POST") {
+      const body = await readBody(req);
+      let parsed = {};
+      try {
+        parsed = body ? JSON.parse(body) : {};
+      } catch {
+        return sendJson(res, 400, { ok: false, error: "Invalid trace payload" });
+      }
+      const traceId = String(parsed.traceId || "").slice(0, 80);
+      const marker = String(parsed.marker || "MARK").slice(0, 80);
+      const phase = String(parsed.phase || "").slice(0, 160);
+      serverTrace("client.room_transition", {
+        traceId,
+        marker,
+        phase,
+        elapsedMs: Math.max(0, Number(parsed.elapsedMs) || 0),
+        phaseMs: Math.max(0, Number(parsed.phaseMs) || 0),
+        details: parsed.details && typeof parsed.details === "object" ? parsed.details : {},
+        snapshot: parsed.snapshot && typeof parsed.snapshot === "object" ? parsed.snapshot : {},
+        ...sessionTraceSummary()
+      }, marker === "TIMEOUT" || marker === "MAIN_THREAD_GAP" || marker === "ERROR" ? "warn" : "info");
+      return sendJson(res, 200, { ok: true, traceId, marker });
+    }
+
+    if (url.pathname === "/api/debug/transition-trace" && req.method === "GET") {
+      const transitionEntries = readServerTrace(1000)
+        .filter((entry) => entry.event === "client.room_transition" && entry.traceId);
+      const requestedTraceId = String(url.searchParams.get("traceId") || "").slice(0, 80);
+      const traceId = requestedTraceId || transitionEntries.at(-1)?.traceId || "";
+      const entries = traceId ? transitionEntries.filter((entry) => entry.traceId === traceId) : [];
+      const completed = entries.findLast?.((entry) => entry.marker === "COMPLETE") || null;
+      const slowest = completed?.details?.slowest || [];
+      return sendJson(res, 200, {
+        ok: true,
+        traceId,
+        active: Boolean(traceId && !completed),
+        totalMs: completed?.details?.totalMs || entries.at(-1)?.elapsedMs || 0,
+        slowest,
+        entries
+      });
+    }
+
     if (url.pathname === "/j" && req.method === "GET") {
       const room = String(url.searchParams.get("room") || "").trim().toUpperCase();
       const target = `/player.html${room ? `?room=${encodeURIComponent(room)}` : ""}`;
@@ -1276,9 +1320,6 @@ const server = http.createServer(async (req, res) => {
       if (!participant) return sendJson(res, 403, { ok: false, error: "Player is not in this room" });
       participant.lastSeenAt = Date.now();
       const playerName = participant.name || postedPlayerName;
-      if (playerSession.prompt?.lockedPlayer && normalize(playerSession.prompt.lockedPlayer) !== normalize(playerName)) {
-        return sendJson(res, 403, { ok: false, error: "Only the locked operator can answer this prompt" });
-      }
       if (isSessionPlayerIncapacitated(playerName)) return sendJson(res, 403, { ok: false, error: "Incapacitated players cannot answer" });
       const priorIndex = playerSession.answers.findIndex((entry) => entry.promptId === promptId && entry.playerId === playerId);
       const entry = {
@@ -1519,7 +1560,10 @@ const server = http.createServer(async (req, res) => {
     const etag = staticFileEtag(fileStats);
     const commonHeaders = {
       "content-type": contentTypes[ext] || "application/octet-stream",
-      "cache-control": "no-cache",
+      // Large audio tracks should not be revalidated and downloaded again on
+      // every combat-room transition. Versioned filenames still invalidate
+      // naturally when an asset is replaced.
+      "cache-control": streamableMedia ? "public, max-age=86400" : "no-cache",
       "etag": etag,
       "last-modified": fileStats.mtime.toUTCString()
     };

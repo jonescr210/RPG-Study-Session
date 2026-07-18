@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Study Adventure Player</title>
-    <link rel="stylesheet" href="styles.css?v=enforcer-reserve-1">
+    <link rel="stylesheet" href="styles.css?v=mobile-width-3">
   </head>
   <body class="player-body">
     <div class="player-signal-field" aria-hidden="true">
@@ -36,27 +36,29 @@
           <strong id="playerRoomBadge">----</strong>
         </div>
         <p id="playerIdentity" class="field-note"></p>
-        <label class="player-haptics-toggle">
-          <input id="playerHapticsToggle" type="checkbox">
-          <span>Phone vibration alerts</span>
-        </label>
-        <p id="playerHapticsNote" class="player-haptics-note"></p>
         <div id="playerVitals" class="player-vitals" aria-live="polite">
           <strong>HP --</strong>
           <span>Awaiting squad telemetry</span>
         </div>
+        <section id="playerLoadoutArea" class="player-loadout-area" hidden></section>
+        <section id="playerClassPanel" class="player-class-panel" hidden></section>
+        <section id="playerQueuedActionPanel" class="player-queued-action-panel" hidden></section>
         <div id="playerPromptArea" class="player-prompt-area">
           <div class="player-waiting">
             <span class="signal-bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
             <p>Waiting for Mission Control.</p>
           </div>
         </div>
-        <section id="playerClassPanel" class="player-class-panel" hidden></section>
-        <section id="playerQueuedActionPanel" class="player-queued-action-panel" hidden></section>
+        <section id="playerAnswerFeedbackPanel" class="player-answer-feedback-panel" hidden aria-live="polite"></section>
+        <label class="player-haptics-toggle">
+          <input id="playerHapticsToggle" type="checkbox">
+          <span>Phone vibration alerts</span>
+        </label>
+        <p id="playerHapticsNote" class="player-haptics-note"></p>
       </section>
     </main>
     <script src="shared-data.js?v=cleanup-1"></script>
     <script src="combat-system.js?v=enforcer-reserve-1"></script>
-    <script src="player.js?v=enforcer-reserve-1"></script>
+    <script src="player.js?v=hostiles-panel-1"></script>
   </body>
 </html>

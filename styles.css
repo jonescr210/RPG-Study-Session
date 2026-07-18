@@ -672,6 +672,34 @@ body.mission-active[data-mission-theme="horror"] {
   --atmo-edge: #101617;
 }
 
+body.mission-active[data-mission-theme="bunker"] {
+  --accent: #b6a267;
+  --accent-2: #708e62;
+  --atmo-r: 104;
+  --atmo-g: 91;
+  --atmo-b: 45;
+  --atmo-secondary-r: 65;
+  --atmo-secondary-g: 103;
+  --atmo-secondary-b: 71;
+  --atmo-deep: #050704;
+  --atmo-mid: #0d1009;
+  --atmo-edge: #11130c;
+}
+
+body.mission-active[data-mission-theme="space-station"] {
+  --accent: #c3ad79;
+  --accent-2: #718b9e;
+  --atmo-r: 73;
+  --atmo-g: 91;
+  --atmo-b: 103;
+  --atmo-secondary-r: 127;
+  --atmo-secondary-g: 102;
+  --atmo-secondary-b: 72;
+  --atmo-deep: #040607;
+  --atmo-mid: #0b1013;
+  --atmo-edge: #11100e;
+}
+
 body.mission-active[data-mission-theme="military"] {
   --accent: #d2a84f;
   --accent-2: #64b5b2;
@@ -848,6 +876,7 @@ body.mission-active.situation-failure {
   display: grid;
   place-items: center;
   padding: 16px;
+  overflow-x: hidden;
   transition: background 0.35s ease;
 }
 
@@ -894,6 +923,7 @@ body.mission-active.situation-failure {
   gap: 14px;
   min-width: 0;
   box-sizing: border-box;
+  overflow: hidden;
   padding: 18px;
   border: 1px solid rgba(90, 167, 164, 0.34);
   border-radius: 8px;
@@ -977,7 +1007,7 @@ body.mission-active.situation-failure {
 .player-vitals {
   position: relative;
   z-index: 1;
-  display: flex;
+  display: block;
   gap: 10px;
   align-items: center;
   justify-content: space-between;
@@ -1022,6 +1052,18 @@ body.mission-active.situation-failure {
 }
 
 .player-queued-action-panel[hidden] {
+  display: none;
+}
+
+.player-loadout-area {
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.player-loadout-area[hidden] {
   display: none;
 }
 
@@ -1246,19 +1288,61 @@ body.mission-active.situation-failure {
   color: var(--danger);
 }
 
+/* Player devices use a compact, stable stack: vitals, loadout, question,
+   answer result, then the optional haptics control. */
+#missionCard {
+  gap: 9px;
+  padding: 13px;
+}
+
+.player-answer-feedback-panel {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.player-answer-feedback-panel[hidden] { display: none; }
+.player-answer-feedback-panel .player-answer-feedback {
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 0.66rem;
+}
+
+.player-haptics-toggle {
+  order: 30;
+  padding: 5px 7px;
+  font-size: 0.68rem;
+}
+
+.player-haptics-toggle input {
+  width: 14px;
+  height: 14px;
+}
+
+.player-haptics-note {
+  order: 31;
+  margin-top: -5px;
+  font-size: 0.6rem;
+  text-align: right;
+}
+
+.player-haptics-note { display: none; }
+.player-haptics-toggle.unsupported + .player-haptics-note { display: block; }
+
 @media (max-width: 560px) {
   body.player-body {
     align-items: start;
     justify-items: center;
     min-height: 100dvh;
-    padding: max(10px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+    padding: max(6px, env(safe-area-inset-top)) max(6px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(6px, env(safe-area-inset-left));
     overflow-x: hidden;
   }
 
   .player-shell {
     width: 100%;
     max-width: 430px;
-    min-height: calc(100dvh - 20px);
+    min-height: calc(100dvh - 12px);
+    height: calc(100dvh - 12px);
     align-content: center;
     gap: 10px;
   }
@@ -1271,8 +1355,8 @@ body.mission-active.situation-failure {
     overflow-y: auto;
     overflow-x: hidden;
     overscroll-behavior: contain;
-    gap: 10px;
-    padding: 13px;
+    gap: 6px;
+    padding: 9px;
     border-radius: 7px;
     scrollbar-width: none;
   }
@@ -1286,7 +1370,7 @@ body.mission-active.situation-failure {
   }
 
   .player-card h1 {
-    font-size: 1.35rem;
+    font-size: 1.16rem;
     line-height: 1.08;
   }
 
@@ -1307,19 +1391,51 @@ body.mission-active.situation-failure {
     z-index: 2;
     align-items: flex-start;
     flex-direction: column;
-    gap: 4px;
+    gap: 3px;
     min-height: 0;
-    padding: 9px 10px;
+    padding: 6px 8px;
   }
 
   .player-vitals span {
     text-align: left;
   }
 
+  .player-vitals-modern {
+    gap: 5px;
+  }
+
+  .player-vitals-modern-top {
+    gap: 5px;
+  }
+
+  .player-vitals-class-icon {
+    width: 1.65rem;
+    height: 1.65rem;
+    border-radius: 5px;
+    font-size: 0.95rem;
+  }
+
+  .player-vitals-modern-top strong {
+    font-size: 0.86rem;
+  }
+
+  .player-vitals-modern-top small {
+    font-size: 0.58rem;
+  }
+
+  .player-vitals-modern-top > b {
+    font-size: 0.64rem;
+  }
+
+  .player-vitals-modern-summary {
+    gap: 3px;
+    font-size: 0.56rem;
+  }
+
   .player-prompt-area,
   .player-prompt,
   .player-waiting {
-    gap: 9px;
+    gap: 5px;
     min-height: 0;
   }
 
@@ -1328,7 +1444,8 @@ body.mission-active.situation-failure {
   }
 
   .player-prompt {
-    padding: 10px;
+    gap: 5px;
+    padding: 7px;
   }
 
   .player-prompt > span,
@@ -1337,13 +1454,111 @@ body.mission-active.situation-failure {
   .player-action-form label,
   .player-submit-status,
   .field-note {
-    font-size: 0.74rem;
+    font-size: 0.64rem;
   }
 
   .playerChoiceBtn {
-    min-height: 46px;
-    gap: 8px;
-    padding: 10px;
+    min-height: 38px;
+    gap: 5px;
+    padding: 6px 7px;
+    font-size: 0.72rem;
+  }
+
+  .player-choice-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 5px;
+  }
+
+  .playerChoiceBtn span {
+    line-height: 1.12;
+  }
+
+  .player-prompt > span {
+    margin-bottom: 2px;
+    padding: 3px 5px;
+    font-size: 0.58rem;
+  }
+
+  .player-prompt > h2 {
+    font-size: 0.8rem;
+    line-height: 1.08;
+  }
+
+  .player-prompt > p[data-prompt-question] {
+    font-size: 0.82rem;
+    line-height: 1.16;
+  }
+
+  .player-submit-status {
+    min-height: 14px;
+    font-size: 0.62rem;
+  }
+
+  .player-countdown {
+    gap: 4px;
+    padding: 5px 6px;
+  }
+
+  .player-countdown-heading strong {
+    font-size: 0.78rem;
+  }
+
+  .player-loadout-area {
+    gap: 4px;
+  }
+
+  .player-class-loadout,
+  .player-inventory-panel {
+    gap: 3px;
+    padding: 5px 6px;
+  }
+
+  .player-class-loadout > small {
+    max-height: 2.25em;
+    overflow: hidden;
+    font-size: 0.55rem;
+    line-height: 1.12;
+  }
+
+  .player-class-loadout-heading strong,
+  .player-inventory-panel > strong {
+    font-size: 0.64rem;
+  }
+
+  .player-ability-btn {
+    min-height: 28px;
+    padding: 4px 6px;
+    font-size: 0.58rem;
+  }
+
+  .player-inventory-row {
+    gap: 3px;
+    padding: 4px 0;
+  }
+
+  .player-inventory-row strong { font-size: 0.6rem; }
+  .player-inventory-row small { font-size: 0.52rem; line-height: 1.12; }
+
+  .player-answer-feedback-panel .player-answer-feedback {
+    gap: 1px;
+    padding: 4px 6px;
+    font-size: 0.58rem;
+    line-height: 1.12;
+  }
+
+  .player-answer-feedback-panel .player-answer-feedback strong {
+    font-size: 0.62rem;
+  }
+
+  .player-haptics-toggle {
+    padding: 3px 5px;
+    font-size: 0.58rem;
+  }
+
+  .player-haptics-note {
+    max-height: 1.2em;
+    overflow: hidden;
+    font-size: 0.52rem;
   }
 
   .player-fill-form,
@@ -1354,6 +1569,90 @@ body.mission-active.situation-failure {
   .player-fill-form button,
   .player-action-row button {
     width: 100%;
+  }
+
+  /* Mobile player pages use one scrollable column. Keep each dynamic panel
+     in normal flow so abilities, inventory, prompts, and answers cannot
+     paint over one another when their contents change. */
+  #missionCard > *,
+  #missionCard .player-vitals,
+  #missionCard .player-prompt-area,
+  #missionCard .player-loadout-area,
+  #missionCard .player-class-panel,
+  #missionCard .player-queued-action-panel,
+  #missionCard .player-prompt,
+  #missionCard .player-waiting {
+    position: static;
+    z-index: auto;
+    transform: none;
+    flex: 0 0 auto;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+
+  #missionCard {
+    align-content: start;
+    justify-content: flex-start;
+  }
+
+  .player-vitals,
+  .player-vitals-modern,
+  .player-prompt-area,
+  .player-prompt,
+  .player-waiting,
+  .player-loadout-area,
+  .player-queued-action-panel,
+  .player-class-panel {
+    width: 100%;
+  }
+
+  .player-vitals {
+    overflow: visible;
+  }
+
+  .player-prompt-area {
+    display: block;
+  }
+
+  .player-prompt-area > .player-prompt,
+  .player-prompt-area > .player-waiting {
+    display: grid;
+  }
+
+  .player-prompt [data-prompt-action],
+  .player-prompt .player-action-form,
+  .player-queued-action-panel .player-action-form,
+  .player-choice-grid,
+  .player-answer-controls,
+  .player-fill-form,
+  .player-action-row,
+  .player-class-action-row,
+  .player-inventory-actions {
+    position: static;
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+  }
+
+  .player-prompt > h2,
+  .player-prompt > p,
+  .player-prompt .player-submit-status,
+  .player-prompt .player-class-hint,
+  .player-prompt .player-combat-status,
+  .player-prompt .player-countdown,
+  .player-vitals-modern small,
+  .player-inventory-row small {
+    overflow-wrap: anywhere;
+    word-break: normal;
+  }
+
+  .playerChoiceBtn,
+  .player-fill-form button,
+  .player-action-row button,
+  .player-ability-btn {
+    position: relative;
+    z-index: 1;
   }
 }
 
@@ -2649,23 +2948,33 @@ body.dashboard-booting .play-panel > * {
   transition: visibility 0s linear 0.76s, opacity 0.76s ease, filter 0.76s ease, transform 0.76s cubic-bezier(0.16, 0.76, 0.24, 1);
 }
 
-body.dashboard-booting.dashboard-stage-map .map-main > .panel-header,
-body.dashboard-booting.dashboard-stage-map .map-main > .map-wrap,
-body.dashboard-booting.dashboard-stage-telemetry .map-main > .legend,
-body.dashboard-booting.dashboard-stage-telemetry .map-main > .route-telemetry,
-body.dashboard-booting.dashboard-stage-telemetry .map-main > .map-emergency-timer,
-body.dashboard-booting.dashboard-stage-telemetry .map-sidebar > .mission-progress,
-body.dashboard-booting.dashboard-stage-telemetry .map-sidebar > .last-answer-panel,
-body.dashboard-booting.dashboard-stage-log .play-panel > .briefing,
-body.dashboard-booting.dashboard-stage-log .play-panel > .mission-log-heading,
-body.dashboard-booting.dashboard-stage-encounter .play-panel > .encounter,
-body.dashboard-booting.dashboard-stage-status .play-panel > .status-update-panel,
-body.dashboard-booting.dashboard-stage-operators .map-sidebar > .status-grid,
-body.dashboard-booting.dashboard-stage-supplies .map-sidebar > .inventory-actions,
-body.dashboard-booting.dashboard-stage-tools .map-main > .map-control-dock,
-body.dashboard-booting.dashboard-stage-tools .map-sidebar > .player-session-panel,
-body.dashboard-booting.dashboard-stage-tools .play-panel > .play-control-dock,
-body.dashboard-booting.dashboard-stage-tools .play-panel > .mission-utility-shell {
+/* Mission mode normally forces the challenge timer visible. During the boot
+   cascade, keep it concealed until its explicit final center-column stage. */
+body.mission-active.dashboard-booting:not(.dashboard-stage-center-timer) .map-main > .map-emergency-timer {
+  visibility: hidden;
+  opacity: 0;
+  filter: blur(7px) brightness(0.55);
+  transform: translateY(14px) scale(0.985);
+}
+
+body.dashboard-booting.dashboard-stage-center-top .map-main > .panel-header,
+body.dashboard-booting.dashboard-stage-center-screen .map-main > .map-wrap,
+body.dashboard-booting.dashboard-stage-center-initiative .map-main > .initiative-timeline,
+body.dashboard-booting.dashboard-stage-center-legend .map-main > .legend,
+body.dashboard-booting.dashboard-stage-center-simulator .map-main > .sim-tool-panel,
+body.dashboard-booting.dashboard-stage-center-controls .map-main > .map-control-dock,
+body.dashboard-booting.dashboard-stage-center-route .map-main > .route-telemetry,
+body.dashboard-booting.dashboard-stage-center-timer .map-main > .map-emergency-timer,
+body.dashboard-booting.dashboard-stage-left-progress .map-sidebar > .mission-progress,
+body.dashboard-booting.dashboard-stage-left-operators .map-sidebar > .status-grid,
+body.dashboard-booting.dashboard-stage-left-supplies .map-sidebar > .inventory-actions,
+body.dashboard-booting.dashboard-stage-left-devices .map-sidebar > .player-session-panel,
+body.dashboard-booting.dashboard-stage-right-log .play-panel > .briefing,
+body.dashboard-booting.dashboard-stage-right-log .play-panel > .mission-log-heading,
+body.dashboard-booting.dashboard-stage-right-encounter .play-panel > .encounter,
+body.dashboard-booting.dashboard-stage-right-status .play-panel > .status-update-panel,
+body.dashboard-booting.dashboard-stage-right-tools .play-panel > .play-control-dock,
+body.dashboard-booting.dashboard-stage-right-tools .play-panel > .mission-utility-shell {
   visibility: visible;
   opacity: 1;
   filter: blur(0);
@@ -2680,7 +2989,7 @@ body.dashboard-booting .status-grid .status-card {
   transform: translateX(-24px) scale(0.94);
 }
 
-body.dashboard-booting.dashboard-stage-operators .status-grid .status-card {
+body.dashboard-booting.dashboard-stage-left-operators .status-grid .status-card {
   animation: dashboardOperatorDeploy 0.72s cubic-bezier(0.13, 0.84, 0.23, 1.18) calc(var(--operator-boot-index, 0) * 0.28s) both;
 }
 
@@ -7352,7 +7661,8 @@ body.mission-active .chat-transcript {
 .chat-transcript-scroll-inner {
   display: grid;
   gap: 7px;
-  will-change: transform;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .chat-transcript::-webkit-scrollbar {
@@ -7377,6 +7687,7 @@ body.mission-active .transcript-entry {
 .transcript-entry p {
   margin: 0;
   white-space: pre-line;
+  overflow-wrap: anywhere;
 }
 
 .final-mission-entry h3 {
@@ -8099,54 +8410,47 @@ body.mission-active .player-dm-controls {
   stroke: #7f8b79;
 }
 
-.route-line.discovering {
-  animation: routeLineDiscovery 0.72s ease-out both;
-}
-
-.route-trail {
+.route-line.active {
   stroke: var(--accent-2);
-  stroke-width: 7;
-  stroke-linecap: round;
-  stroke-dasharray: 13 10;
-  fill: none;
-  filter: drop-shadow(0 0 7px rgba(90, 167, 164, 0.9));
-  animation: routeSegmentGlow 0.76s ease-in-out infinite alternate;
 }
 
-.route-trail.incorrect {
-  stroke: var(--incorrect);
-  filter: drop-shadow(0 0 7px rgba(188, 81, 72, 0.94));
-}
-
-.squad-marker-halo {
-  fill: rgba(90, 167, 164, 0.14);
-  stroke: rgba(233, 255, 255, 0.76);
-  stroke-width: 2;
-}
-
-.squad-marker {
+.map-squad-marker {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 3;
+  width: 22px;
+  height: 22px;
   pointer-events: none;
+  border: 2px solid rgba(233, 255, 255, 0.82);
+  border-radius: 50%;
+  background: rgba(90, 167, 164, 0.16);
+  contain: strict;
 }
 
-.squad-marker.stationary .squad-marker-dot {
-  fill: var(--accent);
-  filter: drop-shadow(0 0 9px rgba(217, 184, 95, 0.88));
+.map-squad-marker[hidden] {
+  display: none;
 }
 
-.squad-marker-dot {
-  fill: var(--accent-2);
-  stroke: #e9ffff;
-  stroke-width: 2;
-  filter: drop-shadow(0 0 8px rgba(188, 81, 72, 0.96));
+.map-squad-marker.traveling {
+  transition: transform 2.2s cubic-bezier(0.22, 0.72, 0.2, 1);
+  will-change: transform;
 }
 
-.squad-marker.incorrect .squad-marker-halo {
-  fill: rgba(188, 81, 72, 0.16);
-  stroke: rgba(255, 211, 205, 0.82);
+.map-squad-marker i {
+  position: absolute;
+  inset: 5px;
+  border-radius: 50%;
+  background: var(--accent-2);
 }
 
-.squad-marker.incorrect .squad-marker-dot {
-  fill: var(--incorrect);
+.map-squad-marker.incorrect {
+  border-color: rgba(255, 211, 205, 0.86);
+  background: rgba(188, 81, 72, 0.18);
+}
+
+.map-squad-marker.incorrect i {
+  background: var(--incorrect);
 }
 
 .map-node {
@@ -8471,7 +8775,7 @@ body.mission-active .player-dm-controls {
   body.dashboard-booting .map-main > *,
   body.dashboard-booting .map-sidebar > *,
   body.dashboard-booting .play-panel > *,
-  body.dashboard-booting.dashboard-stage-operators .status-grid .status-card,
+  body.dashboard-booting.dashboard-stage-left-operators .status-grid .status-card,
   body.dashboard-map-boot .map-wrap,
   body.dashboard-map-boot .map-static-overlay,
   body.dashboard-stage-map-lock #missionMap,
@@ -8502,7 +8806,7 @@ body.mission-active .player-dm-controls {
     animation: none !important;
   }
 
-  body.dashboard-booting.dashboard-stage-operators .status-grid .status-card {
+  body.dashboard-booting.dashboard-stage-left-operators .status-grid .status-card {
     opacity: 1;
     filter: none;
     transform: none;
@@ -8583,7 +8887,8 @@ body.mission-active .player-dm-controls {
     repeating-linear-gradient(97deg, transparent 0 6px, rgba(255,70,48,0.1) 7px 8px);
   background-size: 9px 7px, 17px 13px;
   mix-blend-mode: screen;
-  animation: combat-static 0.3s steps(2, end) infinite;
+  opacity: 0.22;
+  animation: combat-static 0.75s steps(2, end) infinite;
 }
 
 .combat-stage.entering {
@@ -8591,10 +8896,19 @@ body.mission-active .player-dm-controls {
   animation: combat-stage-reveal 1.65s steps(1, end) both;
 }
 .combat-stage.entering::before { animation: combat-layer-reveal 1.65s steps(1, end) both; }
-.combat-stage.entering::after { animation: combat-layer-reveal 1.65s steps(1, end) both, combat-static 0.3s steps(2, end) 1.65s infinite; }
-.map-panel.combat-map-zooming #missionMap {
-  transform-origin: var(--combat-zoom-x, 50%) var(--combat-zoom-y, 50%);
-  animation: combat-map-contact-zoom 1.15s cubic-bezier(.68,0,.3,1) both;
+.combat-stage.entering::after { animation: combat-layer-reveal 1.65s steps(1, end) both, combat-static 0.75s steps(2, end) 1.65s 4; }
+.map-panel.combat-map-transitioning .map-static-overlay {
+  opacity: 0.08;
+  animation: none;
+  filter: none;
+  mix-blend-mode: normal;
+}
+.map-panel.combat-map-transitioning .map-static-overlay::before,
+.map-panel.combat-map-transitioning .map-static-overlay::after {
+  animation: none;
+}
+.map-panel.combat-map-transitioning .map-wrap::after {
+  animation: combat-map-contact-blackout 1.15s cubic-bezier(.68,0,.3,1) both;
 }
 .combat-stage.exiting { opacity: 0; filter: blur(5px) saturate(0.35); pointer-events: none; }
 .combat-stage.entering .combat-party-formation {
@@ -8632,12 +8946,11 @@ body.mission-active .player-dm-controls {
 .combat-stage.entering .combat-stage-wipe i:nth-child(2) { animation-delay: 1.12s; }
 .combat-stage.entering .combat-stage-wipe i:nth-child(3) { animation-delay: 1.24s; }
 
-@keyframes combat-map-contact-zoom {
-  0%, 13%, 28% { transform: scale(1); filter: brightness(1); }
-  7%, 21% { transform: scale(1.012); filter: brightness(1.16) saturate(0.88); }
-  34% { transform: scale(1); filter: brightness(1); }
-  60% { transform: scale(7); filter: brightness(0.28) blur(0.5px); }
-  82%, 100% { transform: scale(11); filter: brightness(0) blur(1px); }
+@keyframes combat-map-contact-blackout {
+  0%, 13%, 28%, 34% { opacity: 0; }
+  7%, 21% { opacity: 0.12; }
+  60% { opacity: 0.42; }
+  82%, 100% { opacity: 1; }
 }
 
 @keyframes combat-stage-reveal {
@@ -8719,6 +9032,13 @@ body.mission-active .player-dm-controls {
 .combat-enemy-unit:nth-child(2) { animation-delay: -1.1s; }
 .combat-enemy-unit:nth-child(3) { animation-delay: -2.2s; }
 
+/* Standard enemies remain visually anchored between actions. Entrance, attack,
+   hit, stun, and defeat states use more specific rules later in this sheet. */
+.combat-enemy-unit:not(.boss) {
+  width: min(13.05rem, 31%);
+  animation: none;
+}
+
 .combat-unit-sprite {
   position: relative;
   display: grid;
@@ -8729,6 +9049,23 @@ body.mission-active .player-dm-controls {
   color: #ff7562;
   font-size: clamp(2.2rem, 6vw, 4.5rem);
   filter: drop-shadow(0 0 10px rgba(255, 76, 57, 0.72));
+}
+
+.combat-enemy-image-sprite {
+  width: clamp(8.1rem, 15vw, 13.2rem);
+  aspect-ratio: 0.9;
+  font-size: 0;
+}
+
+.combat-enemy-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center bottom;
+  pointer-events: none;
+  user-select: none;
+  filter: drop-shadow(0 0 12px rgba(255, 62, 48, 0.48));
 }
 
 .combat-enemy-unit.medium .combat-unit-sprite { color: #f2a54d; transform: scale(1.08); }
@@ -8806,8 +9143,8 @@ body.mission-active .player-dm-controls {
   transform: none;
   transform-origin: 50% 37%;
   background:
-    radial-gradient(ellipse at 37% 37%, rgba(255, 0, 8, 0.56), transparent 8%),
-    radial-gradient(ellipse at 63% 37%, rgba(255, 0, 8, 0.56), transparent 8%),
+    radial-gradient(ellipse at 37% 45%, rgba(255, 0, 8, 0.56), transparent 8%),
+    radial-gradient(ellipse at 63% 45%, rgba(255, 0, 8, 0.56), transparent 8%),
     linear-gradient(180deg, rgba(24, 0, 2, 0), rgba(9, 0, 1, 0.14)),
     url("assets/boss-eyes-optimized.webp") center -6rem / 100% auto no-repeat;
   background-blend-mode: screen, screen, multiply, normal;
@@ -8839,7 +9176,7 @@ body.mission-active .player-dm-controls {
 .combat-stage.entering.boss-fight::after {
   animation:
     combat-layer-reveal 1.65s steps(1, end) both,
-    combat-static 0.3s steps(2, end) 1.65s infinite,
+    combat-static 0.6s steps(2, end) 1.65s 3,
     combat-boss-entry-glitch-static 1.15s steps(1, end) 3.05s both;
 }
 .combat-stage.boss-fight.boss-eyes-attacking::before { animation: combat-boss-background-attack 1.02s cubic-bezier(.2,.8,.25,1) both; }
@@ -9042,6 +9379,9 @@ html.app-tab-hidden .combat-stage-header {
 .combat-party-unit.answer-wrong { border-color: rgba(255, 190, 75, 0.92); box-shadow: inset 0 0 18px rgba(225, 135, 28, 0.2), 0 0 12px rgba(255, 162, 42, 0.16); }
 .combat-answer-cue { position: absolute; top: 0.34rem; right: 0.4rem; color: #68e49b; font-size: 0.48rem; letter-spacing: 0.06em; }
 .combat-party-unit.answer-wrong .combat-answer-cue { color: #ffc25d; }
+.status-card-ability-armed { border-color: color-mix(in srgb, var(--player-color, #9eeeff) 82%, #ffffff); box-shadow: inset 0 0 18px color-mix(in srgb, var(--player-color, #9eeeff) 18%, transparent), 0 0 14px color-mix(in srgb, var(--player-color, #9eeeff) 28%, transparent); }
+.ability-armed-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 3.1rem; padding: 2px 5px; border: 1px solid currentColor; border-radius: 999px; color: #fff1a5; background: rgba(102, 75, 12, 0.62); font-size: .52rem; font-weight: 900; letter-spacing: .08em; animation: abilityArmedPulse 1.4s ease-in-out infinite; }
+@keyframes abilityArmedPulse { 0%, 100% { box-shadow: 0 0 0 rgba(255, 221, 103, 0); } 50% { box-shadow: 0 0 10px rgba(255, 221, 103, 0.42); } }
 
 .combat-action-banner {
   position: absolute;
@@ -9553,6 +9893,11 @@ button.player-ability-label:disabled { cursor: default; opacity: 0.58; }
 .player-vitals-modern-top > b { color: #ffe18a; font-size: 0.72rem; }
 .player-vitals-modern-summary { display: flex; flex-wrap: wrap; gap: 5px; color: #b8cbd1; font-size: 0.64rem; }
 .player-vitals-modern-summary span { padding: 2px 5px; border: 1px solid rgba(255,255,255,0.1); border-radius: 3px; background: rgba(4, 12, 16, 0.54); }
+.player-answer-feedback { display: grid; gap: 2px; padding: 6px 8px; border-left: 3px solid #7ce7a5; background: rgba(12, 55, 40, 0.46); color: #d8f7e4; font-size: 0.66rem; line-height: 1.25; }
+.player-answer-feedback strong { letter-spacing: 0.08em; font-size: 0.68rem; }
+.player-answer-feedback.wrong { border-left-color: #ff9b72; background: rgba(71, 29, 22, 0.48); color: #ffe0d5; }
+.player-answer-feedback.wrong strong { color: #ffb08f; }
+.player-answer-feedback span { overflow-wrap: anywhere; }
 .player-class-loadout, .player-inventory-panel { display: grid; gap: 5px; min-width: 0; padding: 8px; border: 1px solid color-mix(in srgb, var(--player-class-color, #9eeeff) 28%, transparent); border-radius: 6px; background: rgba(4, 12, 16, 0.56); }
 .player-class-loadout > small { color: #a9c1c8; font-size: 0.64rem; line-height: 1.35; }
 .player-class-loadout-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
@@ -9561,14 +9906,25 @@ button.player-ability-label:disabled { cursor: default; opacity: 0.58; }
 .player-class-loadout-heading.empowered b { color: #ffd47a; }
 .player-class-loadout-heading b { color: #8fe39c; font-size: 0.58rem; letter-spacing: 0.05em; }
 .player-class-loadout-heading b.recharging { color: #ffb875; animation: ability-recharge-pulse 1.6s ease-in-out infinite; }
+.player-class-loadout-heading b.optimistic-arming { color: #ffe07a; animation: ability-recharge-pulse 0.7s ease-in-out infinite; }
 .player-class-action-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; min-width: 0; }
 .tactician-protocol-picker { display: inline-flex; align-items: center; gap: .28rem; color: var(--muted, #8ea3b5); font-size: .62rem; letter-spacing: .06em; text-transform: uppercase; }
 .tactician-protocol-picker select { min-width: 4.8rem; padding: .2rem .3rem; border: 1px solid color-mix(in srgb, var(--player-color, #9eeeff) 45%, #1d2934); border-radius: .3rem; background: #0b1219; color: #d8ecf4; font: inherit; letter-spacing: .02em; text-transform: none; }
+.tactician-protocol-button { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 1px 6px; width: 100%; min-height: 42px; padding: 6px 8px; border: 1px solid rgba(126, 213, 255, 0.45); border-radius: 6px; color: #e9fbff; background: linear-gradient(135deg, rgba(25, 84, 105, 0.9), rgba(7, 26, 38, 0.92)); text-align: left; cursor: pointer; }
+.tactician-protocol-button span { grid-row: 1 / span 2; display: grid; place-items: center; width: 1.45rem; height: 1.45rem; border: 1px solid currentColor; border-radius: 50%; color: #9eeeff; font-size: .48rem; font-weight: 900; writing-mode: vertical-rl; }
+.tactician-protocol-button strong { font-size: .7rem; letter-spacing: .12em; }
+.tactician-protocol-button small { color: #a9c9d4; font-size: .55rem; letter-spacing: .05em; text-transform: uppercase; }
+.tactician-protocol-button.protocol-guard { border-color: rgba(255, 212, 112, 0.64); background: linear-gradient(135deg, rgba(100, 76, 25, 0.9), rgba(37, 28, 12, 0.92)); }
+.tactician-protocol-button.protocol-guard span { color: #ffd56f; }
+.tactician-protocol-button.protocol-support { border-color: rgba(110, 242, 171, 0.6); background: linear-gradient(135deg, rgba(23, 94, 72, 0.9), rgba(8, 37, 31, 0.92)); }
+.tactician-protocol-button.protocol-support span { color: #7cf0b4; }
+.tactician-protocol-button:disabled { opacity: .42; cursor: default; }
 .player-ability-btn { width: 100%; min-height: 34px; padding: 6px 7px; border: 1px solid color-mix(in srgb, var(--player-class-color, #9eeeff) 52%, transparent); border-radius: 4px; color: #e9fbff; background: rgba(11, 43, 52, 0.78); font-size: 0.62rem; font-weight: 800; cursor: pointer; }
 .player-ability-btn:disabled { opacity: 0.42; cursor: default; }
 .player-ability-target { width: 100%; min-width: 0; max-width: none; box-sizing: border-box; padding: 6px 7px; border: 1px solid rgba(255, 216, 131, 0.45); border-radius: 4px; color: #ffe7a4; background: rgba(33, 25, 10, 0.82); font-size: 0.66rem; }
 .player-target-field { display: grid; grid-template-columns: minmax(0, 1fr); gap: 3px; min-width: 0; color: #d9c584; font-size: 0.57rem; letter-spacing: 0.04em; text-transform: uppercase; }
 .player-class-action-row .player-ability-btn, .player-class-action-row .player-ability-target { width: 100%; min-width: 0; box-sizing: border-box; }
+.player-class-loadout.armed { border-color: #ffe07a; box-shadow: 0 0 16px rgba(255, 211, 88, 0.2), inset 0 0 16px rgba(255, 211, 88, 0.08); }
 .player-target-picker-device { display: grid; gap: 5px; min-width: 0; padding: 6px; border: 1px solid rgba(255, 216, 131, 0.24); border-radius: 5px; background: rgba(24, 20, 10, 0.48); }
 .player-target-picker-heading { display: flex; align-items: center; justify-content: space-between; gap: 6px; color: #ffe7a4; font-size: 0.58rem; font-weight: 900; letter-spacing: 0.06em; text-transform: uppercase; }
 .player-target-picker-heading small { color: #9fb6bd; font-size: 0.52rem; font-weight: 600; letter-spacing: 0; text-transform: none; }
@@ -9603,3 +9959,1155 @@ button.player-ability-label:disabled { cursor: default; opacity: 0.58; }
 @keyframes player-notice-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
 .status-card-heading .answer-submit-badge { position: static; transform: none; margin-left: auto; min-width: 0; height: 18px; padding: 0 5px; font-size: 0.48rem; }
 body.mission-active .answer-result-badge { width: 18px; height: 18px; font-size: 0.78rem; }
+
+/* Final mobile overrides: these appear after the device-loadout rules so a
+   later desktop declaration cannot expand the phone layout again. */
+@media (max-width: 560px) {
+  #missionCard {
+    gap: 6px;
+    padding: 9px;
+    overflow-y: auto;
+  }
+
+  .player-vitals-modern { gap: 5px; }
+  .player-vitals-modern-top { gap: 5px; }
+  .player-vitals-class-icon { width: 1.65rem; height: 1.65rem; border-radius: 5px; font-size: 0.95rem; }
+  .player-vitals-modern-top strong { font-size: 0.86rem; }
+  .player-vitals-modern-top small { font-size: 0.58rem; }
+  .player-vitals-modern-top > b { font-size: 0.64rem; }
+  .player-vitals-modern-summary { gap: 3px; font-size: 0.56rem; }
+
+  .player-loadout-area { gap: 4px; }
+  .player-class-loadout, .player-inventory-panel { gap: 3px; padding: 5px 6px; }
+  .player-class-loadout > small { max-height: 2.25em; overflow: hidden; font-size: 0.55rem; line-height: 1.12; }
+  .player-class-loadout-heading strong, .player-inventory-panel > strong { font-size: 0.64rem; }
+  .player-ability-btn { min-height: 28px; padding: 4px 6px; font-size: 0.58rem; }
+  .player-inventory-row { gap: 3px; padding: 4px 0; }
+  .player-inventory-row strong { font-size: 0.6rem; }
+  .player-inventory-row small { font-size: 0.52rem; line-height: 1.12; }
+
+  .player-prompt { gap: 3px; padding: 5px 6px; }
+  .player-prompt > span { margin-bottom: 1px; padding: 2px 4px; font-size: 0.54rem; }
+  .player-prompt > h2 { font-size: 0.7rem; line-height: 1.04; }
+  .player-prompt > p[data-prompt-question] { font-size: 0.76rem; line-height: 1.1; }
+  .player-prompt .player-class-hint { max-height: 1.2em; overflow: hidden; font-size: 0.58rem; line-height: 1.1; }
+  .player-choice-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px; }
+  .playerChoiceBtn { min-height: 32px; gap: 4px; padding: 4px 5px; font-size: 0.66rem; line-height: 1.05; }
+  .playerChoiceBtn span { line-height: 1.05; }
+  .player-submit-status { min-height: 11px; font-size: 0.56rem; line-height: 1.05; }
+  .player-countdown { gap: 3px; padding: 3px 5px; }
+  .player-countdown-heading { font-size: 0.62rem; }
+  .player-countdown-heading strong { font-size: 0.7rem; }
+  .player-countdown-track { height: 3px; }
+  .player-boss-alert { margin: 2px 0; padding: 4px 5px; font-size: 0.62rem; }
+  .player-action-form { gap: 3px; margin-top: 2px; padding-top: 4px; }
+  .player-action-form label { gap: 3px; font-size: 0.6rem; }
+  .player-action-form input,
+  .player-action-form button,
+  .player-fill-form input,
+  .player-fill-form button { min-height: 30px; padding: 4px 6px; font-size: 0.66rem; }
+
+  .player-answer-feedback-panel .player-answer-feedback { gap: 1px; padding: 4px 6px; font-size: 0.58rem; line-height: 1.12; }
+  .player-answer-feedback-panel .player-answer-feedback strong { font-size: 0.62rem; }
+  .player-haptics-toggle { padding: 3px 5px; font-size: 0.58rem; }
+  .player-haptics-toggle input { width: 14px; height: 14px; }
+  .player-haptics-note { max-height: 1.2em; overflow: hidden; font-size: 0.52rem; }
+}
+
+/* Keep the player question/action flow compact at every viewport. The answer
+   choices are always a predictable 2x2 quadrant, and queued actions follow
+   the answer result instead of competing with the question header. */
+.player-prompt {
+  gap: 6px;
+  padding: 8px;
+}
+
+.player-prompt > span {
+  margin-bottom: 0;
+  padding: 3px 6px;
+  font-size: 0.64rem;
+  line-height: 1;
+}
+
+.player-prompt > h2 {
+  font-size: 0.92rem;
+  line-height: 1.05;
+}
+
+.player-prompt > p[data-prompt-question] {
+  line-height: 1.16;
+}
+
+.player-answer-controls,
+.player-choice-grid {
+  min-height: 0;
+  gap: 6px;
+}
+
+.player-choice-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.playerChoiceBtn {
+  min-height: 44px;
+  padding: 6px 8px;
+}
+
+.player-queued-action-panel {
+  padding: 5px 7px;
+  border-radius: 6px;
+}
+
+.player-queued-action-panel .player-action-form {
+  gap: 3px;
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.player-queued-action-panel .player-action-form label {
+  gap: 3px;
+  font-size: 0.62rem;
+}
+
+.player-queued-action-panel .player-action-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px;
+}
+
+.player-queued-action-panel .player-action-row input,
+.player-queued-action-panel .player-action-row button,
+.player-queued-action-panel .player-auto-action-btn {
+  min-height: 28px;
+  padding: 4px 6px;
+  font-size: 0.62rem;
+}
+
+.player-queued-action-panel .player-action-row button {
+  width: auto;
+}
+
+.player-queued-action-panel .player-auto-action-btn {
+  min-height: 24px;
+}
+
+@media (max-width: 560px) {
+  .player-prompt {
+    gap: 3px;
+    padding: 5px 6px;
+  }
+
+  .player-prompt > span {
+    padding: 2px 4px;
+    font-size: 0.54rem;
+  }
+
+  .player-prompt > h2 {
+    font-size: 0.7rem;
+    line-height: 1.04;
+  }
+
+  .player-prompt > p[data-prompt-question] {
+    line-height: 1.1;
+  }
+
+  .player-choice-grid {
+    gap: 3px;
+  }
+
+  .playerChoiceBtn {
+    min-height: 32px;
+    padding: 4px 5px;
+  }
+
+  .player-queued-action-panel .player-action-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+}
+
+/* Reference player layout: identity and vitals span the card, abilities/items
+   and personal actions share the middle row, and the challenge owns the full
+   width below them. */
+@media (min-width: 701px) {
+  #missionCard {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+    column-gap: 12px;
+    row-gap: 10px;
+  }
+
+  #missionCard > .player-topline,
+  #missionCard > #playerIdentity,
+  #missionCard > #playerVitals,
+  #missionCard > #playerClassPanel,
+  #missionCard > #playerPromptArea,
+  #missionCard > #playerAnswerFeedbackPanel,
+  #missionCard > .player-haptics-toggle,
+  #missionCard > .player-haptics-note {
+    grid-column: 1 / -1;
+  }
+
+  #missionCard > #playerLoadoutArea { grid-column: 1; }
+  #missionCard > #playerQueuedActionPanel { grid-column: 2; }
+}
+
+.player-loadout-area {
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(90, 167, 164, 0.3);
+  border-radius: 8px;
+  background: rgba(8, 15, 17, 0.68);
+}
+
+.player-loadout-section-heading {
+  margin: 0;
+  color: #b6c3c6;
+  font-size: 0.92rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.player-class-loadout,
+.player-inventory-panel {
+  padding: 10px;
+  border-radius: 7px;
+}
+
+.player-queued-action-panel {
+  min-height: 100%;
+  padding: 12px;
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.player-queued-action-panel .player-action-form {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.player-action-heading {
+  display: block;
+  color: #b6c3c6;
+  font-size: 0.92rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.player-queued-action-panel .player-action-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.player-queued-action-panel .player-action-row input,
+.player-queued-action-panel .player-action-row button,
+.player-queued-action-panel .player-auto-action-btn {
+  min-height: 48px;
+}
+
+.player-queued-action-panel .player-auto-action-btn {
+  min-height: 44px;
+}
+
+.player-queued-action-panel .player-submit-status {
+  min-height: 0;
+  line-height: 1.35;
+}
+
+.player-vitals-modern-top {
+  align-items: start;
+}
+
+.player-vitals-hp-copy {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.player-vitals-hp-track {
+  display: block;
+  width: min(100%, 360px);
+  height: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.player-vitals-hp-track i {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #b54f55, #df6f68);
+  transition: width 0.25s ease;
+}
+
+@media (max-width: 700px) {
+  #missionCard {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .player-loadout-area,
+  .player-queued-action-panel {
+    grid-column: 1;
+  }
+}
+
+@media (max-width: 560px) {
+  .player-loadout-area {
+    padding: 7px;
+    gap: 6px;
+  }
+
+  .player-loadout-section-heading,
+  .player-action-heading {
+    font-size: 0.68rem;
+  }
+
+  .player-class-loadout,
+  .player-inventory-panel {
+    padding: 6px;
+  }
+
+  .player-queued-action-panel {
+    min-height: 0;
+    padding: 7px;
+  }
+
+  .player-queued-action-panel .player-action-form {
+    gap: 5px;
+  }
+
+  .player-queued-action-panel .player-action-row {
+    gap: 5px;
+  }
+
+  .player-queued-action-panel .player-action-row input,
+  .player-queued-action-panel .player-action-row button,
+  .player-queued-action-panel .player-auto-action-btn {
+    min-height: 32px;
+  }
+
+  .player-vitals-hp-track {
+    height: 7px;
+  }
+}
+
+/* Reference composition: use the wider mission card on tablets/desktops and
+   reserve the lower challenge area for full-width answer rows. */
+.player-body .player-shell {
+  width: min(980px, 100%);
+}
+
+.player-choice-grid {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+.playerChoiceBtn {
+  min-height: 56px;
+  padding: 10px 14px;
+}
+
+.player-prompt {
+  gap: 14px;
+  padding: 14px;
+}
+
+.player-prompt > span {
+  display: flex;
+  width: 100%;
+  box-sizing: border-box;
+  align-items: center;
+  margin: 0;
+  padding: 10px 13px;
+  border-radius: 7px;
+  font-size: 0.84rem;
+}
+
+.player-prompt > h2 {
+  font-size: 1.7rem;
+  line-height: 1.08;
+}
+
+.player-prompt > p[data-prompt-question] {
+  font-size: 1.08rem;
+  line-height: 1.25;
+}
+
+@media (max-width: 700px) {
+  .player-choice-grid {
+    gap: 5px;
+  }
+
+  .playerChoiceBtn {
+    min-height: 44px;
+    padding: 7px 9px;
+  }
+
+  .player-prompt {
+    gap: 7px;
+    padding: 8px;
+  }
+
+  .player-prompt > span {
+    padding: 6px 8px;
+    font-size: 0.68rem;
+  }
+
+  .player-prompt > h2 {
+    font-size: 1.08rem;
+  }
+
+  .player-prompt > p[data-prompt-question] {
+    font-size: 0.86rem;
+  }
+}
+
+@media (max-width: 560px) {
+  .player-body .player-shell {
+    width: 100%;
+  }
+
+  .player-prompt {
+    gap: 4px;
+    padding: 6px;
+  }
+
+  .player-prompt > span {
+    padding: 4px 6px;
+    font-size: 0.58rem;
+  }
+
+  .player-prompt > h2 {
+    font-size: 0.86rem;
+  }
+
+  .player-prompt > p[data-prompt-question] {
+    font-size: 0.76rem;
+  }
+}
+
+/* Compact challenge sizing, matching the earlier 2x2 answer treatment. */
+.player-prompt {
+  gap: 6px;
+  padding: 8px;
+}
+
+.player-prompt > span {
+  padding: 5px 8px;
+  font-size: 0.68rem;
+}
+
+.player-prompt > h2 {
+  font-size: 1rem;
+  line-height: 1.06;
+}
+
+.player-prompt > p[data-prompt-question] {
+  font-size: 0.9rem;
+  line-height: 1.16;
+}
+
+.player-choice-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.playerChoiceBtn {
+  min-height: 40px;
+  padding: 6px 8px;
+}
+
+@media (max-width: 700px) {
+  .player-prompt {
+    gap: 5px;
+    padding: 7px;
+  }
+
+  .player-prompt > span {
+    padding: 4px 6px;
+    font-size: 0.62rem;
+  }
+
+  .player-prompt > h2 {
+    font-size: 0.88rem;
+  }
+
+  .player-prompt > p[data-prompt-question] {
+    font-size: 0.82rem;
+  }
+
+  .player-choice-grid {
+    gap: 4px;
+  }
+
+  .playerChoiceBtn {
+    min-height: 36px;
+    padding: 5px 6px;
+  }
+}
+
+@media (max-width: 560px) {
+  .player-prompt {
+    gap: 3px;
+    padding: 5px 6px;
+  }
+
+  .player-prompt > span {
+    padding: 2px 4px;
+    font-size: 0.54rem;
+  }
+
+  .player-prompt > h2 {
+    font-size: 0.7rem;
+  }
+
+  .player-prompt > p[data-prompt-question] {
+    font-size: 0.76rem;
+  }
+
+  .player-choice-grid {
+    gap: 3px;
+  }
+
+  .playerChoiceBtn {
+    min-height: 32px;
+    padding: 4px 5px;
+  }
+}
+
+/* Mobile viewport lock: content may scroll vertically, but never widens the
+   page or creates a horizontal scrollbar. Safe-area padding is included in
+   the viewport width so the card stays flush with the device edges. */
+@media (max-width: 700px) {
+  body.player-body {
+    width: 100%;
+    min-width: 0;
+    max-width: 100vw;
+    box-sizing: border-box;
+    align-items: start;
+    justify-items: stretch;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior-x: none;
+    touch-action: pan-y;
+  }
+
+  .player-body .player-shell,
+  .player-body .player-card {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+
+  .player-body .player-card {
+    overflow-x: hidden;
+  }
+
+  .player-body #missionCard {
+    max-height: calc(100dvh - 12px);
+    overflow-y: auto;
+    overscroll-behavior-x: none;
+  }
+
+  /* iOS Safari focuses fields below 16px by zooming the page. Keep the
+     controls compact by size/padding, but preserve the 16px text threshold. */
+  .player-body input,
+  .player-body select,
+  .player-body textarea {
+    font-size: 16px !important;
+  }
+}
+
+/* Battery-conscious mobile atmosphere. Keep the tactical look, but avoid
+   stacking eight full-screen shadow animations and a fast telemetry beam on
+   small GPUs. One-shot hit/answer feedback remains animated below. */
+@media (max-width: 700px) {
+  .player-signal-field {
+    opacity: 0.28;
+  }
+
+  .player-signal-field::before {
+    opacity: 0.55;
+    animation-duration: 16s;
+  }
+
+  .player-signal-field i {
+    box-shadow: none;
+    animation-duration: 14s;
+  }
+
+  .player-signal-field i:nth-child(n + 5) {
+    display: none;
+  }
+
+  .player-card::before {
+    opacity: 0.22;
+    animation-duration: 14s;
+  }
+
+  .player-body.player-boss-active .player-signal-field i {
+    box-shadow: none;
+    animation-duration: 10s;
+  }
+
+  .player-vitals.low:not(.damage-flash),
+  .player-vitals.has-burned:not(.damage-flash),
+  .player-vitals.has-bleeding:not(.damage-flash),
+  .player-vitals.has-shocked:not(.damage-flash),
+  .player-vitals.has-concussed:not(.damage-flash),
+  .status-card.low-health:not(.hit-pulse):not(.heal-pulse),
+  .status-card.has-burned:not(.hit-pulse):not(.heal-pulse),
+  .status-card.has-bleeding:not(.hit-pulse):not(.heal-pulse),
+  .status-card.has-shocked:not(.hit-pulse):not(.heal-pulse),
+  .status-card.has-concussed:not(.hit-pulse):not(.heal-pulse) {
+    animation: none;
+  }
+}
+
+/* Do not keep visual effects composited while the player switches apps or
+   locks the phone. */
+.player-page-hidden .player-signal-field::before,
+.player-page-hidden .player-signal-field i,
+.player-page-hidden .player-card::before {
+  animation-play-state: paused !important;
+}
+
+/* Dashboard idle-state performance: hidden overlays remain in the DOM so
+   they can open instantly, but their animations should not consume a frame
+   while another screen is visible. */
+[hidden],
+[hidden] *,
+.deployment-overlay:not(.deployment-visible) *,
+.combat-stage[hidden] *,
+.reset-confirm-overlay[hidden] *,
+.join-lobby[hidden] * {
+  animation-play-state: paused !important;
+}
+
+/* The preflight has no active route yet. Keep the signal/map shell static
+   until the mission starts; mission-active restores the full atmosphere. */
+body:not(.mission-active) .map-signal-field::before,
+body:not(.mission-active) .map-signal-field i,
+body:not(.mission-active) .map-threat-frame::before,
+body:not(.mission-active) .map-threat-frame i,
+body:not(.mission-active) .mission-log-heading .heading-waveform i,
+body:not(.mission-active) .status-update-heading .heading-waveform i,
+body:not(.mission-active) .transmission-waveform i,
+body:not(.mission-active) .signal-bars i,
+body:not(.mission-active) .map-failure-short {
+  animation: none !important;
+}
+
+/* Visual console upgrade: roster and mission log stay on slim rails while the
+   map/combat stage owns the largest area. Operator command buttons and the
+   environment/threat panel are intentionally not introduced here. */
+@media (min-width: 1180px) {
+  body.mission-active .layout {
+    grid-template-columns: minmax(238px, 0.27fr) minmax(560px, 1.52fr) minmax(300px, 0.46fr);
+    grid-template-rows: minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  body.mission-active .map-panel,
+  body.mission-active .map-main,
+  body.mission-active .map-sidebar,
+  body.mission-active .play-panel {
+    display: contents;
+  }
+
+  body.mission-active .map-main > .panel-header {
+    grid-column: 2;
+    grid-row: 1;
+    min-height: 40px;
+    margin: 0;
+    padding: 7px 10px;
+    border: 1px solid rgba(var(--atmo-primary), 0.28);
+    border-radius: 8px;
+    background: linear-gradient(100deg, rgba(var(--atmo-primary), 0.1), rgba(17, 22, 26, 0.92));
+  }
+
+  body.mission-active .map-main > .map-wrap {
+    grid-column: 2;
+    grid-row: 2;
+    min-height: 0;
+    height: auto;
+    overflow: hidden;
+    border: 1px solid rgba(var(--atmo-primary), 0.3);
+    border-radius: 9px;
+    background:
+      linear-gradient(145deg, rgba(var(--atmo-primary), 0.06), transparent 45%),
+      linear-gradient(180deg, rgba(8, 14, 18, 0.9), rgba(9, 12, 16, 0.96));
+  }
+
+  body.mission-active .map-main > .initiative-timeline {
+    grid-column: 2;
+    grid-row: 3;
+  }
+
+  body.mission-active .map-main > .map-control-dock,
+  body.mission-active .play-panel > .play-control-dock {
+    grid-column: 2;
+    grid-row: 4;
+  }
+
+  body.mission-active .map-main > .route-telemetry {
+    grid-column: 2;
+    grid-row: 5;
+  }
+
+  body.mission-active .map-main > .map-emergency-timer {
+    grid-column: 2;
+    grid-row: 6;
+  }
+
+  body.mission-active .map-main > .legend {
+    grid-column: 2;
+    grid-row: 7;
+  }
+
+  body.mission-active .map-sidebar > .mission-progress {
+    grid-column: 1;
+    grid-row: 1;
+    min-height: 40px;
+    margin: 0;
+  }
+
+  body.mission-active .map-sidebar > .status-grid {
+    grid-column: 1;
+    grid-row: 2 / span 2;
+    min-height: 0;
+    overflow: auto;
+    align-content: start;
+    padding-right: 2px;
+  }
+
+  body.mission-active .map-sidebar > .inventory-actions {
+    grid-column: 1;
+    grid-row: 4;
+    min-height: 0;
+    margin: 0;
+  }
+
+  body.mission-active .map-sidebar > .player-session-panel {
+    grid-column: 1;
+    grid-row: 5 / span 2;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  body.mission-active .play-panel > .mission-log-heading {
+    grid-column: 3;
+    grid-row: 1;
+    min-height: 40px;
+    margin: 0;
+  }
+
+  body.mission-active .play-panel > .encounter {
+    grid-column: 3;
+    grid-row: 2;
+    min-height: 0;
+    overflow: auto;
+    margin: 0;
+  }
+
+  body.mission-active .play-panel > .status-update-panel {
+    grid-column: 3;
+    grid-row: 3;
+    min-height: 0;
+    overflow: hidden;
+    margin: 0;
+  }
+
+  body.mission-active .play-panel > .mission-utility-shell {
+    grid-column: 3;
+    grid-row: 4 / span 3;
+    min-height: 0;
+    overflow: auto;
+    margin: 0;
+  }
+
+  body.mission-active .play-panel > .briefing {
+    display: none;
+  }
+
+  body.mission-active .map-panel::before,
+  body.mission-active .play-panel::before {
+    display: none;
+  }
+
+  body.mission-active .map-main > .map-control-dock,
+  body.mission-active .play-panel > .play-control-dock {
+    min-height: 0;
+    padding: 0;
+  }
+
+  body.mission-active .map-main > .route-telemetry,
+  body.mission-active .map-main > .map-emergency-timer,
+  body.mission-active .map-main > .legend {
+    margin: 0;
+  }
+
+  body.mission-active .map-main > .legend {
+    padding: 5px 8px;
+  }
+}
+
+.initiative-timeline {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(var(--atmo-primary), 0.3);
+  border-radius: 8px;
+  background:
+    linear-gradient(100deg, rgba(var(--atmo-primary), 0.08), transparent 48%),
+    rgba(11, 17, 21, 0.92);
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.035), 0 8px 22px rgba(0, 0, 0, 0.2);
+}
+
+.initiative-timeline[hidden] {
+  display: none !important;
+}
+
+.initiative-timeline-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.initiative-timeline-heading > div {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.initiative-timeline-heading .eyebrow {
+  margin: 0;
+  color: var(--accent);
+  font-size: 0.58rem;
+  letter-spacing: 0.12em;
+}
+
+.initiative-timeline-heading strong {
+  color: var(--ink);
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.initiative-timeline-heading small {
+  flex: 0 1 auto;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.62rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.initiative-timeline-track {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.initiative-actor {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 0;
+  min-width: 112px;
+  gap: 7px;
+  padding: 5px 8px;
+  border: 1px solid color-mix(in srgb, var(--initiative-color) 44%, rgba(255, 255, 255, 0.1));
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.025);
+  transition: border-color 160ms ease, background-color 160ms ease, transform 160ms ease;
+}
+
+.initiative-actor + .initiative-actor {
+  margin-left: 14px;
+}
+
+.initiative-actor.current {
+  border-color: var(--initiative-color);
+  background: color-mix(in srgb, var(--initiative-color) 15%, rgba(17, 22, 26, 0.94));
+  box-shadow: 0 0 14px color-mix(in srgb, var(--initiative-color) 18%, transparent);
+  transform: translateY(-1px);
+}
+
+.initiative-actor.submitted {
+  opacity: 0.82;
+}
+
+.initiative-actor.enemy {
+  background: rgba(184, 50, 50, 0.08);
+}
+
+.initiative-actor-glyph {
+  display: grid;
+  flex: 0 0 25px;
+  place-items: center;
+  width: 25px;
+  height: 25px;
+  border: 1px solid var(--initiative-color);
+  border-radius: 50%;
+  color: var(--initiative-color);
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.initiative-actor-copy {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.initiative-actor-copy strong,
+.initiative-actor-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.initiative-actor-copy strong {
+  color: var(--ink);
+  font-size: 0.66rem;
+}
+
+.initiative-actor-copy small {
+  color: var(--initiative-color);
+  font-size: 0.54rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.initiative-link {
+  position: absolute;
+  top: 50%;
+  right: -13px;
+  z-index: 2;
+  color: var(--accent);
+  font-size: 1.1rem;
+  font-style: normal;
+  line-height: 1;
+  transform: translateY(-54%);
+}
+
+@media (max-width: 1179px) {
+  .initiative-timeline {
+    margin-top: 4px;
+  }
+}
+
+/* Concept-art console skin. Kept on mission-active screens so preflight and
+   player pages retain their own visual language. */
+body.mission-active,
+body.console-visual-test {
+  --ink: #e6edf0;
+  --muted: #82939b;
+  --line: #263941;
+  --accent: #d9b86c;
+  --accent-2: #35c7d8;
+  --danger: #ff4b4b;
+  --correct: #3fd08b;
+  --incorrect: #ff4b4b;
+  --boss: #ff4b4b;
+  --atmo-r: 32;
+  --atmo-g: 178;
+  --atmo-b: 198;
+  --atmo-secondary-r: 217;
+  --atmo-secondary-g: 184;
+  --atmo-secondary-b: 108;
+  --atmo-deep: #020609;
+  --atmo-mid: #071016;
+  --atmo-edge: #0b141a;
+  --surface-shell-top: #081117;
+  --surface-shell-bottom: #03070a;
+  --surface-panel-top: #0b151b;
+  --surface-panel-bottom: #050b0f;
+  --surface-card-top: #0d1a21;
+  --surface-card-bottom: #071015;
+  font-family: "Bahnschrift SemiCondensed", "Arial Narrow", "Roboto Condensed", Arial, sans-serif;
+  background:
+    linear-gradient(rgba(65, 117, 132, 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(65, 117, 132, 0.055) 1px, transparent 1px),
+    radial-gradient(circle at 50% 35%, rgba(14, 101, 123, 0.12), transparent 42%),
+    linear-gradient(145deg, #020609 0%, #071117 55%, #020406 100%);
+  background-size: 42px 42px, 42px 42px, auto, auto;
+}
+
+body.mission-active .app-shell,
+body.console-visual-test .app-shell {
+  width: min(1660px, calc(100vw - 18px));
+}
+
+body.mission-active .topbar,
+body.console-visual-test .topbar {
+  border-bottom: 1px solid rgba(53, 199, 216, 0.2);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.24);
+}
+
+body.mission-active .topbar h1,
+body.console-visual-test .topbar h1 {
+  color: #f2f5f5;
+  font-family: "Bahnschrift SemiCondensed", "Arial Narrow", Arial, sans-serif;
+  font-size: clamp(1.05rem, 1.5vw, 1.45rem);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+body.mission-active .eyebrow,
+body.console-visual-test .eyebrow {
+  color: var(--accent-2);
+  font-family: Consolas, "Courier New", monospace;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+body.mission-active .map-main > .panel-header,
+body.mission-active .map-wrap,
+body.mission-active .initiative-timeline,
+body.mission-active .mission-progress,
+body.mission-active .status-card,
+body.mission-active .inventory-actions,
+body.mission-active .player-session-panel,
+body.mission-active .play-panel > .mission-log-heading,
+body.mission-active .play-panel > .encounter,
+body.mission-active .play-panel > .status-update-panel,
+body.mission-active .play-panel > .mission-utility-shell,
+body.console-visual-test .map-main > .panel-header,
+body.console-visual-test .map-wrap,
+body.console-visual-test .initiative-timeline,
+body.console-visual-test .mission-progress,
+body.console-visual-test .status-card,
+body.console-visual-test .inventory-actions,
+body.console-visual-test .player-session-panel,
+body.console-visual-test .play-panel > .mission-log-heading,
+body.console-visual-test .play-panel > .encounter,
+body.console-visual-test .play-panel > .status-update-panel,
+body.console-visual-test .play-panel > .mission-utility-shell {
+  border-radius: 4px;
+  border-color: rgba(53, 199, 216, 0.27);
+  background:
+    linear-gradient(135deg, rgba(16, 83, 99, 0.09), transparent 38%),
+    linear-gradient(180deg, rgba(8, 18, 24, 0.98), rgba(3, 8, 12, 0.98));
+  box-shadow: inset 0 1px rgba(188, 238, 242, 0.055), inset 0 0 28px rgba(20, 126, 148, 0.035), 0 10px 24px rgba(0, 0, 0, 0.3);
+}
+
+body.mission-active .map-main > .panel-header,
+body.console-visual-test .map-main > .panel-header,
+body.mission-active .play-panel > .mission-log-heading,
+body.console-visual-test .play-panel > .mission-log-heading {
+  border-top-color: rgba(53, 199, 216, 0.58);
+  border-bottom-color: rgba(53, 199, 216, 0.17);
+}
+
+body.mission-active .status-card,
+body.console-visual-test .status-card {
+  position: relative;
+  overflow: hidden;
+  border-left: 2px solid var(--player-color, var(--accent-2));
+}
+
+body.mission-active .status-card::after,
+body.console-visual-test .status-card::after {
+  position: absolute;
+  top: 8px;
+  right: 9px;
+  width: 5px;
+  height: 5px;
+  border: 1px solid var(--player-color, var(--accent-2));
+  border-radius: 50%;
+  content: "";
+  box-shadow: 0 0 9px var(--player-color, var(--accent-2));
+}
+
+body.mission-active .status-card-heading strong,
+body.console-visual-test .status-card-heading strong,
+body.mission-active .mission-progress strong,
+body.console-visual-test .mission-progress strong,
+body.mission-active .mission-log-heading,
+body.console-visual-test .mission-log-heading,
+body.mission-active .status-update-heading,
+body.console-visual-test .status-update-heading {
+  font-family: "Bahnschrift SemiCondensed", "Arial Narrow", Arial, sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+body.mission-active .mission-log-heading,
+body.console-visual-test .mission-log-heading {
+  color: var(--accent);
+}
+
+body.mission-active .combat-stage,
+body.console-visual-test .combat-stage {
+  border-radius: 3px;
+  background:
+    linear-gradient(rgba(255, 55, 62, 0.032) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 55, 62, 0.032) 1px, transparent 1px),
+    radial-gradient(circle at 50% 38%, rgba(152, 17, 30, 0.27), transparent 47%),
+    #050709;
+  background-size: 28px 28px, 28px 28px, auto, auto;
+}
+
+body.mission-active .combat-stage-header,
+body.console-visual-test .combat-stage-header {
+  border-color: rgba(255, 75, 75, 0.5);
+  color: #ff5b5b;
+  font-family: Consolas, "Courier New", monospace;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+}
+
+body.mission-active .combat-action-banner,
+body.console-visual-test .combat-action-banner {
+  border-color: rgba(255, 75, 75, 0.28);
+  color: #ff8c8c;
+  font-family: Consolas, "Courier New", monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+body.mission-active .initiative-timeline,
+body.console-visual-test .initiative-timeline {
+  border-top-color: rgba(217, 184, 108, 0.62);
+}
+
+body.mission-active .initiative-timeline-heading strong,
+body.console-visual-test .initiative-timeline-heading strong {
+  color: var(--accent);
+  font-family: Consolas, "Courier New", monospace;
+  letter-spacing: 0.14em;
+}
+
+body.mission-active .initiative-actor,
+body.console-visual-test .initiative-actor {
+  border-radius: 3px;
+  background: rgba(3, 11, 15, 0.85);
+}
+
+body.mission-active .map-control-dock .primary,
+body.console-visual-test .map-control-dock .primary {
+  color: #071014;
+  background: linear-gradient(180deg, #e5c981, #b59551);
+  border-color: #e3c67c;
+  box-shadow: 0 0 18px rgba(217, 184, 108, 0.16);
+}
+
+body.mission-active button,
+body.console-visual-test button {
+  border-radius: 3px;
+  font-family: Consolas, "Courier New", monospace;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}

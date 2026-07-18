@@ -5,7 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Study Adventure Mission Console</title>
     <link rel="preload" as="image" href="assets/boss-swipe-sprite.webp?v=2" type="image/webp">
-    <link rel="stylesheet" href="styles.css?v=enforcer-reserve-1">
+    <link rel="preload" as="video" href="assets/boss-eyes-final-intro-60fps.mp4?v=1" type="video/mp4">
+  <link rel="stylesheet" href="styles.css?v=mission-log-overflow-10">
+  <link rel="stylesheet" href="mission-console-live.css?v=37">
   </head>
   <body>
     <div class="app-shell">
@@ -14,13 +16,14 @@
           <p class="eyebrow">Text-Based Study Adventure</p>
           <h1>Mission Console</h1>
         </div>
+        <div id="liveMissionStripMount" class="live-mission-strip-mount" aria-live="polite"></div>
         <div class="topbar-actions">
           <button id="copyScriptBtn" class="ghost" type="button">Copy DM Script</button>
           <button id="resetBtn" class="danger" type="button">Reset</button>
         </div>
       </header>
 
-      <main class="layout">
+      <main class="layout live-console-shell">
         <section class="setup-panel" id="setupPanel" aria-label="Mission preflight">
           <div class="panel-header">
             <p class="eyebrow">Instructor Console</p>
@@ -60,21 +63,13 @@
                 <label>
                   Mission Theme
                   <select id="missionType">
-                    <option>Horror</option>
-                    <option>Military Thriller</option>
-                    <option>Sci-Fi Survival</option>
-                    <option>Cyberpunk</option>
-                    <option>Fantasy Tech</option>
-                    <option>Post-Apocalyptic</option>
-                    <option>Naval Operations</option>
-                    <option>Space Station</option>
-                    <option>Alien Survival</option>
-                    <option>Custom</option>
+                    <option>Decayed Bunker</option>
+                    <option>Abandoned Space Station</option>
                   </select>
                 </label>
                 <label>
                   Custom Environment
-                  <input id="customTheme" type="text" placeholder="RF bunker under a storm-damaged mountain">
+                  <input id="customTheme" type="text" placeholder="Optional variation within the selected theme">
                 </label>
                 <div class="environment-generator">
                   <button id="generateEnvironmentBtn" class="secondary" type="button">Generate Environment + Boss</button>
@@ -481,11 +476,11 @@ Generate [NUMBER] questions.</textarea>
           </section>
         </section>
 
-        <section class="map-panel" id="mapPanel" aria-label="Mission map">
-          <div class="map-main">
+        <section class="map-panel live-console-dashboard" id="mapPanel" aria-label="Mission map">
+          <div class="map-main live-console-center-board">
           <div class="panel-header compact">
             <div>
-              <p class="eyebrow">Visual Dungeon Map</p>
+              <p class="eyebrow">Mission Channel</p>
               <h2 id="mapTitle">Awaiting Mission</h2>
             </div>
             <div class="map-header-status">
@@ -510,8 +505,16 @@ Generate [NUMBER] questions.</textarea>
           </div>
           <div class="map-wrap">
             <svg id="missionMap" viewBox="0 0 900 560" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Mission route map"></svg>
+            <div id="squadMapMarker" class="map-squad-marker" hidden aria-hidden="true"><i></i></div>
             <section id="combatStage" class="combat-stage" hidden aria-label="Combat visualization">
               <div class="combat-stage-wipe" aria-hidden="true"><i></i><i></i><i></i></div>
+              <div id="combatBossIntro" class="combat-boss-intro" hidden aria-hidden="true">
+                <video id="combatBossIntroVideo" muted playsinline preload="auto" disablepictureinpicture controlslist="nodownload noremoteplayback"
+                  data-mid-src="assets/boss-eyes-intro-july17.mp4?v=1"
+                  data-final-src="assets/boss-eyes-final-intro-60fps.mp4?v=1">
+                  <source src="assets/boss-eyes-intro-july17.mp4?v=1" type="video/mp4">
+                </video>
+              </div>
               <div class="combat-stage-header">
                 <span id="combatStageLabel">HOSTILE CONTACT</span>
                 <strong id="combatStageRound">ROUND 1</strong>
@@ -536,6 +539,16 @@ Generate [NUMBER] questions.</textarea>
               <span class="map-failure-short" aria-hidden="true"></span>
             </div>
           </div>
+          <section class="initiative-timeline" id="initiativeTimeline" hidden aria-label="Initiative order">
+            <div class="initiative-timeline-heading">
+              <div>
+                <span class="eyebrow">Combat flow</span>
+                <strong>Initiative Order</strong>
+              </div>
+              <small id="initiativeTimelineStatus">Awaiting combat telemetry</small>
+            </div>
+            <div class="initiative-timeline-track" id="initiativeTimelineTrack" role="list"></div>
+          </section>
           <div class="map-control-dock" id="mapControlDock" aria-label="Single-device answer controls"></div>
           <div class="route-telemetry" id="routeTelemetry">
             <div class="route-telemetry-header">
@@ -560,10 +573,10 @@ Generate [NUMBER] questions.</textarea>
               <span><i class="node-dot boss"></i> Boss</span>
               <span><i class="node-dot recovery"></i> Recovery</span>
             </div>
-            <div id="simulatorPanel" class="sim-tool-panel sim-legend-panel" hidden></div>
           </div>
+          <div id="simulatorPanel" class="sim-tool-panel sim-legend-panel" hidden></div>
           </div>
-          <div class="map-sidebar">
+          <div class="map-sidebar live-console-left-rail">
           <div class="mission-progress" id="missionProgress">
             <span>Mission Progress</span>
             <strong id="progressSummary">0 / 0 questions resolved</strong>
@@ -587,9 +600,8 @@ Generate [NUMBER] questions.</textarea>
             </div>
           </section>
           </div>
-        </section>
 
-        <section class="play-panel" id="playPanel" aria-label="Mission play area">
+          <section class="play-panel live-console-right-rail" id="playPanel" aria-label="Mission play area">
           <div class="briefing" id="briefingCard">
             <p class="eyebrow">Briefing</p>
             <h2>Ready for orders</h2>
@@ -714,6 +726,7 @@ Generate [NUMBER] questions.</textarea>
             </section>
             </div>
           </section>
+          </section>
         </section>
       </main>
     </div>
@@ -811,7 +824,7 @@ Generate [NUMBER] questions.</textarea>
   <script src="player-session.js?v=stall-guard-1"></script>
   <script src="action-rooms.js?v=cleanup-1"></script>
   <script src="combat-system.js?v=enforcer-reserve-1"></script>
-  <script src="tts-manager.js?v=stall-guard-1"></script>
-  <script src="app.js?v=enforcer-reserve-1"></script>
+  <script src="tts-manager.js?v=audio-enabled-3"></script>
+  <script src="app.js?v=boss-ready-audio-11"></script>
 </body>
 </html>

@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mission Console Concept Reconstruction</title>
+  <link rel="stylesheet" href="mission-ui-concept.css?v=1">
+</head>
+<body>
+  <main class="console-shell">
+    <header class="console-topbar">
+      <div class="brand-block"><small>Text-based study adventure</small><strong>Mission Console</strong></div>
+      <section class="mission-strip">
+        <div class="strip-cell"><span>Mission channel</span><strong>Operation: Silent Reach</strong></div>
+        <div class="strip-cell"><span>Previous response</span><strong class="bad">Correction Required</strong></div>
+        <div class="strip-cell"><span>Submitted</span><strong>6 responses submitted</strong></div>
+        <div class="strip-cell"><span>Required</span><strong>Rectifier</strong></div>
+        <div class="strip-cell count"><strong>10 / 15</strong><span>Questions</span></div>
+      </section>
+      <div class="top-actions"><button type="button">Copy DM Script</button><button class="reset" type="button">↻ &nbsp;Reset</button></div>
+    </header>
+
+    <div class="console-grid">
+      <aside class="left-rail">
+        <section class="panel mission-progress">
+          <div class="progress-copy"><span class="micro-label">Mission Progress</span><strong><b>10</b> / 15 questions resolved</strong><strong><b>5</b> / 6 rooms cleared</strong></div>
+          <div class="progress-ring" aria-hidden="true"></div>
+        </section>
+
+        <section class="panel roster-panel">
+          <header class="section-heading"><span>Squad Roster</span><em>6 / 6 operators</em></header>
+          <div class="roster-list">
+            <article class="roster-card role-red"><div class="role-hex">✹</div><div class="roster-main"><div class="roster-name"><strong>CipherSentinel</strong><small>LV 6</small></div><div class="roster-vitals"><span>20 / 20 HP</span><span class="state-pill">OK</span></div></div><span class="ready-mark">✓</span><div class="gear-line">Heavy Rifle &nbsp; Streak 3</div></article>
+            <article class="roster-card role-green"><div class="role-hex">＋</div><div class="roster-main"><div class="roster-name"><strong>ConstantineRookfords</strong><small>LV 6</small></div><div class="roster-vitals"><span>18 / 20 HP</span><span class="state-pill">OK</span></div></div><span class="ready-mark">✓</span><div class="gear-line">Surgical Kit &nbsp; Ready</div></article>
+            <article class="roster-card role-gold"><div class="role-hex">≋</div><div class="roster-main"><div class="roster-name"><strong>Arc</strong><small>LV 6</small></div><div class="roster-vitals"><span>20 / 20 HP</span><span class="state-pill">OK</span></div></div><span class="ready-mark">✓</span><div class="gear-line">Spectrum Analyzer &nbsp; Ready</div></article>
+            <article class="roster-card role-blue"><div class="role-hex">▣</div><div class="roster-main"><div class="roster-name"><strong>ContainmentLeader</strong><small>LV 6</small></div><div class="roster-vitals"><span>20 / 20 HP</span><span class="state-pill">OK</span></div></div><span class="ready-mark">✓</span><div class="gear-line">Ballistic Shield &nbsp; Recharge 0/10</div></article>
+            <article class="roster-card role-purple"><div class="role-hex">⌘</div><div class="roster-main"><div class="roster-name"><strong>SignalPathfinder</strong><small>LV 6</small></div><div class="roster-vitals"><span>20 / 20 HP</span><span class="state-pill">OK</span></div></div><span class="ready-mark bad">×</span><div class="gear-line">Arc Toolkit &nbsp; Recharge 3</div></article>
+            <article class="roster-card role-violet"><div class="role-hex">R</div><div class="roster-main"><div class="roster-name"><strong>Riven</strong><small>LV 6</small></div><div class="roster-vitals"><span>20 / 20 HP</span><span class="state-pill">OK</span></div></div><span class="ready-mark">✓</span><div class="gear-line">Adaptive Module &nbsp; Recharge 1</div></article>
+          </div>
+        </section>
+
+        <section class="panel supplies-panel">
+          <header class="section-heading"><span>Squad Supplies</span><em>Item Codex</em></header>
+          <div class="supply-summary"><span><b>2</b> Medkits</span><span><b>0</b> EMS Devices</span></div>
+          <div class="supply-controls"><select><option>CipherSentinel</option></select><button type="button">Use Medkit</button><button type="button" disabled>Activate EMS</button></div>
+        </section>
+
+        <section class="panel device-panel">
+          <header class="section-heading"><span>Player Devices</span></header>
+          <div class="device-row"><span><b class="device-code">9RHW</b> &nbsp;<span class="online-dot">● Connected</span></span><button type="button">Open player screen</button></div>
+        </section>
+      </aside>
+
+      <section class="center-board">
+        <section class="panel battle-panel">
+          <header class="hostile-bar"><span class="hostile-title"><b class="warning-triangle">▲</b> Critical Hostile</span><strong>Round 1</strong></header>
+          <div class="battlefield">
+            <div class="enemy-header"><small>Undead Operator</small><strong>156 / 156 HP</strong><div class="enemy-hp"><i></i></div><div class="enemy-tags"><span>UNDEAD</span><span>BOSS</span><span>RESIST: ARC</span></div></div>
+            <div class="enemy-visual" aria-hidden="true"></div>
+            <div class="battle-side-stats"><div class="mini-stat"><span>Environment</span><strong>Interference: High</strong><div class="mini-bars"><i></i><i></i><i></i><i></i><i></i><i></i></div></div><div class="mini-stat"><span>Threat Level</span><strong>Extreme &nbsp; ☠</strong><div class="mini-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div></div>
+            <div class="party-line">
+              <article class="battle-card role-red"><div class="battle-hex">C</div><strong>CipherSentinel</strong><small>Heavy Rifle<br>20 / 20 HP</small><div class="readiness"><i></i></div><div class="card-state">Attack Ready</div></article>
+              <article class="battle-card role-green"><div class="battle-hex">C</div><strong>ConstantineRookfords</strong><small>Surgical Kit<br>18 / 20 HP</small><div class="readiness"><i></i></div><div class="card-state">Attack Ready</div></article>
+              <article class="battle-card role-gold"><div class="battle-hex">A</div><strong>Arc</strong><small>Spectrum Analyzer<br>20 / 20 HP</small><div class="readiness"><i></i></div><div class="card-state">Attack Ready</div></article>
+              <article class="battle-card role-blue"><div class="battle-hex">C</div><strong>ContainmentLeader</strong><small>Ballistic Shield<br>20 / 20 HP</small><div class="readiness"><i></i></div><div class="card-state">Attack Ready</div></article>
+              <article class="battle-card role-purple"><div class="battle-hex">⌘</div><strong>SignalPathfinder</strong><small>Arc Toolkit<br>20 / 20 HP</small><div class="readiness"><i></i></div><div class="card-state">Brace</div></article>
+              <article class="battle-card role-violet"><div class="battle-hex">R</div><strong>Riven</strong><small>Adaptive Module<br>20 / 20 HP</small><div class="readiness"><i></i></div><div class="card-state">Attack Ready</div></article>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel initiative-panel"><span class="initiative-label">Initiative<br>Order</span><div class="initiative-track"><span class="turn-token current" style="--token:var(--red)">C</span><span class="turn-token" style="--token:var(--orange)">U</span><span class="turn-token" style="--token:#89969b">C</span><span class="turn-token" style="--token:var(--gold)">A</span><span class="turn-token" style="--token:var(--orange)">U</span><span class="turn-token" style="--token:var(--blue)">S</span><span class="turn-token" style="--token:var(--purple)">R</span><span class="turn-token" style="--token:var(--orange)">U</span><span class="turn-token" style="--token:var(--green)">E</span><span class="turn-token" style="--token:var(--orange)">U</span><span class="turn-token" style="--token:var(--red)">C</span><span class="turn-token" style="--token:var(--gold)">A</span></div><button type="button">View Timeline</button></section>
+
+        <section class="panel legend-panel"><span style="color:var(--red)"><i></i>Current</span><span style="color:var(--green)"><i></i>Correct</span><span style="color:#9d3f3f"><i></i>Incorrect</span><span style="color:var(--purple)"><i></i>Combat</span><span style="color:var(--red)"><i></i>Boss</span><span style="color:var(--blue)"><i></i>Recovery</span></section>
+        <section class="panel sim-panel"><div class="sim-left"><strong>Simulator</strong><div class="sim-buttons"><button>All Correct</button><button>Mixed</button><button>All Wrong</button></div></div><div class="aware-copy"><strong>☑ &nbsp;Aware Bot Abilities</strong><p>When enabled, simulated operators queue a useful class ability or item before answering.</p></div><div class="auto-answer">☑ Auto-answer<br><small>Automatic accuracy: 80%</small></div></section>
+        <section class="panel telemetry-panel"><span>Route Telemetry</span><div class="telemetry-wave"></div><strong class="transition-pending">Route Transition Pending</strong></section>
+        <section class="panel timer-panel"><strong>Challenge Window</strong><div class="timer-track"><i></i></div><span>59.6 &nbsp;&nbsp; Timer Standby</span></section>
+      </section>
+
+      <aside class="right-rail">
+        <section class="panel mission-log-panel"><header class="section-heading gold"><span>Mission Log</span><em>▥▥▥</em></header><div class="transmission-box"><span class="transmission-tag">Transmission Link</span><div class="receiving"><span>Receiving transmission...</span><b>▂▄▆</b></div><div class="waveform"></div><p>Threat-channel interference detected</p><small>Integrity: 68%</small></div></section>
+        <section class="panel updates-panel"><header class="section-heading gold"><span>Status Updates</span><em>▥▥▥</em></header><ul class="update-list"><li>Damage this turn</li><li class="ability">ABILITY: SignalPathfinder's Arc Toolkit disrupts an enemy activation</li><li class="ability">ABILITY: SignalPathfinder's empowered Arc Toolkit places a one-hit bubble on ConstantineRookfords</li><li class="target">CIPHER SENTINEL is targeting UNDEAD OPERATOR</li></ul></section>
+        <section class="panel receiver"><span>Receiving transmission...</span><i class="spinner"></i></section>
+        <section class="panel utility-grid"><button type="button">Mission Controls</button><button type="button">Mission Log History</button><button type="button">Debug Console</button><button type="button">Mission Audio</button></section>
+        <section class="panel effects-panel"><header class="section-heading"><span>Status Effects</span></header><div class="effects-list"><div class="effect-row"><span class="effect-icon">♦</span><div class="effect-copy"><strong>Bleeding</strong><small>-1 HP per round</small></div><span class="effect-time">2 rounds remaining</span></div><div class="effect-row gold"><span class="effect-icon">ϟ</span><div class="effect-copy"><strong>Disrupted</strong><small>Abilities cost +1 action</small></div><span class="effect-time">1 round remaining</span></div><div class="effect-row purple"><span class="effect-icon">◈</span><div class="effect-copy"><strong>Arc Overload</strong><small>Next attack deals +25% damage</small></div><span class="effect-time">1 round remaining</span></div></div><button class="view-effects" type="button">View All Effects</button></section>
+      </aside>
+    </div>
+</main>
+<script>
+  (() => {
+    const DESIGN_WIDTH = 1700;
+    const DESIGN_HEIGHT = 960;
+    const fitConceptCanvas = () => {
+      const scale = Math.min(window.innerWidth / DESIGN_WIDTH, window.innerHeight / DESIGN_HEIGHT);
+      document.documentElement.style.setProperty("--ui-scale", String(Math.max(0.35, scale)));
+    };
+    fitConceptCanvas();
+    window.addEventListener("resize", fitConceptCanvas, { passive: true });
+  })();
+</script>
+</body>
+</html>

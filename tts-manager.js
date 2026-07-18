@@ -23,6 +23,11 @@
     const maxPreparedClips = 10;
     const TTS_NETWORK_TIMEOUT_MS = 30_000;
     const TTS_PLAYBACK_TIMEOUT_MS = 45_000;
+    const disableAudioLoading = options.disableAudioLoading === true;
+
+    function audioLoadingDisabled() {
+      return disableAudioLoading;
+    }
 
     function fetchWithTimeout(resource, requestOptions = {}, timeoutMs = TTS_NETWORK_TIMEOUT_MS) {
       const controller = new AbortController();
@@ -229,6 +234,7 @@
     }
 
     function canSpeak() {
+      if (audioLoadingDisabled()) return false;
       if (state.ttsProvider === "piper") return Boolean(state.ttsPiperAvailable);
       if (state.ttsProvider === "kokoro") return Boolean(state.ttsKokoroAvailable);
       return supported();
@@ -453,6 +459,7 @@
     }
 
     function prepareLocalText(text, options = {}) {
+      if (audioLoadingDisabled()) return Promise.resolve(null);
       const clean = cleanText(text);
       const config = options.config || localSpeechConfig();
       if (!clean || !["piper", "kokoro"].includes(state.ttsProvider) || !localSpeechAvailable(config)) {
@@ -503,6 +510,7 @@
     }
 
     function prefetchTexts(items = []) {
+      if (audioLoadingDisabled()) return Promise.resolve([]);
       const unique = [];
       const seen = new Set();
       for (const item of items) {
@@ -580,6 +588,10 @@
     }
 
     function speakText(text, options = {}) {
+      if (audioLoadingDisabled()) {
+        if (els.ttsStatus) els.ttsStatus.textContent = "Audio disabled for transition diagnostics";
+        return Promise.resolve();
+      }
       const clean = cleanText(text);
       if (!clean) return Promise.resolve();
       state.ttsLastText = clean;

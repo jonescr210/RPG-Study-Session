@@ -6,7 +6,20 @@ const singleDeviceClassAssignments = new Map();
 const ttsModule = window.StudyAdventureTts || {};
 const DEFAULT_NETWORK_TIMEOUT_MS = 8_000;
 const LOCAL_DM_REQUEST_TIMEOUT_MS = 65_000;
-const COMBAT_GATE_MAX_WAIT_MS = 30_000;
+// Presentation-only animation state should never hold mission progression for
+// an extended period. Boss video playback has its own longer watchdog.
+const COMBAT_GATE_MAX_WAIT_MS = 12_000;
+const ROOM_TRANSITION_TRACE_HEARTBEAT_MS = 1_000;
+const ROOM_TRANSITION_TRACE_TIMEOUT_MS = 45_000;
+const ROOM_TRANSITION_MAIN_THREAD_GAP_MS = 350;
+// Temporary isolation switch: prevents music, SFX, and narration audio from
+// fetching, buffering, decoding, or playing while room-transition hangs are tested.
+const DISABLE_AUDIO_LOADING_FOR_TRANSITION_DIAGNOSTICS = false;
+// Keep boss combat responsive while the optional multi-phase narration plan is disabled.
+const ENABLE_BOSS_PHASE_PLAN_GENERATION = false;
+// Room-to-room narration already has deterministic fallbacks. Keeping this
+// off prevents local model latency from blocking route and combat transitions.
+const ENABLE_TRANSITION_NARRATION_GENERATION = false;
 const PLAYER_HEARTBEAT_STALE_MS = 15_000;
 const PLAYER_PROMPT_PUBLICATION_RETRY_MS = 1_500;
 const PLAYER_PROMPT_PUBLICATION_MAX_RETRIES = 5;
@@ -53,6 +66,8 @@ const playerSessionApi = {
 const AUDIO_EFFECT_SELECTIONS_STORAGE_KEY = "studyAdventureAudioEffectSelections";
 const ITEM_CODEX_STORAGE_KEY = "studyAdventureItemCodex";
 const FINAL_SUBMISSION_HOLD_MS = 800;
+const LOCKED_OPERATOR_FOLLOWUP_MS = 10_000;
+const EMERGENCY_SIM_TARGET_REMAINING_MS = 4_500;
 const DEPLOYMENT_ROSTER_REVEAL_DELAY_MS = 1450;
 const DEPLOYMENT_ROSTER_STAGGER_MS = 160;
 const GAME_SFX_EVENTS = [
@@ -63,6 +78,7 @@ const GAME_SFX_EVENTS = [
   { id: "correct", label: "Correct Answer" },
   { id: "incorrect", label: "Incorrect Answer" },
   { id: "damage", label: "Damage Taken" },
+  { id: "blocked", label: "Blocked Damage" },
   { id: "loot", label: "Item Found" },
   { id: "timer", label: "Timer Tick" },
   { id: "emergency", label: "Emergency Alert" },
@@ -107,7 +123,7 @@ const state = {
   pendingClassAbilityUses: [],
   pendingAbilityUses: [],
   firstBossRewardGranted: false,
-  missionType: "Horror",
+  missionType: "Decayed Bunker",
   environment: "",
   setupGeneratedMission: null,
   threat: "",
@@ -120,6 +136,10 @@ const state = {
   mapPositions: [],
   mapLayoutSeed: 0,
   mapRevealedNodes: new Set(),
+  mapRenderSignature: "",
+  routeMarkerAnimationKey: "",
+  routeMarkerAnimationFrame: 0,
+  routeMarkerSettleTimer: null,
   bossAreaNames: { mid: "", final: "" },
   bossPhasePlans: {},
   bossPhasePlanRequests: {},
@@ -137,6 +157,7 @@ const state = {
   combatEncounters: {},
   combatPresentationRunId: 0,
   combatPresentationTimers: [],
+  initiativeCurrentTurn: null,
   combatStageEnteredNodes: new Set(),
   combatDisplayedHp: {},
   statusRenderSignature: "",
@@ -144,6 +165,8 @@ const state = {
   combatNextNodeTimer: null,
   combatNextNodeWaitStartedAt: 0,
   combatMountBlocked: false,
+  roomTransitionTrace: null,
+  roomTransitionTraceCounter: 0,
   combatXpBaseline: [],
   actionContinueGateTimer: null,
   activeObstacles: {},
@@ -158,6 +181,7 @@ const state = {
   secondWindPlayerName: "",
   secondWindPendingPlayerName: "",
   challengeHistory: [],
+  missionAccuracyResults: {},
   typeTimers: [],
   typeTimerResolvers: new Map(),
   typewriterGeneration: 0,
@@ -175,6 +199,8 @@ const state = {
   playerServerRevision: 0,
   playerServerPromptId: "",
   playerLastPublishedVitalsSignature: "",
+  playerPendingVitalsSignature: "",
+  playerSessionPublishChain: Promise.resolve(),
   playerSyncFailureCount: 0,
   playerPromptPublicationRetryTimer: null,
   playerPromptPublicationRetryId: "",
@@ -184,6 +210,9 @@ const state = {
   playerPromptRequiredIds: [],
   playerPromptRequiredNames: [],
   playerPromptRequiredAt: 0,
+  lockedOperatorWindowPromptId: "",
+  lockedOperatorWindowTimer: null,
+  lockedOperatorWindowDeadline: 0,
   playerAnswers: [],
   playerActions: [],
   queuedPlayerActions: [],
@@ -193,6 +222,7 @@ const state = {
   resolutionDelayTimer: null,
   resolutionDelayStartedAt: 0,
   resolutionDelayCallback: null,
+  resolutionDelayAttempts: 0,
   processedPlayerActionIds: new Set(),
   processedQueuedActionIds: new Set(),
   scoredPromptIds: new Set(),
@@ -202,8 +232,11 @@ const state = {
   questionPausedTotalMs: 0,
   simulatorAutoAnswer: window.localStorage.getItem("studyAdventureSimulatorAutoAnswer") === "true",
   simulatorAutoAnswerAccuracy: Math.max(0, Math.min(100, Number(window.localStorage.getItem("studyAdventureSimulatorAutoAnswerAccuracy") ?? 50))),
+  simulatorAwareAbilities: window.localStorage.getItem("studyAdventureSimulatorAwareAbilities") === "true",
   simulatorAutoAnswerPromptId: "",
   simulatorAutoAnswerTimers: [],
+  simulatorAwareAbilityPromptId: "",
+  simulatorAwareAbilityTimers: [],
   simulatorPromptRepairPromise: null,
   playerParticipants: [],
   playerJoinUrl: "",
@@ -220,6 +253,7 @@ const state = {
   bossReadyChecks: new Set(),
   bossAudioStartedNodes: new Set(),
   bossMusicStartedNodes: new Set(),
+  bossReadyAudioTimer: null,
   bossEyesStrikeTimer: null,
   bossEyesExitTimer: null,
   bossDamageImpactTimer: null,
@@ -229,6 +263,7 @@ const state = {
   lastSubmittedAnswer: "",
   previousAnswerFlashId: "",
   answerResults: {},
+  playerAnswerFeedback: {},
   sceneHistory: [],
   turnHistory: [],
   endingPending: false,
@@ -250,6 +285,8 @@ const state = {
   useYoutubeBossMusic: window.localStorage.getItem("studyAdventureUseYoutubeBossMusic") === "true",
   youtubeMusicRandomStart: window.localStorage.getItem("studyAdventureYoutubeMusicRandomStart") === "true",
   backgroundMusicLoaded: false,
+  backgroundMusicPreloads: {},
+  backgroundMusicPreloadScheduled: false,
   backgroundMusicMode: "normal",
   backgroundMusicVideoId: "",
   backgroundMusicFadeTimer: null,
@@ -347,10 +384,28 @@ const TWO_BOSS_MIN_QUESTIONS = 18;
 const COMBAT_QUESTION_POOL_SIZE = 5;
 const MID_BOSS_QUESTIONS = COMBAT_QUESTION_POOL_SIZE;
 const FINAL_BOSS_QUESTIONS = COMBAT_QUESTION_POOL_SIZE;
-const ROUTE_TRAVEL_MS = 3600;
+const ENABLE_ROUTE_MARKER_TRANSITION = true;
+// Keep route travel readable without making room transitions feel stalled.
+// Mission progression waits only for the unfinished portion of this animation.
+const ROUTE_TRAVEL_MS = 2200;
+const ENEMY_VISUAL_POOLS = Object.freeze({
+  bunker: Object.freeze([
+    ...Array.from({ length: 5 }, (_, index) => `enemy_assets/ghosts/shadow-enemy-${index + 1}.png`),
+    ...Array.from({ length: 5 }, (_, index) => `enemy_assets/soldiers/enemy-soldier-${index + 1}.png`)
+  ]),
+  spaceStation: Object.freeze([
+    ...Array.from({ length: 5 }, (_, index) => `enemy_assets/monster/alien-enemy-${index + 1}.png`),
+    ...Array.from({ length: 5 }, (_, index) => `enemy_assets/soldiers/enemy-soldier-${index + 1}.png`),
+    ...Array.from({ length: 5 }, (_, index) => `enemy_assets/ghosts/shadow-enemy-${index + 1}.png`)
+  ])
+});
 const COMBAT_FORMATION_READY_MS = 4300;
 const COMBAT_ENTRY_COMPLETE_MS = 4550;
 const COMBAT_ENTRY_WATCHDOG_MS = 8000;
+const BOSS_INTRO_START_DELAY_MS = 2250;
+const BOSS_INTRO_VIDEO_FADE_MS = 650;
+const BOSS_INTRO_STATIC_FADE_MS = 950;
+const BOSS_INTRO_WATCHDOG_MS = 24000;
 const QUESTION_SET_STORAGE_KEY = "studyAdventureQuestionSets";
 const SELECTED_QUESTION_SETS_KEY = "studyAdventureSelectedQuestionSets";
 const MUSIC_PRESET_STORAGE_KEY = "studyAdventureMusicPresets";
@@ -397,6 +452,8 @@ function trackTypeTimer(callback, delay, onCancel = null) {
   let timer = null;
   timer = window.setTimeout(() => {
     state.typeTimerResolvers.delete(timer);
+    const timerIndex = state.typeTimers.indexOf(timer);
+    if (timerIndex >= 0) state.typeTimers.splice(timerIndex, 1);
     callback();
   }, Math.max(0, Number(delay) || 0));
   state.typeTimers.push(timer);
@@ -415,6 +472,14 @@ function normalizeTeacherTextSize(value) {
 function applyTeacherTextSize(value = state.teacherTextSize) {
   state.teacherTextSize = normalizeTeacherTextSize(value);
   document.documentElement.dataset.teacherTextSize = state.teacherTextSize;
+  const dashboardScale = {
+    compact: 0.9,
+    normal: 1,
+    large: 1.12,
+    xl: 1.24,
+    projector: 1.38
+  }[state.teacherTextSize] || 1;
+  document.documentElement.style.setProperty("--dashboard-text-scale", String(dashboardScale));
   if (els.teacherTextSize) els.teacherTextSize.value = state.teacherTextSize;
 }
 
@@ -553,14 +618,22 @@ const els = {
   answerControls: document.getElementById("answerControls"),
   mapControlDock: document.getElementById("mapControlDock"),
   playControlDock: document.getElementById("playControlDock"),
+  mapWrap: document.querySelector(".map-wrap"),
   missionMap: document.getElementById("missionMap"),
+  squadMapMarker: document.getElementById("squadMapMarker"),
   combatStage: document.getElementById("combatStage"),
+  combatBossIntro: document.getElementById("combatBossIntro"),
+  combatBossIntroVideo: document.getElementById("combatBossIntroVideo"),
   combatStageLabel: document.getElementById("combatStageLabel"),
   combatStageRound: document.getElementById("combatStageRound"),
   combatEnemyFormation: document.getElementById("combatEnemyFormation"),
   combatPartyFormation: document.getElementById("combatPartyFormation"),
   combatActionBanner: document.getElementById("combatActionBanner"),
+  initiativeTimeline: document.getElementById("initiativeTimeline"),
+  initiativeTimelineStatus: document.getElementById("initiativeTimelineStatus"),
+  initiativeTimelineTrack: document.getElementById("initiativeTimelineTrack"),
   mapTitle: document.getElementById("mapTitle"),
+  missionProgress: document.getElementById("missionProgress"),
   progressPill: document.getElementById("progressPill"),
   progressSummary: document.getElementById("progressSummary"),
   inventoryActions: document.getElementById("inventoryActions"),
@@ -795,7 +868,10 @@ els.teacherTextSize?.addEventListener("change", () => {
   window.localStorage.setItem("studyAdventureTeacherTextSize", state.teacherTextSize);
 });
 els.mapEmergencyPauseBtn?.addEventListener("click", toggleEmergencyTimerPause);
-els.missionControlsToggle?.addEventListener("click", () => toggleUtilityPanel("controls"));
+els.missionControlsToggle?.addEventListener("click", () => {
+  if (state.activeUtilityPanel !== "controls") renderChatControls();
+  toggleUtilityPanel("controls");
+});
 els.missionLogHistoryToggle?.addEventListener("click", () => toggleUtilityPanel("history"));
 els.missionAudioToggle?.addEventListener("click", () => toggleUtilityPanel("audio"));
 els.debugConsoleToggle?.addEventListener("click", () => {
@@ -1186,6 +1262,7 @@ function releaseLocalMediaElement(media) {
 }
 
 function playGameSfx(eventName, options = {}) {
+  if (DISABLE_AUDIO_LOADING_FOR_TRANSITION_DIAGNOSTICS) return null;
   if (state.sfxPreset === "off") return null;
   if (eventName === "ending") stopBackgroundMusic();
   const nowMs = Date.now();
@@ -1354,6 +1431,7 @@ function stopAllGameSfx() {
 
 function startIntroSequenceAudio() {
   stopIntroSequenceAudio();
+  if (DISABLE_AUDIO_LOADING_FOR_TRANSITION_DIAGNOSTICS) return;
   if (state.sfxPreset === "off" || state.teamReady) return;
   const endingEffect = audioEffectForEvent("ending");
   const sources = [...new Set(["audio-effects/ending.wav", endingEffect?.src, "audio-effects/ending.mp3"].filter(Boolean))];
@@ -1435,6 +1513,7 @@ function playMissionFailureAudio() {
   stopGameSfx("boss");
   stopGameSfx("ending");
   stopMissionFailureAudio();
+  if (DISABLE_AUDIO_LOADING_FOR_TRANSITION_DIAGNOSTICS) return;
   if (state.sfxPreset === "off") return;
 
   const configuredEffect = audioEffectForEvent("failure");
@@ -1480,13 +1559,30 @@ function stopMissionFailureAudio() {
 
 function startNormalBackgroundMusicAfterReady() {
   fadeOutIntroSequenceAudio();
+  if (DISABLE_AUDIO_LOADING_FOR_TRANSITION_DIAGNOSTICS) {
+    stopBackgroundMusic();
+    if (els.backgroundMusicStatus) els.backgroundMusicStatus.textContent = "Audio loading disabled for transition diagnostics";
+    return;
+  }
+  preloadBackgroundMusicTracks();
   loadBackgroundMusic("normal", { fadeIn: true });
+}
+
+function preloadBackgroundMusicTracks() {
+  // These tracks are 59–88 MB each. Creating two `preload="auto"` audio
+  // elements at mission start made Opera fetch/decode both files at once,
+  // competing with the map/combat transition and freezing every open tab.
+  // Keep this hook for callers, but stream only the track that is actually
+  // needed when the scene is ready (see loadBackgroundMusic).
+  state.backgroundMusicPreloadScheduled = false;
 }
 
 function syncBackgroundMusicPanel() {
   if (els.backgroundMusicPanel) els.backgroundMusicPanel.hidden = false;
   if (els.backgroundMusicStatus) {
-    els.backgroundMusicStatus.textContent = state.backgroundMusicLoaded
+    els.backgroundMusicStatus.textContent = DISABLE_AUDIO_LOADING_FOR_TRANSITION_DIAGNOSTICS
+      ? "Audio loading disabled for transition diagnostics"
+      : state.backgroundMusicLoaded
       ? `${titleCase(state.backgroundMusicMode)} music loaded`
       : "Bundled music ready";
   }
@@ -1631,6 +1727,11 @@ function fadeOutBackgroundMusicForBossReady(durationMs = 1200) {
 }
 
 function loadBackgroundMusic(mode = desiredBackgroundMusicMode(), options = {}) {
+  if (DISABLE_AUDIO_LOADING_FOR_TRANSITION_DIAGNOSTICS) {
+    stopBackgroundMusic();
+    if (els.backgroundMusicStatus) els.backgroundMusicStatus.textContent = "Audio loading disabled for transition diagnostics";
+    return;
+  }
   const requestedMode = mode === "boss" ? "boss" : "normal";
   const normalUrl = els.youtubeMusicUrl?.value?.trim() || state.youtubeMusicUrl;
   const bossUrl = els.youtubeBossMusicUrl?.value?.trim() || state.youtubeBossMusicUrl;
@@ -1696,8 +1797,18 @@ function loadBackgroundMusic(mode = desiredBackgroundMusicMode(), options = {}) 
         }
       }, { once: true });
     } else {
-      els.backgroundMusicEmbed.innerHTML = `<audio title="Bundled ${escapeAttribute(requestedMode)} background music" src="${localSrc}" loop preload="metadata" controls></audio>`;
-      const audio = els.backgroundMusicEmbed.querySelector("audio");
+      const audio = state.backgroundMusicPreloads[requestedMode] || document.createElement("audio");
+      audio.title = `Bundled ${requestedMode} background music`;
+      audio.loop = true;
+      audio.controls = true;
+      // Metadata is enough to begin playback without eagerly buffering the
+      // entire multi-minute track. The browser will stream the rest while the
+      // combat scene remains responsive.
+      audio.preload = "metadata";
+      if (!audio.src || !audio.src.endsWith(localSrc)) audio.src = localSrc;
+      els.backgroundMusicEmbed.innerHTML = "";
+      els.backgroundMusicEmbed.appendChild(audio);
+      state.backgroundMusicPreloads[requestedMode] = audio;
       let localStarted = false;
       if (audio) audio.volume = Math.max(0, Math.min(1, state.backgroundMusicCurrentVolume / 100));
       audio?.addEventListener("error", () => {
@@ -1718,7 +1829,7 @@ function loadBackgroundMusic(mode = desiredBackgroundMusicMode(), options = {}) 
       };
       audio?.addEventListener("loadedmetadata", startLocalTrack, { once: true });
       if (audio?.readyState >= 1) startLocalTrack();
-      else audio?.play().catch(() => {});
+      else audio?.load();
     }
     syncMapAudioReactor();
     playGameSfx("ui");
@@ -1726,7 +1837,13 @@ function loadBackgroundMusic(mode = desiredBackgroundMusicMode(), options = {}) 
 
   if (previousPlayer && options.transition) {
     rampBackgroundMusic(previousPlayer, state.backgroundMusicCurrentVolume, 0, 900, () => {
-      releaseLocalMediaElement(previousPlayer);
+      const cachedPlayer = Object.values(state.backgroundMusicPreloads).includes(previousPlayer);
+      if (cachedPlayer) {
+        previousPlayer.pause();
+        previousPlayer.volume = 0;
+      } else {
+        releaseLocalMediaElement(previousPlayer);
+      }
       mountTrack(true);
     });
   } else {
@@ -1741,7 +1858,13 @@ function stopBackgroundMusic() {
   state.backgroundMusicFadeTimer = null;
   const player = backgroundMusicPlayer();
   if (player?.tagName === "AUDIO") {
-    releaseLocalMediaElement(player);
+    const cachedPlayer = Object.values(state.backgroundMusicPreloads).includes(player);
+    if (cachedPlayer) {
+      player.pause();
+      player.volume = 0;
+    } else {
+      releaseLocalMediaElement(player);
+    }
   }
   if (els.backgroundMusicEmbed) els.backgroundMusicEmbed.innerHTML = "";
   state.backgroundMusicLoaded = false;
@@ -1750,6 +1873,12 @@ function stopBackgroundMusic() {
   state.backgroundMusicFadingOutForBossReady = false;
   if (els.backgroundMusicStatus) els.backgroundMusicStatus.textContent = "Stopped";
   syncMapAudioReactor();
+}
+
+function releaseBackgroundMusicPreloads() {
+  Object.values(state.backgroundMusicPreloads).forEach((audio) => releaseLocalMediaElement(audio));
+  state.backgroundMusicPreloads = {};
+  state.backgroundMusicPreloadScheduled = false;
 }
 
 function syncMapAudioReactor() {
@@ -1775,6 +1904,28 @@ function startBossReadyAudio(payload = {}) {
   playGameSfx("boss");
 }
 
+function scheduleBossReadyAudioHandoff(payload = {}) {
+  const nodeIndex = Number.isInteger(payload.bossNodeIndex) ? payload.bossNodeIndex : state.currentNode;
+  window.clearTimeout(state.bossReadyAudioTimer);
+  const attempt = () => {
+    state.bossReadyAudioTimer = null;
+    if (!state.started || !state.bossReadyPending || state.currentNode !== nodeIndex) return;
+    if (state.bossAudioStartedNodes.has(nodeIndex)) return;
+    const priorCombatVisible = Boolean(els.combatStage && !els.combatStage.hidden);
+    const routeStillMoving = Boolean(
+      state.routeTransition?.moving
+      || els.squadMapMarker?.classList.contains("traveling")
+    );
+    if (priorCombatVisible || routeStillMoving) {
+      state.bossReadyAudioTimer = window.setTimeout(attempt, 160);
+      return;
+    }
+    fadeOutBackgroundMusicForBossReady();
+    startBossReadyAudio(payload);
+  };
+  attempt();
+}
+
 function startBossQuestionMusic() {
   const node = state.nodes[state.currentNode];
   const bossActive = node?.type === "boss" || Boolean(currentBossProgress());
@@ -1789,6 +1940,13 @@ function syncBossEyesVisual() {
   const node = state.nodes[state.currentNode];
   const bossActive = node?.type === "boss" || Boolean(currentBossProgress());
   const eyesExiting = els.mapPanel?.classList.contains("boss-eyes-exiting");
+  if (node?.type === "boss") {
+    const finalBoss = node.bossPhase === "final";
+    els.mapPanel?.classList.toggle("boss-final-visual", finalBoss);
+    els.mapPanel?.classList.toggle("boss-mid-visual", !finalBoss);
+  } else if (!eyesExiting) {
+    els.mapPanel?.classList.remove("boss-final-visual", "boss-mid-visual");
+  }
   const combatStageActive = Boolean(els.combatStage && (
     !els.combatStage.hidden
     || els.combatStage.classList.contains("exiting")
@@ -1864,13 +2022,22 @@ function triggerBossDamageImpact(effects = []) {
 function desiredBackgroundMusicMode() {
   const node = state.nodes[state.currentNode];
   const bossActive = node?.type === "boss" || Boolean(currentBossProgress());
-  if (isCombatNode(node)) return "boss";
+  // Keep the normal bed quiet and in place during a boss readiness check.
+  // The boss track starts only when the first combat prompt is presented.
+  if (isCombatNode(node)) {
+    if (node?.type === "boss" && !state.bossMusicStartedNodes.has(state.currentNode)) return "normal";
+    return "boss";
+  }
   if (bossActive && state.bossMusicStartedNodes.has(state.currentNode)) return "boss";
   return "normal";
 }
 
 function syncBackgroundMusicForEncounter() {
   if (!state.backgroundMusicLoaded) return;
+  // A boss-readiness payload is created before combat resolution, narration,
+  // and route travel finish. Keep the current bed in place until the readiness
+  // gate is actually visible; that gate owns the fade into the boss sting.
+  if (state.bossReadyPending) return;
   const desiredMode = desiredBackgroundMusicMode();
   if (desiredMode === state.backgroundMusicMode) return;
   loadBackgroundMusic(desiredMode, { transition: true });
@@ -1908,6 +2075,7 @@ function ensureTtsManager() {
       escapeAttribute,
       cleanText: cleanSpeechText,
       getCurrentLogText: currentMissionLogSpeechText,
+      disableAudioLoading: DISABLE_AUDIO_LOADING_FOR_TRANSITION_DIAGNOSTICS,
       onPlaybackStart: duckBackgroundMusicForTts,
       onPlaybackEnd: restoreBackgroundMusicAfterTts
     });
@@ -2160,6 +2328,12 @@ function startMission() {
     setLaunchStatus("Launching single-device mission...");
     launchMission(players, { ...config, playerClasses });
   } catch (error) {
+    console.error("Mission launch failed", error);
+    logDebugEvent({
+      kind: "error",
+      label: "Mission launch failed",
+      detail: String(error?.stack || error?.message || error || "unknown launch error").slice(0, 1200)
+    });
     setLaunchStatus(`Launch error: ${error.message || error}`, true);
   }
 }
@@ -2240,7 +2414,7 @@ function generatedMissionForLaunch() {
 function generateCustomMissionEnvironment() {
   const button = els.generateEnvironmentBtn;
   const note = els.generatedEnvironmentNote;
-  const missionType = els.missionType.value || "Horror";
+  const missionType = els.missionType.value || "Decayed Bunker";
   if (button) button.disabled = true;
   if (note) note.textContent = "Receiving generated mission environment...";
   requestOllama(makeEnvironmentGeneratorPrompt(missionType), { temperature: 0.88, format: "json" })
@@ -2419,6 +2593,7 @@ function seedBossTestRoster(phase = "final") {
 function launchMission(players, config) {
   try {
     clearFinalSubmissionDelay();
+    clearLockedOperatorAnswerWindow();
     clearSetupToDeploymentTransition();
     stopAllGameSfx();
     const cleanPlayers = players.map((name) => sanitizeText(name, { fallback: "Operator", maxLength: 32 })).filter(Boolean);
@@ -2458,11 +2633,14 @@ function launchMission(players, config) {
     state.pendingAbilityUses = [];
     state.statusRenderSignature = "";
     state.playerLastPublishedVitalsSignature = "";
+    state.playerPendingVitalsSignature = "";
+    state.playerSessionPublishChain = Promise.resolve();
     state.firstBossRewardGranted = false;
     state.missionType = config.missionType;
     state.environment = config.environment;
     state.title = makeTitle(state.missionType, state.environment);
     state.rng = mulberry32(seedFrom(`${state.title}|${cleanPlayers.join(",")}|${config.questions.length}`));
+    scheduleEnemyVisualPreload();
     state.threatProfile = createThreatProfile(state.missionType, state.environment);
     applySetupGeneratedMission(config.generatedMission);
     state.threat = state.threatProfile.identity || state.threatProfile.archetype || state.threatProfile.summary;
@@ -2479,6 +2657,7 @@ function launchMission(players, config) {
     state.mapLayoutSeed = seedFrom(`${state.title}|${cleanPlayers.join(",")}|${config.questions.length}|${Date.now()}|${Math.random()}`);
     state.mapPositions = generateSprawledRoutePositions(state.nodes.length, state.mapLayoutSeed);
     state.mapRevealedNodes = new Set();
+    state.mapRenderSignature = "";
     state.roomNames = {};
     state.bossAreaNames = generatedBossAreaFallbacks(state.missionType, state.environment, state.threat);
     applyGeneratedBossAreas(config.generatedMission?.bossAreas);
@@ -2506,6 +2685,7 @@ function launchMission(players, config) {
     state.secondWindPlayerName = "";
     state.secondWindPendingPlayerName = "";
     state.challengeHistory = [];
+    state.missionAccuracyResults = {};
     state.feedLastId = "";
     state.playerPromptId = "";
     state.playerSyncInFlight = false;
@@ -2516,6 +2696,8 @@ function launchMission(players, config) {
     state.playerPromptRequiredIds = [];
     state.playerPromptRequiredNames = [];
     state.playerPromptRequiredAt = 0;
+    state.lockedOperatorWindowPromptId = "";
+    state.lockedOperatorWindowDeadline = 0;
     state.playerAnswers = [];
     state.playerActions = [];
     state.queuedPlayerActions = [];
@@ -2537,6 +2719,8 @@ function launchMission(players, config) {
     state.bossReadyChecks = new Set();
     state.bossAudioStartedNodes = new Set();
     state.bossMusicStartedNodes = new Set();
+    window.clearTimeout(state.bossReadyAudioTimer);
+    state.bossReadyAudioTimer = null;
     window.clearTimeout(state.bossEyesExitTimer);
     state.bossEyesExitTimer = null;
     window.clearTimeout(state.bossEyesStrikeTimer);
@@ -2546,6 +2730,7 @@ function launchMission(players, config) {
     state.lastSubmittedAnswer = "";
     state.previousAnswerFlashId = "";
     state.answerResults = {};
+    state.playerAnswerFeedback = {};
     state.sceneHistory = [];
     state.turnHistory = [];
     state.missionLogHistory = [];
@@ -2596,7 +2781,10 @@ function launchMission(players, config) {
     if (state.bossTestMode && !state.actionDrivenMode) positionMissionForBossTest(state.bossTestPhase);
 
     if (state.teamReady || !state.chatMode) startNormalBackgroundMusicAfterReady();
-    else startIntroSequenceAudio();
+    else {
+      startIntroSequenceAudio();
+      preloadBackgroundMusicTracks();
+    }
 
     resetStatusUpdates();
     els.joinLobby.hidden = true;
@@ -2618,6 +2806,7 @@ function launchMission(players, config) {
     beginNextNode();
     if (state.chatMode) startDmFeed();
   } catch (error) {
+    console.error("Mission deployment failed", error);
     setLaunchStatus(`Deploy error: ${error.message || error}`, true);
     throw error;
   }
@@ -2666,8 +2855,10 @@ function confirmMissionReset() {
 }
 
 function performMissionReset({ preserveTransition = false } = {}) {
+  roomTransitionTraceFinish("mission reset");
   state.started = false;
   clearFinalSubmissionDelay();
+  clearLockedOperatorAnswerWindow();
   if (!preserveTransition) clearSetupToDeploymentTransition();
   clearTypewriters();
   stopTts();
@@ -2675,6 +2866,7 @@ function performMissionReset({ preserveTransition = false } = {}) {
   stopIntroSequenceAudio();
   stopMissionFailureAudio();
   stopBackgroundMusic();
+  releaseBackgroundMusicPreloads();
   stopEmergencyTimer();
   stopTransmissionFeedback();
   state.deploymentRunId += 1;
@@ -2699,6 +2891,8 @@ function performMissionReset({ preserveTransition = false } = {}) {
   state.pendingAbilityUses = [];
   state.statusRenderSignature = "";
   state.playerLastPublishedVitalsSignature = "";
+  state.playerPendingVitalsSignature = "";
+  state.playerSessionPublishChain = Promise.resolve();
   state.firstBossRewardGranted = false;
   if (els.itemRewardOverlay) els.itemRewardOverlay.hidden = true;
   if (els.itemCodexOverlay) els.itemCodexOverlay.hidden = true;
@@ -2713,6 +2907,7 @@ function performMissionReset({ preserveTransition = false } = {}) {
   state.mapPositions = [];
   state.mapLayoutSeed = 0;
   state.mapRevealedNodes = new Set();
+  state.mapRenderSignature = "";
   state.bossAreaNames = { mid: "", final: "" };
   state.bossPhasePlans = {};
   state.bossPhasePlanRequests = {};
@@ -2733,6 +2928,8 @@ function performMissionReset({ preserveTransition = false } = {}) {
   state.nodeResults = {};
   state.encounter = null;
   state.challengeTypes = [];
+  state.challengeHistory = [];
+  state.missionAccuracyResults = {};
   state.recoveryUsed = new Set();
   state.selectedEMS = false;
   state.secondWindEnabled = false;
@@ -2745,6 +2942,8 @@ function performMissionReset({ preserveTransition = false } = {}) {
   state.playerPromptRequiredIds = [];
   state.playerPromptRequiredNames = [];
   state.playerPromptRequiredAt = 0;
+  state.lockedOperatorWindowPromptId = "";
+  state.lockedOperatorWindowDeadline = 0;
   state.playerAnswers = [];
   state.playerActions = [];
   state.queuedPlayerActions = [];
@@ -2771,6 +2970,8 @@ function performMissionReset({ preserveTransition = false } = {}) {
   state.bossReadyChecks = new Set();
   state.bossAudioStartedNodes = new Set();
   state.bossMusicStartedNodes = new Set();
+  window.clearTimeout(state.bossReadyAudioTimer);
+  state.bossReadyAudioTimer = null;
   window.clearTimeout(state.bossEyesStrikeTimer);
   state.bossEyesStrikeTimer = null;
   window.clearTimeout(state.bossEyesExitTimer);
@@ -2780,6 +2981,7 @@ function performMissionReset({ preserveTransition = false } = {}) {
   state.lastSubmittedAnswer = "";
   state.previousAnswerFlashId = "";
   state.answerResults = {};
+  state.playerAnswerFeedback = {};
   state.sceneHistory = [];
   state.turnHistory = [];
   state.endingPending = false;
@@ -2888,7 +3090,7 @@ function openJoinLobby(config) {
   els.joinLobby.hidden = false;
   els.startBtn.disabled = true;
   stopPlayerPolling();
-  state.playerPollTimer = window.setInterval(pollPlayerAnswers, 900);
+  state.playerPollTimer = window.setInterval(pollPlayerAnswers, 350);
   adoptOrCreateLobby(config);
 }
 
@@ -2999,7 +3201,7 @@ function restoreLobbyFromServer() {
       els.joinLobby.hidden = false;
       els.startBtn.disabled = true;
       stopPlayerPolling();
-      state.playerPollTimer = window.setInterval(pollPlayerAnswers, 900);
+      state.playerPollTimer = window.setInterval(pollPlayerAnswers, 350);
       renderJoinLobby();
     })
     .catch(() => {});
@@ -3010,7 +3212,7 @@ function startPlayerSession() {
   renderPlayerSessionPanel();
   publishPlayerSession({ status: "briefing", prompt: null, resetAnswers: true, resetQueuedActions: true });
   stopPlayerPolling();
-  state.playerPollTimer = window.setInterval(pollPlayerAnswers, 900);
+  state.playerPollTimer = window.setInterval(pollPlayerAnswers, 350);
   pollPlayerAnswers();
 }
 
@@ -3163,8 +3365,10 @@ function randomSimulatorNames(count) {
 
 function stopPlayerSession() {
   stopPlayerPolling();
+  clearLockedOperatorAnswerWindow();
   clearPromptPublicationRetry();
   cancelSimulatorAutoAnswerTimers();
+  cancelSimulatorAwareAbilityTimers();
   if (state.roomCode) publishPlayerSession({ status: "ended", prompt: null, resetAnswers: true, resetQueuedActions: true, resetParticipants: true });
   state.playerAnswers = [];
   state.playerActions = [];
@@ -3185,16 +3389,17 @@ function stopPlayerPolling() {
 
 function ensurePlayerAnswerPolling() {
   if (!state.started || state.deviceMode !== "multi" || !state.roomCode || state.playerPollTimer) return;
-  state.playerPollTimer = window.setInterval(pollPlayerAnswers, 900);
+  state.playerPollTimer = window.setInterval(pollPlayerAnswers, 350);
   window.setTimeout(pollPlayerAnswers, 0);
 }
 
 function publishPlayerSession(extra = {}) {
   if (!state.roomCode) return Promise.resolve(null);
+  const roomCode = state.roomCode;
   state.playerHostRevision += 1;
   const requestedPrompt = extra.prompt === undefined ? buildPlayerPrompt() : extra.prompt;
   const payload = {
-    roomCode: state.roomCode,
+    roomCode,
     status: extra.status || (state.questionPresentationReady ? "open" : "waiting"),
     title: extra.title || state.title,
     players: extra.players || state.players.map((player) => player.name),
@@ -3208,24 +3413,34 @@ function publishPlayerSession(extra = {}) {
     hostRevision: state.playerHostRevision,
     expectedPromptId: requestedPrompt === null ? String(extra.expectedPromptId || state.playerPromptId || state.playerServerPromptId || "") : ""
   };
-  return playerSessionApi.publishSession(payload).then((result) => {
+  // Host updates must be serialized. Rendering, prompt repair, timer updates,
+  // and answer resolution can all publish within the same polling interval;
+  // concurrent requests arrive out of order and the server correctly rejects
+  // the older host revision, leaving the client stuck between prompt states.
+  const publish = () => playerSessionApi.publishSession(payload).then((result) => {
     if (result?.session) state.playerLastPublishedVitalsSignature = JSON.stringify(payload.playerStates);
     const session = result?.session;
-    if (session) {
+    if (session && state.roomCode === roomCode) {
       state.playerServerRevision = Math.max(state.playerServerRevision, Number(session.revision) || 0);
       state.playerServerPromptId = session.prompt?.id || "";
       state.playerHostRevision = Math.max(state.playerHostRevision, Number(session.hostRevision) || 0);
     }
     return result;
   });
+  const publication = state.playerSessionPublishChain.then(publish, publish);
+  state.playerSessionPublishChain = publication.catch(() => null);
+  return publication;
 }
 
 function publishPlayerVitals() {
   if (!state.roomCode || state.joinLobbyActive || !state.started || state.deviceMode !== "multi") return;
   const playerStates = playerStatePayload();
   const signature = JSON.stringify(playerStates);
-  if (signature === state.playerLastPublishedVitalsSignature) return;
-  publishPlayerSession({ playerStates, resetAnswers: false });
+  if (signature === state.playerLastPublishedVitalsSignature || signature === state.playerPendingVitalsSignature) return;
+  state.playerPendingVitalsSignature = signature;
+  publishPlayerSession({ playerStates, resetAnswers: false }).catch(() => null).finally(() => {
+    if (state.playerPendingVitalsSignature === signature) state.playerPendingVitalsSignature = "";
+  });
 }
 
 function clearPromptPublicationRetry(promptId = "") {
@@ -3303,7 +3518,8 @@ function playerStatePayload() {
     classCooldowns: { ...(player.classCooldowns || {}) },
     abilityUsedThisTurn: abilityUsedThisTurn(player),
     itemNotice: player.itemNotice || "",
-    abilityNotice: player.abilityNotice || state.classAbilityTargetNotices?.[normalize(player.name)] || ""
+    abilityNotice: player.abilityNotice || state.classAbilityTargetNotices?.[normalize(player.name)] || "",
+    answerFeedback: state.playerAnswerFeedback?.[normalize(player.name)] || null
     };
   });
 }
@@ -3354,9 +3570,7 @@ function activateCurrentQuestionHint(source, label = "Hint") {
 function buildPlayerPrompt() {
   const node = state.nodes[state.currentNode];
   if (node?.type === "recovery") {
-    const hp = node.tier === 1 ? 2 : 4;
-    const medkits = node.tier === 1 ? 2 : 3;
-    const ems = node.tier === 1 ? 1 : 2;
+    const { hp, medkits, ems } = recoveryAmounts(node.tier);
     const promptId = `recovery-${state.currentNode}-${node.tier}`;
     state.playerPromptId = promptId;
     return {
@@ -3422,9 +3636,15 @@ function buildPlayerPrompt() {
 
 function publishCurrentPlayerPrompt(options = {}) {
   if (!state.started || !state.teamReady && state.chatMode) return;
+  const transitionStep = roomTransitionTraceStepStart("publish player prompt", {
+    deviceMode: state.deviceMode,
+    roomCode: state.roomCode || ""
+  });
   ensurePlayerAnswerPolling();
   clearFinalSubmissionDelay();
+  clearLockedOperatorAnswerWindow();
   cancelSimulatorAutoAnswerTimers();
+  cancelSimulatorAwareAbilityTimers();
   const prompt = buildPlayerPrompt();
   clearPromptPublicationRetry();
   state.playerSubmissionLogKey = `${prompt?.id || ""}|reset`;
@@ -3432,13 +3652,15 @@ function publishCurrentPlayerPrompt(options = {}) {
   state.playerActions = [];
   snapshotPromptRequiredResponders(prompt);
   const publication = publishPlayerSession({ status: "open", prompt, resetAnswers: true });
+  let publicationCompletion = Promise.resolve(publication);
   if (state.deviceMode === "multi" && state.roomCode) {
-    Promise.resolve(publication).then((result) => {
+    publicationCompletion = publicationCompletion.then((result) => {
       const synchronized = result?.session?.status === "open" && result?.session?.prompt?.id === prompt?.id;
       if (!synchronized && prompt?.id === state.playerPromptId && !state.resolved) {
         schedulePromptPublicationRepair(prompt.id);
       }
       startBossQuestionMusic();
+      return result;
     }).catch(() => {
       if (prompt?.id === state.playerPromptId && !state.resolved) schedulePromptPublicationRepair(prompt.id);
     });
@@ -3447,6 +3669,13 @@ function publishCurrentPlayerPrompt(options = {}) {
   }
   renderStatus();
   if (options.renderOverlay !== false) renderMapQuestionOverlay();
+  return publicationCompletion.finally(() => {
+    roomTransitionTraceStepEnd(transitionStep, {
+      promptId: prompt?.id || "",
+      accepting: Boolean(prompt?.accepting)
+    });
+    roomTransitionTraceFinish("question ready and prompt published", { promptId: prompt?.id || "" });
+  });
 }
 
 function clearFinalSubmissionDelay() {
@@ -3456,12 +3685,14 @@ function clearFinalSubmissionDelay() {
   state.resolutionDelayPromptId = "";
   state.resolutionDelayStartedAt = 0;
   state.resolutionDelayCallback = null;
+  state.resolutionDelayAttempts = 0;
   document.body.classList.remove("answer-resolution-queued");
 }
 
 function completeFinalSubmissionResolution(promptId) {
   if (!state.resolutionDelayPending || state.resolutionDelayPromptId !== promptId) return false;
   const callback = state.resolutionDelayCallback;
+  const attempt = state.resolutionDelayAttempts;
   const stillCurrent = state.started
     && state.playerPromptId === promptId
     && !state.answerPending
@@ -3473,7 +3704,33 @@ function completeFinalSubmissionResolution(promptId) {
   state.resolutionDelayStartedAt = 0;
   state.resolutionDelayCallback = null;
   document.body.classList.remove("answer-resolution-queued");
-  if (stillCurrent && typeof callback === "function") callback();
+  if (stillCurrent && typeof callback === "function") {
+    const completed = callback();
+    // A stale responder snapshot or a competing local answer used to make the
+    // callback return without advancing. Retry a bounded number of times using
+    // the same prompt instead of allowing every poll to create a new hold.
+    if (completed === false && state.started && state.playerPromptId === promptId && !state.resolved) {
+      if (attempt < 3) {
+        window.setTimeout(() => {
+          if (state.started && state.playerPromptId === promptId && !state.resolved && !state.answerPending) {
+            queueFinalSubmissionResolution(callback, "retrying blocked submission resolution");
+          }
+        }, 120);
+      } else {
+        logDebugEvent({
+          kind: "error",
+          label: "Submission resolution blocked",
+          detail: `${promptId} | callback guard rejected after ${attempt} retries`
+        });
+      }
+    }
+  } else if (!stillCurrent && state.started && state.playerPromptId === promptId && !state.resolved) {
+    logDebugEvent({
+      kind: "state",
+      label: "Submission hold skipped",
+      detail: `${promptId} | answerPending=${state.answerPending} resolved=${state.resolved}`
+    });
+  }
   return stillCurrent;
 }
 
@@ -3496,6 +3753,7 @@ function queueFinalSubmissionResolution(callback, label = "required responses co
   state.resolutionDelayPromptId = promptId;
   state.resolutionDelayStartedAt = Date.now();
   state.resolutionDelayCallback = callback;
+  state.resolutionDelayAttempts = Math.max(0, Number(state.resolutionDelayAttempts) || 0) + 1;
   stopTts();
   stopEmergencyTimer();
   document.body.classList.add("answer-resolution-queued");
@@ -3517,8 +3775,10 @@ function queueFinalSubmissionResolution(callback, label = "required responses co
 
 function clearPendingPlayerPromptState(options = {}) {
   clearFinalSubmissionDelay();
+  clearLockedOperatorAnswerWindow();
   clearPromptPublicationRetry();
   cancelSimulatorAutoAnswerTimers();
+  cancelSimulatorAwareAbilityTimers();
   state.playerAnswers = [];
   state.playerActions = [];
   state.playerSubmissionLogKey = "pending-reset";
@@ -3649,10 +3909,11 @@ function handlePlayerAnswersPayload(payload, requestedPromptId = "") {
         state.playerActions.length ? `actions: ${state.playerActions.map((action) => action.playerName || action.playerId || "unknown").join(", ")}` : ""
       ].filter(Boolean).join(" | ")
     });
-    renderStatus();
+    syncRosterSubmissionState();
     pulsePlayerSubmissionCards(newlySubmittedNames);
   }
   renderPlayerSessionPanel();
+  renderInitiativeTimeline();
   renderMapQuestionOverlay();
   if (state.actionDrivenMode && state.teamReady && !state.answerPending) {
     renderChatControls();
@@ -5216,6 +5477,67 @@ function actionRoomContinuationStory(room, nextInfo, resolution) {
   return `The team leaves ${room.areaName} ${tone}, following the route markers toward ${nextInfo.areaName}. The next space is already reacting to their presence.`;
 }
 
+function clearLockedOperatorAnswerWindow() {
+  if (state.lockedOperatorWindowTimer) window.clearTimeout(state.lockedOperatorWindowTimer);
+  state.lockedOperatorWindowTimer = null;
+  state.lockedOperatorWindowPromptId = "";
+  state.lockedOperatorWindowDeadline = 0;
+}
+
+function resolveLockedOperatorResponses(answers, reason = "locked operator responses received") {
+  const info = currentQuestionInfo();
+  if (!info?.type?.locked || !info.operator || !answers?.length) return false;
+  const operatorAnswer = answers.find((answer) => sameName(answer.playerName, info.operator.name));
+  if (!operatorAnswer?.answer) return false;
+  const teamScoring = usesIndividualTeamDeviceScoring(info);
+  const entries = teamScoring
+    ? deviceTeamAnswerEntries(answers, info.question)
+    : deviceAnswerEntries(answers, info.question);
+  if (!entries.length) return false;
+  clearLockedOperatorAnswerWindow();
+  setDeviceAnswerResults(entries);
+  awardDeviceAnswerPointsOnce(entries, info.question);
+  logDebugEvent({
+    kind: "state",
+    label: "Resolving locked operator responses",
+    detail: `${state.playerPromptId || "current prompt"} | ${entries.length} response${entries.length === 1 ? "" : "s"} | ${reason}`
+  });
+  if (teamScoring) {
+    return queueFinalSubmissionResolution(
+      () => resolveLocalDeviceTeamAnswers(answers),
+      reason
+    );
+  }
+  return queueFinalSubmissionResolution(
+    () => submitDeviceAnswer(operatorAnswer.answer),
+    reason
+  );
+}
+
+function startLockedOperatorAnswerWindow(promptId, operatorSubmittedAt = Date.now()) {
+  if (!promptId || state.lockedOperatorWindowPromptId === promptId || state.resolutionDelayPending || state.answerPending || state.resolved) return;
+  clearLockedOperatorAnswerWindow();
+  state.lockedOperatorWindowPromptId = promptId;
+  const submittedAt = Number(operatorSubmittedAt) || Date.now();
+  state.lockedOperatorWindowDeadline = submittedAt + LOCKED_OPERATOR_FOLLOWUP_MS;
+  const remainingMs = Math.max(0, state.lockedOperatorWindowDeadline - Date.now());
+  logDebugEvent({
+    kind: "state",
+    label: "Locked operator follow-up window opened",
+    detail: `${promptId} | ${remainingMs}ms remaining of ${LOCKED_OPERATOR_FOLLOWUP_MS}ms for remaining operators`
+  });
+  state.lockedOperatorWindowTimer = window.setTimeout(() => {
+    state.lockedOperatorWindowTimer = null;
+    if (!state.started || state.playerPromptId !== promptId || state.resolved || state.answerPending || state.resolutionDelayPending) return;
+    const info = currentQuestionInfo();
+    if (!info?.type?.locked || !info.operator) return;
+    const operatorAnswer = state.playerAnswers.find((answer) => sameName(answer.playerName, info.operator.name));
+    if (!operatorAnswer?.answer) return;
+    const answers = deviceAnswersWithTimeouts([...state.playerAnswers]);
+    resolveLockedOperatorResponses(answers, "10-second locked operator follow-up expired");
+  }, remainingMs);
+}
+
 function maybeAutoResolveEmergencyAnswer() {
   if (!state.questionPresentationReady || state.answerPending || state.resolutionDelayPending || state.resolved) return;
   const info = currentQuestionInfo();
@@ -5264,19 +5586,11 @@ function maybeAutoResolveEmergencyAnswer() {
   }
   if (info.type.locked && info.operator) {
     const operatorAnswer = answers.find((answer) => sameName(answer.playerName, info.operator.name));
-    if (operatorAnswer?.answer) {
-      const entries = deviceAnswerEntries([operatorAnswer], info.question);
-      setDeviceAnswerResults(entries);
-      awardDeviceAnswerPointsOnce(entries, info.question);
-      logDebugEvent({
-        kind: "state",
-        label: "Auto-resolving locked operator answer",
-        detail: `${operatorAnswer.playerName || operatorAnswer.playerId || "unknown"} submitted for ${state.playerPromptId || "current prompt"}`
-      });
-      queueFinalSubmissionResolution(
-        () => submitDeviceAnswer(operatorAnswer.answer),
-        `${operatorAnswer.playerName || "locked operator"} response received`
-      );
+    if (!operatorAnswer?.answer) return;
+    if (everyoneActiveSubmitted(answers)) {
+      resolveLockedOperatorResponses(answers, "all locked challenge responders received");
+    } else {
+      startLockedOperatorAnswerWindow(state.playerPromptId, operatorAnswer.submittedAt);
     }
     return;
   }
@@ -5308,8 +5622,7 @@ function maybeAutoResolveEmergencyAnswer() {
 function usesIndividualTeamDeviceScoring(info) {
   return state.deviceMode === "multi"
     && state.localDmMode
-    && ["individual", "team", "truefalse"].includes(info?.type?.kind)
-    && !info.type.locked
+    && ["individual", "team", "truefalse", "locked"].includes(info?.type?.kind)
     && state.nodes[state.currentNode]?.type !== "recovery";
 }
 
@@ -5346,7 +5659,16 @@ function everyoneActiveSubmitted(answers) {
   const requiredIds = requiredDeviceAnswerIds(info);
   if (requiredIds.size) {
     const submittedIds = new Set(answers.map((answer) => String(answer.playerId || "")).filter(Boolean));
-    return [...requiredIds].every((id) => submittedIds.has(id));
+    if ([...requiredIds].every((id) => submittedIds.has(id))) return true;
+    // A reconnect can legitimately change a participant id while the prompt
+    // is still active. If the answer's normalized player names satisfy the
+    // same required roster, do not strand the encounter on an old id snapshot.
+    const requiredNames = requiredDeviceAnswerNames(info);
+    if (requiredNames.size) {
+      const submittedNames = new Set(answers.map((answer) => normalize(answer.playerName)).filter(Boolean));
+      return [...requiredNames].every((name) => submittedNames.has(name));
+    }
+    return false;
   }
   const activeNames = requiredDeviceAnswerNames(info);
   if (!activeNames.size) {
@@ -5363,10 +5685,6 @@ function requiredDeviceAnswerIds(info = currentQuestionInfo(), options = {}) {
     return new Set(state.playerPromptRequiredIds.filter((id) => promptResponderIdAvailable(id)));
   }
   const activeRoster = new Set(activePlayers().map((player) => normalize(player.name)));
-  if (info?.type?.locked && info.operator) {
-    const participant = state.playerParticipants.find((player) => sameName(player.name, info.operator.name));
-    return participant?.id ? new Set([String(participant.id)]) : new Set();
-  }
   const ids = state.playerParticipants
     .filter((player) => activeRoster.has(normalize(player.name)))
     .map((player) => String(player.id || ""))
@@ -5379,7 +5697,6 @@ function requiredDeviceAnswerNames(info = currentQuestionInfo(), options = {}) {
   if (!options.live && state.playerPromptRequiredNames?.length) {
     return new Set(state.playerPromptRequiredNames.filter((name) => promptResponderNameAvailable(name)));
   }
-  if (info?.type?.locked && info.operator) return new Set([normalize(info.operator.name)]);
   const activeRoster = new Set(activePlayers().map((player) => normalize(player.name)));
   const connected = state.playerParticipants
     .map((player) => normalize(player.name))
@@ -5583,18 +5900,29 @@ function captureCombatXpBaseline() {
 }
 
 function deviceChallengeSucceeded(entries, type) {
-  if (type.kind === "individual") return entries.every((entry) => entry.correct);
+  if (type.kind === "individual" || type.kind === "locked" || type.locked) return entries.every((entry) => entry.correct);
   const correctCount = entries.filter((entry) => entry.correct).length;
   return correctCount >= Math.ceil(entries.length / 2);
 }
 
-function setDeviceAnswerResults(entries) {
+function setDeviceAnswerResults(entries, question = currentQuestionInfo()?.question) {
   state.answerResults = {};
+  const feedback = {};
   for (const entry of entries) {
-    if (!entry?.player || !entry.answer) continue;
-    state.answerResults[normalize(entry.player.name)] = Boolean(entry.correct);
+    if (!entry?.player) continue;
+    const name = normalize(entry.player.name);
+    const correct = Boolean(entry.correct);
+    state.answerResults[name] = correct;
+    feedback[name] = {
+      correct,
+      submitted: entry.answer ? submittedAnswerDisplayText(entry.answer, question) : "No response",
+      correctAnswer: answerRevealText(question),
+      id: `${state.playerPromptId || "answer"}-${name}`
+    };
   }
+  state.playerAnswerFeedback = feedback;
   renderStatus();
+  publishPlayerVitals();
 }
 
 function sameName(a, b) {
@@ -5680,6 +6008,33 @@ function pulsePlayerSubmissionCards(playerNames = []) {
   });
 }
 
+function syncRosterSubmissionState() {
+  if (!els.statusGrid) return;
+  els.statusGrid.querySelectorAll(".status-card[data-player-name]").forEach((card) => {
+    const playerName = card.dataset.playerName || "";
+    const submitted = state.started
+      && state.deviceMode === "multi"
+      && state.questionPresentationReady
+      && !state.answerPending
+      && !state.resolved
+      && participantHasCurrentSubmission({ name: playerName });
+    card.classList.toggle("status-card-submitted", submitted);
+    const badgeHost = card.querySelector(".roster-card-badges");
+    if (!badgeHost) return;
+    const existing = badgeHost.querySelector(".answer-submit-badge");
+    if (submitted && !existing) {
+      const badge = document.createElement("span");
+      badge.className = "answer-submit-badge";
+      badge.title = "Submitted";
+      badge.setAttribute("aria-label", "Submitted");
+      badge.textContent = "Submitted";
+      badgeHost.appendChild(badge);
+    } else if (!submitted && existing) {
+      existing.remove();
+    }
+  });
+}
+
 function renderSimulatorPanel() {
   if (!els.simulatorPanel) return;
   const hasSimPlayers = simulatedParticipants().length > 0;
@@ -5707,18 +6062,16 @@ function renderSimulatorPanel() {
     && Boolean(info.question);
   const autoAvailable = canSimulate && !state.actionDrivenMode;
   els.simulatorPanel.innerHTML = `
-    <strong>Simulator</strong>
-    <p>${boss ? `Critical ${boss.step} / ${boss.total}. ` : ""}${canSimulate ? state.actionDrivenMode ? "Submit sim actions." : "Submit sim answers." : "Waiting."}</p>
-    <label class="sim-auto-toggle">
-      <input id="simAutoAnswerToggle" type="checkbox" ${state.simulatorAutoAnswer ? "checked" : ""} ${state.actionDrivenMode ? "disabled" : ""}>
-      <span>Auto-Answer</span>
-    </label>
-    <p>Automatic accuracy: ${state.simulatorAutoAnswerAccuracy}%</p>
-    <div class="sim-tool-actions">
-      <button class="secondary simAnswerBtn" type="button" data-mode="correct" ${canSimulate ? "" : "disabled"}>${state.actionDrivenMode ? "Helpful" : "All Correct"}</button>
-      <button class="secondary simAnswerBtn" type="button" data-mode="mixed" ${canSimulate ? "" : "disabled"}>Mixed</button>
-      <button class="secondary simAnswerBtn" type="button" data-mode="wrong" ${canSimulate ? "" : "disabled"}>${state.actionDrivenMode ? "Reckless" : "All Wrong"}</button>
+    <div class="sim-left">
+      <strong>Simulator</strong>
+      <div class="sim-tool-actions">
+        <button class="secondary simAnswerBtn" type="button" data-mode="correct" ${canSimulate ? "" : "disabled"}>${state.actionDrivenMode ? "Helpful" : "All Correct"}</button>
+        <button class="secondary simAnswerBtn" type="button" data-mode="mixed" ${canSimulate ? "" : "disabled"}>Mixed</button>
+        <button class="secondary simAnswerBtn" type="button" data-mode="wrong" ${canSimulate ? "" : "disabled"}>${state.actionDrivenMode ? "Reckless" : "All Wrong"}</button>
+      </div>
     </div>
+    <div class="aware-copy"><label class="sim-auto-toggle"><input id="simAwareAbilitiesToggle" type="checkbox" ${state.simulatorAwareAbilities ? "checked" : ""}><span>Aware bot abilities</span></label><p>When enabled, simulated operators queue a useful class ability or item before answering.</p></div>
+    <label class="sim-auto-toggle auto-answer"><input id="simAutoAnswerToggle" type="checkbox" ${state.simulatorAutoAnswer ? "checked" : ""} ${state.actionDrivenMode ? "disabled" : ""}><span>Auto-answer</span><small>Automatic accuracy: ${state.simulatorAutoAnswerAccuracy}%</small></label>
     <div id="simulatorStatus" class="muted-small"></div>
   `;
   const autoToggle = document.getElementById("simAutoAnswerToggle");
@@ -5728,16 +6081,152 @@ function renderSimulatorPanel() {
     if (!state.simulatorAutoAnswer) cancelSimulatorAutoAnswerTimers();
     else scheduleSimulatorAutoAnswers(info);
   });
+  const awareToggle = document.getElementById("simAwareAbilitiesToggle");
+  awareToggle?.addEventListener("change", () => {
+    state.simulatorAwareAbilities = Boolean(awareToggle.checked);
+    window.localStorage.setItem("studyAdventureSimulatorAwareAbilities", String(state.simulatorAwareAbilities));
+    if (!state.simulatorAwareAbilities) cancelSimulatorAwareAbilityTimers();
+    else if (canSimulate) scheduleSimulatorAwareAbilities(info);
+  });
   document.querySelectorAll(".simAnswerBtn").forEach((button) => {
     button.addEventListener("click", () => simulateDeviceAnswers(button.dataset.mode || "correct"));
   });
   if (state.simulatorAutoAnswer && autoAvailable) scheduleSimulatorAutoAnswers(info);
+  if (state.simulatorAwareAbilities && canSimulate) scheduleSimulatorAwareAbilities(info);
 }
 
 function cancelSimulatorAutoAnswerTimers() {
   state.simulatorAutoAnswerTimers.forEach((timerId) => window.clearTimeout(timerId));
   state.simulatorAutoAnswerTimers = [];
   state.simulatorAutoAnswerPromptId = "";
+}
+
+function cancelSimulatorAwareAbilityTimers() {
+  state.simulatorAwareAbilityTimers.forEach((timerId) => window.clearTimeout(timerId));
+  state.simulatorAwareAbilityTimers = [];
+  state.simulatorAwareAbilityPromptId = "";
+}
+
+function simulatorAwareThreatScore(encounter) {
+  if (!encounter) return 0;
+  return (encounter.enemies || []).filter((enemy) => !enemy.defeated).reduce((total, enemy) => {
+    const tier = combatSystem.enemyTiers?.[enemy.tier] || combatSystem.enemyTiers?.light || {};
+    const activations = Math.max(1, Number(enemy.activations) || 1);
+    const damage = Number(tier.damage?.[1]) || 2;
+    const aoeDamage = Number(tier.aoeDamage?.[1]) || 1;
+    return total + activations * (damage + (enemy.aoe ? aoeDamage : 0));
+  }, 0);
+}
+
+function simulatorAwareAbilityPlan(participant, info = currentQuestionInfo()) {
+  const player = state.players.find((entry) => sameName(entry.name, participant?.name));
+  if (!player || player.incapacitated) return null;
+  const node = state.nodes[state.currentNode] || {};
+  const combatRoom = isCombatNode(node);
+  const encounter = combatRoom ? currentCombatEncounter() : null;
+  const active = state.players.filter((entry) => !entry.incapacitated);
+  const target = active.slice().sort((a, b) => {
+    const aRatio = (Number(a.hp) || 0) / Math.max(1, Number(a.maxHp) || 1);
+    const bRatio = (Number(b.hp) || 0) / Math.max(1, Number(b.maxHp) || 1);
+    return aRatio - bRatio;
+  })[0] || player;
+  const targetRatio = (Number(target.hp) || 0) / Math.max(1, Number(target.maxHp) || 1);
+  const threat = simulatorAwareThreatScore(encounter);
+  const enemyRatio = encounter ? (Number(encounter.hp) || 0) / Math.max(1, Number(encounter.maxHp) || 1) : 0;
+  const aliveEnemies = (encounter?.enemies || []).filter((enemy) => !enemy.defeated).length;
+  const hintNeeded = Boolean(
+    info?.question
+    && (state.simulatorAutoAnswerAccuracy < 75 || info.question.mode === "fill" || info.type?.kind === "locked")
+  );
+  const candidates = [];
+  const addCandidate = (action, label, reason, priority) => candidates.push({ action, label, reason, priority });
+  const classId = String(player.classId || "").toLowerCase();
+  const classCooldown = classAbilityCooldownState(player);
+  const statuses = Array.isArray(target.status) ? target.status : [];
+  const needsHealing = targetRatio <= 0.62 || statuses.some((status) => ["Bleeding", "Shocked", "Concussed"].includes(status));
+
+  if (classCooldown.ready) {
+    if (classId === "medic" && needsHealing && target) {
+      addCandidate(`CLASS:medic:${target.name}`, "Medic heal", `${target.name} is at ${Math.round(targetRatio * 100)}% HP or has a harmful status`, 100 + (1 - targetRatio) * 20);
+    } else if (classId === "scout" && hintNeeded) {
+      addCandidate("CLASS:scout", "Scout hint", "answer confidence is low for this prompt", 60);
+    } else if (classId === "enforcer" && combatRoom && (threat >= 4 || targetRatio <= 0.7 || (player.enforcerReserve > 0 && player.hp < player.maxHp))) {
+      addCandidate("CLASS:enforcer", "Enforcer shield", `expected incoming threat is ${Math.round(threat)} damage`, 78 + Math.min(12, threat));
+    } else if (classId === "engineer" && combatRoom && (threat >= 4 || aliveEnemies > 1)) {
+      addCandidate(`CLASS:engineer:${target.name}`, "Engineer disruption", `${aliveEnemies} hostiles or ${Math.round(threat)} expected incoming damage`, 72 + Math.min(12, threat));
+    } else if (classId === "soldier" && combatRoom && enemyRatio > 0.15 && enemyRatio < 0.9) {
+      addCandidate("CLASS:soldier", "Soldier Double Tap", "the hostile is healthy enough for an empowered strike", 54);
+    } else if (classId === "tactician" && combatRoom) {
+      const protocol = needsHealing ? "support" : threat >= 5 ? "guard" : enemyRatio <= 0.6 ? "assault" : "guard";
+      const reason = protocol === "support" ? `${target.name} needs stabilization` : protocol === "guard" ? `expected threat is ${Math.round(threat)} damage` : "the hostile is in the coordinated-damage window";
+      addCandidate(`CLASS:tactician:${protocol}`, `Tactician ${protocol}`, reason, protocol === "support" ? 82 : 58);
+    }
+  }
+
+  for (const itemId of Array.isArray(player.items) ? player.items : []) {
+    const item = itemForPlayer(itemId);
+    const ability = itemAbilityDefinition(item);
+    if (!item || !ability || !itemAbilityCooldownState(player, item, ability).ready) continue;
+    if (ability.effect === "heal" && needsHealing && target) {
+      addCandidate(`ABILITY:${item.id}:${target.name}`, `${ability.label} heal`, `${target.name} is the squad's most urgent healing target`, 88 + (1 - targetRatio) * 16);
+    } else if (ability.effect === "hint" && hintNeeded) {
+      addCandidate(`ABILITY:${item.id}`, `${ability.label} hint`, "the prompt needs extra information before answering", 56);
+    } else if (combatRoom && ability.effect === "guard" && threat >= 4) {
+      addCandidate(`ABILITY:${item.id}`, `${ability.label} guard`, `expected incoming threat is ${Math.round(threat)} damage`, 68 + Math.min(10, threat));
+    } else if (combatRoom && ability.effect === "disrupt" && (threat >= 4 || aliveEnemies > 1)) {
+      addCandidate(`ABILITY:${item.id}`, `${ability.label} disrupt`, "multiple hostile activations are active", 67 + Math.min(8, aliveEnemies));
+    } else if (combatRoom && ability.effect === "damage" && enemyRatio > 0.2) {
+      addCandidate(`ABILITY:${item.id}`, `${ability.label} damage`, "the hostile can still benefit from a bonus strike", 48);
+    }
+  }
+  return candidates.sort((a, b) => b.priority - a.priority)[0] || null;
+}
+
+function scheduleSimulatorAwareAbilities(info = currentQuestionInfo()) {
+  if (!state.simulatorAwareAbilities || !state.started || state.deviceMode !== "multi" || !state.questionPresentationReady || state.answerPending || state.resolutionDelayPending || state.resolved || !state.playerPromptId) return;
+  if (state.bossReadyPending || state.nodes[state.currentNode]?.type === "recovery") return;
+  const promptId = state.playerPromptId;
+  if (state.simulatorAwareAbilityPromptId === promptId) return;
+  cancelSimulatorAwareAbilityTimers();
+  state.simulatorAwareAbilityPromptId = promptId;
+  const plans = simulatedAnswerParticipants(info)
+    .map((participant) => ({ participant, plan: simulatorAwareAbilityPlan(participant, info) }))
+    .filter((entry) => entry.plan);
+  const status = document.getElementById("simulatorStatus");
+  if (!plans.length) {
+    if (status) status.textContent = "Aware abilities: no high-value action this turn.";
+    return;
+  }
+  if (status) status.textContent = `Aware abilities: ${plans.length} bot action${plans.length === 1 ? "" : "s"} queued.`;
+  plans.forEach(({ participant, plan }, index) => {
+    const timerId = window.setTimeout(() => submitSimulatorAwareAbility(participant, promptId, plan), 700 + index * 260);
+    state.simulatorAwareAbilityTimers.push(timerId);
+  });
+}
+
+function submitSimulatorAwareAbility(participant, promptId, plan, attempt = 0) {
+  if (!state.simulatorAwareAbilities || promptId !== state.playerPromptId || !state.questionPresentationReady || state.answerPending || state.resolved) return;
+  playerSessionApi.submitAction({
+    roomCode: state.roomCode,
+    playerId: participant.id,
+    playerName: participant.name,
+    promptId,
+    action: plan.action
+  }).then((result) => {
+    const status = document.getElementById("simulatorStatus");
+    if (result?.ok) {
+      if (status) status.textContent = `${participant.name}: ${plan.label} queued — ${plan.reason}.`;
+      logDebugEvent({ kind: "state", label: "Aware bot ability queued", detail: `${participant.name} | ${plan.action} | ${plan.reason}` });
+      return;
+    }
+    const retryable = !result || /locking|not accepting|no longer active|prompt/i.test(String(result?.error || ""));
+    if (retryable && attempt < 2 && promptId === state.playerPromptId && !state.resolved) {
+      const timerId = window.setTimeout(() => submitSimulatorAwareAbility(participant, promptId, plan, attempt + 1), 900 + attempt * 350);
+      state.simulatorAwareAbilityTimers.push(timerId);
+      return;
+    }
+    if (status) status.textContent = `${participant.name}: ability not queued (${result?.error || "unavailable"}).`;
+  }).catch(() => {});
 }
 
 function scheduleSimulatorAutoAnswers(info = currentQuestionInfo()) {
@@ -5755,7 +6244,24 @@ function scheduleSimulatorAutoAnswers(info = currentQuestionInfo()) {
     if (status) status.textContent = "Auto-Answer armed. No simulated players need to answer.";
     return;
   }
-  const remainingMs = Number(state.emergencyTimer?.remainingMs || 0);
+  const isEmergencyPrompt = info.type.kind === "emergency";
+  const remainingMs = state.emergencyTimer
+    ? Math.max(0, Number(state.emergencyTimer.remainingMs) || 0)
+    : isEmergencyPrompt ? 10_000 : 0;
+  if (isEmergencyPrompt) {
+    // Emergency responses are meant to feel like a last-second scramble. Keep
+    // the simulator quiet until the final five seconds instead of letting a
+    // bot win the first-response race immediately after the prompt opens.
+    const delay = Math.max(0, remainingMs - EMERGENCY_SIM_TARGET_REMAINING_MS);
+    if (status) status.textContent = `Auto-Answer armed for ${pendingParticipants.length} sim player${pendingParticipants.length === 1 ? "" : "s"}; emergency response held for the final 5 seconds.`;
+    pendingParticipants.forEach((participant, index) => {
+      const timerId = window.setTimeout(() => {
+        submitSimulatorAutoAnswer(participant, promptId, info, 0);
+      }, delay + index * 120);
+      state.simulatorAutoAnswerTimers.push(timerId);
+    });
+    return;
+  }
   const timerSafetyBuffer = state.emergencyTimer?.kind === "emergency" ? 3_000 : 4_500;
   const maxDelay = remainingMs > 0
     ? Math.max(650, Math.min(9_000, remainingMs - timerSafetyBuffer))
@@ -5849,7 +6355,7 @@ function submitSimulatorAnswerWithRetry(participant, promptId, answer, attempt =
 }
 
 function repairCurrentPromptPublication(promptId) {
-  if (!promptId || promptId !== state.playerPromptId || state.resolved) return Promise.resolve(null);
+  if (!promptId || promptId !== state.playerPromptId || state.resolved || state.answerPending || state.resolutionDelayPending) return Promise.resolve(null);
   if (state.simulatorPromptRepairPromise) return state.simulatorPromptRepairPromise;
   const prompt = buildPlayerPrompt();
   if (!prompt || prompt.id !== promptId) return Promise.resolve(null);
@@ -6041,7 +6547,6 @@ function simulatedAnswerParticipants(info) {
   const activeNames = new Set(activePlayers().map((player) => normalize(player.name)));
   const connected = simulatedParticipants().filter((participant) => activeNames.has(normalize(participant.name)));
   if (info.type.kind === "emergency") return connected.slice(0, 1);
-  if (info.type.locked && info.operator) return connected.filter((participant) => sameName(participant.name, info.operator.name)).slice(0, 1);
   return connected;
 }
 
@@ -6134,12 +6639,13 @@ function renderPlayerJoinQr(joinUrl) {
 }
 
 function submitDeviceAnswer(answer, options = {}) {
-  if (!answer || !state.questionPresentationReady || state.answerPending || state.resolutionDelayPending || state.resolved) return;
+  if (!answer || !state.questionPresentationReady || state.answerPending || state.resolutionDelayPending || state.resolved) return false;
   if (state.chatMode) submitPlayerAnswerValue(answer, { source: options.source || "device-auto" });
   else {
     publishPlayerWaiting("resolving");
     resolveChallenge(answer);
   }
+  return true;
 }
 
 function makeRoomCode() {
@@ -7278,12 +7784,6 @@ function cleanQuestionMarkup(value) {
 
 function prepareQuestions(questions, challengeTypes = []) {
   const presentedQuestions = questions.map((question, index) => {
-    if (question.type === "true-false" && challengeTypes[index]?.kind !== "emergency" && !challengeTypes[index]?.boss) {
-      challengeTypes[index] = { label: "True / False Challenge", kind: "truefalse", locked: false, damage: 2 };
-    }
-    if (question.type === "fill" && challengeTypes[index]?.kind === "emergency") {
-      challengeTypes[index] = { label: "Individual Challenge", kind: "individual", locked: false, damage: 2 };
-    }
     return question;
   });
 
@@ -7454,6 +7954,7 @@ function ensureCombatEncounter(nodeIndex = state.currentNode) {
   if (!isCombatNode(node) || !combatSystem.createEnemyGroup) return null;
   if (state.combatEncounters[nodeIndex]) return state.combatEncounters[nodeIndex];
   const group = combatSystem.createEnemyGroup(combatTierPlan(node, nodeIndex), state.rng);
+  if (node.type !== "boss") assignEnemyVisuals(group.enemies);
   const playerScale = 0.6 + activePlayers().length * 0.3;
   for (const enemy of group.enemies) {
     enemy.hp = Math.max(1, Math.round(enemy.hp * playerScale));
@@ -7796,6 +8297,7 @@ function applyPendingCombatAbilities(encounter, notes, facts, supportEvents = []
       supportEvents.push({ kind: "damage", source: source.name, target: source.name, amount: 0, label: "Heavy Rifle Overdrive" });
     } else if (classId === "tactician") {
       source._classCommandReady = true;
+      markCombatCooldown(source, "tactician-command", encounter);
       source._classCommandProtocol = ["assault", "guard", "support"].includes(String(use.protocol || "").toLowerCase())
         ? String(use.protocol).toLowerCase()
         : "assault";
@@ -7978,7 +8480,7 @@ function applyCombatEncounter(entries, type, operator, question) {
     const backlash = Math.max(0, itemRisk(entry.player, "selfDamageOnMiss"));
     if (backlash) {
       applyDamage(entry.player, backlash, "risk item backlash");
-      notes.push(`${entry.player.name}'s risk item backfires for ${backlash} damage.`);
+      addEventNote(notes, entry.player.name, `${entry.player.name}'s risk item backfires for ${backlash} damage.`);
     }
   }
   encounter.cleared = encounter.hp <= 0;
@@ -8072,7 +8574,7 @@ function applyCombatEncounter(entries, type, operator, question) {
             ? `${hit.target.name} braces and blocks ${action.enemy.label}'s attack.`
             : `${action.enemy.label} attacks ${hit.target.name} for ${hit.damage} damage${hit.braced ? ` after bracing (${Math.round(hit.braceMitigation * 100)}% mitigated)` : ""}.`))
   ];
-  encounter.lastRound = { attackResults, enemyActions, totalDamage, defeatedCount, roundStartEnemies, combatStatusLines, challengeKind: type.kind };
+  encounter.lastRound = { round: encounter.round, attackResults, enemyActions, supportEvents: combatSupportEvents, totalDamage, defeatedCount, roundStartEnemies, combatStatusLines, challengeKind: type.kind };
   facts.push(`Private mechanics: combat round ${encounter.round}; hostile pool ${encounter.hp}/${encounter.maxHp}; player attacks ${attackResults.map((attack) => `${attack.player.name} ${attack.damage}`).join(", ") || "none"}; enemy damage ${totalDamage}. Narrate physical outcomes without numbers.`);
   return {
     narration,
@@ -8207,11 +8709,18 @@ function range(start, end) {
 }
 
 function beginNextNode() {
+  roomTransitionTraceEmit("MARK", "begin next node", {
+    combatResolving: Boolean(els.combatStage?.classList.contains("resolving")),
+    combatExiting: Boolean(els.combatStage?.classList.contains("exiting"))
+  });
   if (!els.combatStage?.hidden && (els.combatStage.classList.contains("resolving") || els.combatStage.classList.contains("exiting"))) {
     if (!state.combatNextNodeWaitStartedAt) state.combatNextNodeWaitStartedAt = Date.now();
     if (Date.now() - state.combatNextNodeWaitStartedAt >= COMBAT_GATE_MAX_WAIT_MS) {
       recoverCombatPresentationGate("next-room transition");
     } else {
+      roomTransitionTraceEmit("WAIT", "combat presentation gate", {
+        waitedMs: Date.now() - state.combatNextNodeWaitStartedAt
+      });
       if (!state.combatNextNodeTimer) {
         state.combatNextNodeTimer = window.setTimeout(() => {
           state.combatNextNodeTimer = null;
@@ -8232,6 +8741,11 @@ function beginNextNode() {
   }
 
   const node = state.nodes[state.currentNode];
+  roomTransitionTraceEmit("MARK", "next node selected", {
+    nodeIndex: state.currentNode,
+    nodeType: node?.type || "",
+    nodeLabel: node?.label || ""
+  });
   if (node.type === "recovery") {
     renderRecovery(node);
     return;
@@ -8574,6 +9088,30 @@ function startDashboardToSetupTransition() {
   state.setupTransitionTimers.push(resetTimer);
 }
 
+function syncLiveConsoleScale() {
+  const viewport = window.visualViewport;
+  const viewportWidth = viewport?.width || window.innerWidth;
+  const viewportHeight = viewport?.height || window.innerHeight;
+  const safeWidth = Math.max(320, viewportWidth - 32);
+  const safeHeight = Math.max(320, viewportHeight - 72);
+  const scale = Math.min(safeWidth / 1700, safeHeight / 960);
+  document.documentElement.style.setProperty("--live-console-scale", String(Math.max(0.35, scale)));
+}
+
+function mountLiveMissionStrip() {
+  const mount = document.getElementById("liveMissionStripMount");
+  const strip = document.querySelector(".map-main > .panel-header.compact");
+  if (!mount || !strip || strip.parentElement === mount) return;
+  strip.classList.add("live-mission-strip");
+  mount.appendChild(strip);
+}
+
+window.addEventListener("resize", syncLiveConsoleScale, { passive: true });
+window.visualViewport?.addEventListener("resize", syncLiveConsoleScale, { passive: true });
+window.visualViewport?.addEventListener("scroll", syncLiveConsoleScale, { passive: true });
+syncLiveConsoleScale();
+mountLiveMissionStrip();
+
 function startSetupToDeploymentTransition() {
   clearSetupToDeploymentTransition();
   if (els.setupTransitionLabel) els.setupTransitionLabel.textContent = "MISSION CHANNEL TRANSFER";
@@ -8596,6 +9134,7 @@ function startSetupToDeploymentTransition() {
   };
 
   schedule(900, () => {
+    syncLiveConsoleScale();
     document.body.classList.add("mission-active");
     els.setupPanel.style.display = "none";
   });
@@ -8783,6 +9322,22 @@ function clearDashboardBootSequence() {
     "dashboard-concealed",
     "dashboard-booting",
     "dashboard-stage-shell",
+    "dashboard-stage-center-top",
+    "dashboard-stage-center-screen",
+    "dashboard-stage-center-initiative",
+    "dashboard-stage-center-legend",
+    "dashboard-stage-center-simulator",
+    "dashboard-stage-center-controls",
+    "dashboard-stage-center-route",
+    "dashboard-stage-center-timer",
+    "dashboard-stage-left-progress",
+    "dashboard-stage-left-operators",
+    "dashboard-stage-left-supplies",
+    "dashboard-stage-left-devices",
+    "dashboard-stage-right-log",
+    "dashboard-stage-right-encounter",
+    "dashboard-stage-right-status",
+    "dashboard-stage-right-tools",
     "dashboard-stage-map",
     "dashboard-map-boot",
     "dashboard-stage-map-lock",
@@ -8809,47 +9364,93 @@ function runDashboardBootSequence(runId) {
   };
 
   return new Promise((resolve) => {
-    const operatorStageStart = 5450;
-    const operatorStaggerMs = 280;
+    const centerTopStage = 900;
+    const centerScreenStage = 1750;
+    const centerInitiativeStage = 3100;
+    const centerLegendStage = 3450;
+    const centerSimulatorStage = 3800;
+    const centerControlsStage = 4150;
+    const centerRouteStage = 4500;
+    const centerTimerStage = 4850;
+    const leftProgressStage = 5350;
+    const operatorStageStart = 5850;
+    const operatorStaggerMs = 220;
     const operatorCount = Math.max(1, state.players.length);
-    const operatorStageEnd = operatorStageStart + ((operatorCount - 1) * operatorStaggerMs) + 900;
-    const toolsStageStart = operatorStageEnd + 720;
-    const onlineStageStart = toolsStageStart + 1250;
+    const operatorStageEnd = operatorStageStart + ((operatorCount - 1) * operatorStaggerMs) + 760;
+    const leftSuppliesStage = operatorStageEnd + 250;
+    const leftDevicesStage = leftSuppliesStage + 600;
+    const rightLogStage = leftDevicesStage + 900;
+    const rightEncounterStage = rightLogStage + 500;
+    const rightStatusStage = rightEncounterStage + 500;
+    const rightToolsStage = rightStatusStage + 500;
+    const onlineStageStart = rightToolsStage + 900;
 
-    schedule(520, () => {
-      document.body.classList.add("dashboard-stage-map", "dashboard-map-boot");
+    schedule(centerTopStage, () => {
+      document.body.classList.add("dashboard-stage-center-top");
+      playDashboardPanelCue();
+    });
+    schedule(centerScreenStage, () => {
+      document.body.classList.add("dashboard-stage-center-screen", "dashboard-stage-map", "dashboard-map-boot");
       playGameSfx("submitted");
     });
-    schedule(1880, () => {
+    schedule(centerScreenStage + 1100, () => {
       document.body.classList.remove("dashboard-map-boot");
       document.body.classList.add("dashboard-stage-map-lock");
     });
-    schedule(2780, () => {
-      document.body.classList.add("dashboard-stage-telemetry");
+    schedule(centerInitiativeStage, () => {
+      document.body.classList.add("dashboard-stage-center-initiative");
       playDashboardPanelCue();
     });
-    schedule(3660, () => {
-      document.body.classList.add("dashboard-stage-log");
+    schedule(centerLegendStage, () => {
+      document.body.classList.add("dashboard-stage-center-legend");
       playDashboardPanelCue();
     });
-    schedule(4380, () => {
-      document.body.classList.add("dashboard-stage-encounter");
+    schedule(centerSimulatorStage, () => {
+      document.body.classList.add("dashboard-stage-center-simulator");
       playDashboardPanelCue();
     });
-    schedule(4980, () => {
-      document.body.classList.add("dashboard-stage-status");
+    schedule(centerControlsStage, () => {
+      document.body.classList.add("dashboard-stage-center-controls");
       playDashboardPanelCue();
     });
-    schedule(operatorStageStart, () => document.body.classList.add("dashboard-stage-operators"));
+    schedule(centerRouteStage, () => {
+      document.body.classList.add("dashboard-stage-center-route");
+      playDashboardPanelCue();
+    });
+    schedule(centerTimerStage, () => {
+      document.body.classList.add("dashboard-stage-center-timer");
+      playDashboardPanelCue();
+    });
+    schedule(leftProgressStage, () => {
+      document.body.classList.add("dashboard-stage-left-progress");
+      playDashboardPanelCue();
+    });
+    schedule(operatorStageStart, () => document.body.classList.add("dashboard-stage-left-operators"));
     state.players.forEach((player, index) => {
       schedule(operatorStageStart + index * operatorStaggerMs, playDashboardOperatorCue);
     });
-    schedule(operatorStageEnd, () => {
-      document.body.classList.add("dashboard-stage-supplies");
+    schedule(leftSuppliesStage, () => {
+      document.body.classList.add("dashboard-stage-left-supplies");
       playDashboardPanelCue();
     });
-    schedule(toolsStageStart, () => {
-      document.body.classList.add("dashboard-stage-tools");
+    schedule(leftDevicesStage, () => {
+      document.body.classList.add("dashboard-stage-left-devices");
+      playDashboardPanelCue();
+    });
+    schedule(rightLogStage, () => {
+      document.body.classList.add("dashboard-stage-right-log");
+      playDashboardPanelCue();
+    });
+    schedule(rightEncounterStage, () => {
+      document.body.classList.add("dashboard-stage-right-encounter");
+      playDashboardPanelCue();
+    });
+    schedule(rightStatusStage, () => {
+      document.body.classList.add("dashboard-stage-right-status");
+      playDashboardPanelCue();
+    });
+    schedule(rightToolsStage, () => {
+      document.body.classList.add("dashboard-stage-right-tools");
       playDashboardPanelCue();
     });
     schedule(onlineStageStart, () => {
@@ -9035,12 +9636,8 @@ function renderDeploymentThreatPings() {
 }
 
 function deploymentThemeClass() {
-  const theme = normalize(`${state.missionType} ${state.environment}`);
-  if (/fantasy|arcane|magic/.test(theme)) return "arcane";
-  if (/naval|carrier|ship|submarine/.test(theme)) return "naval";
-  if (/space|alien|orbital|station/.test(theme)) return "scifi";
-  if (/horror|ghost|haunt/.test(theme)) return "horror";
-  return "military";
+  if (normalize(state.missionType) === "abandoned space station") return "space-station";
+  return "bunker";
 }
 
 function applyDashboardAtmosphere() {
@@ -9070,13 +9667,10 @@ function applyDashboardAtmosphere() {
 
 function deploymentThemeLabel() {
   const labels = {
-    horror: "EMERGENCY SIGNAL RECOVERY",
-    military: "TACTICAL UPLINK",
-    scifi: "SENSOR CALIBRATION",
-    arcane: "WARD CIRCUIT TRACE",
-    naval: "COMPARTMENT SONAR LINK"
+    bunker: "BUNKER SIGNAL RECOVERY",
+    "space-station": "STATION SENSOR CALIBRATION"
   };
-  return labels[deploymentThemeClass()];
+  return labels[deploymentThemeClass()] || labels.bunker;
 }
 
 function deploymentMessages() {
@@ -9091,13 +9685,10 @@ function deploymentMessages() {
 
 function deploymentFragments() {
   const fragments = {
-    horror: ["Static spike detected beyond mapped rooms.", "A secondary carrier answers with no identifiable source.", "Emergency channel opens, then cuts to silence."],
-    military: ["Forward relay responding.", "Route integrity scan in progress.", "Field telemetry packet acknowledged."],
-    scifi: ["Hull-adjacent sensor echo detected.", "Maintenance ring pressure nominal.", "Unknown waveform riding the station bus."],
-    arcane: ["Outer ward answering unevenly.", "Residual charge detected beneath the route seal.", "A second pattern traces itself and disappears."],
-    naval: ["Sonar return crosses an unlisted compartment.", "Bulkhead pressure reports received.", "A contact fades beneath the machinery noise."]
+    bunker: ["Static spike detected beyond mapped rooms.", "A secondary carrier answers with no identifiable source.", "Emergency channel opens, then cuts to silence."],
+    "space-station": ["Hull-adjacent sensor echo detected.", "Habitation ring pressure is unstable.", "Unknown waveform riding the station bus."]
   };
-  return fragments[deploymentThemeClass()];
+  return fragments[deploymentThemeClass()] || fragments.bunker;
 }
 
 function collapseMissionBriefing() {
@@ -9118,9 +9709,9 @@ function statusRenderKey() {
     (player.items || []).join(","),
     JSON.stringify(player.classCooldowns || {}),
     player.itemNotice || "",
-    player.abilityNotice || ""
+    player.abilityNotice || "",
+    JSON.stringify(state.playerAnswerFeedback?.[normalize(player.name)] || null)
   ].join(":"));
-  const answers = state.playerAnswers.map((entry) => `${entry.playerName || entry.playerId}:${entry.promptId || ""}:${entry.correct == null ? "" : entry.correct ? 1 : 0}:${entry.submittedAt || 0}`).join("|");
   const actions = state.playerActions.map((entry) => `${entry.playerName || entry.playerId}:${entry.promptId || ""}:${entry.id || ""}`).join("|");
   const participants = state.playerParticipants.map((entry) => `${entry.id || entry.name}:${entry.classId || ""}`).join("|");
   return [
@@ -9134,13 +9725,21 @@ function statusRenderKey() {
     JSON.stringify(state.combatDisplayedHp || {}),
     JSON.stringify(state.pendingAbilityTarget || null),
     players.join("|"),
-    answers,
     actions,
     participants
   ].join("~");
 }
 
 function renderStatus() {
+  const startedAt = state.roomTransitionTrace ? performance.now() : 0;
+  try {
+    return renderStatusCore();
+  } finally {
+    if (startedAt) roomTransitionTraceRecordDuration("render status", performance.now() - startedAt);
+  }
+}
+
+function renderStatusCore() {
   const signature = statusRenderKey();
   if (signature === state.statusRenderSignature) return;
   state.statusRenderSignature = signature;
@@ -9150,27 +9749,53 @@ function renderStatus() {
     const displayedPlayer = Number.isFinite(displayedHp)
       ? { ...player, hp: displayedHp, incapacitated: displayedHp <= 0 }
       : player;
+    const classDefinition = combatSystem.classDefinition?.(player.classId) || {};
+    const abilityState = classAbilityCooldownState(player);
+    const promptResolved = state.resolved || state.answerPending;
+    const promptAnswer = state.playerAnswers.find((entry) => sameName(entry.playerName || entry.playerId, player.name));
+    const currentResult = state.answerResults[normalize(player.name)];
+    const previousResult = state.playerAnswerFeedback?.[normalize(player.name)]?.correct;
+    const accuracyResult = typeof currentResult === "boolean"
+      ? currentResult
+      : typeof previousResult === "boolean"
+        ? previousResult
+        : null;
+    const readyClass = accuracyResult === false ? "bad" : accuracyResult === true ? "" : "answer-neutral";
+    const readyGlyph = accuracyResult === false ? "&#10005;" : accuracyResult === true ? "&#10003;" : "";
+    const readyLabel = accuracyResult === false ? "Previous answer incorrect" : accuracyResult === true ? "Previous answer correct" : "No answer result";
+    const equippedItems = playerItems(player).slice(0, 2);
+    const itemDots = Array.from({ length: 2 }, (_, slotIndex) => {
+      const item = equippedItems[slotIndex];
+      return item
+        ? `<i class="roster-item-dot rarity-${escapeAttribute(item.rarity || "common")}" title="${escapeAttribute(item.name)}"></i>`
+        : `<i class="roster-item-dot empty" title="Empty item slot"></i>`;
+    }).join("");
     return `
-    <div class="status-card ${playerStatusClasses(displayedPlayer)} ${playerPromptStatusClasses(player)}" style="--player-color:${playerColor(player.name)}; --turn-rank:${actionTurnRank(player)}; --operator-boot-index:${index}" data-player-index="${index}" data-player-name="${escapeAttribute(player.name)}">
-      <div class="status-card-heading">
-        <div class="player-card-identity"><span class="player-class-icon" title="${escapeAttribute(combatSystem.classDefinition?.(player.classId)?.label || "Operator")}" aria-hidden="true">${playerClassIcon(player.classId)}</span><strong title="${escapeAttribute(player.name)}"><span class="player-colored-name">${escapeHtml(displayPlayerName(player.name))}</span><small>LV ${Math.max(1, Number(player.level) || 1)}</small></strong></div>
-        ${actionTurnBadge(player)}
-        ${answerSubmissionBadge(player)}
-        ${answerResultBadge(player)}
-        ${emsPlayerBadge(player)}
-        ${secondWindBadge(player)}
+    <article class="status-card roster-card ${playerStatusClasses(displayedPlayer)} ${playerPromptStatusClasses(player)}" style="--player-color:${playerColor(player.name)}; --role:${playerColor(player.name)}; --turn-rank:${actionTurnRank(player)}; --operator-boot-index:${index}" data-player-index="${index}" data-player-name="${escapeAttribute(player.name)}">
+      <span class="role-hex player-class-icon" title="${escapeAttribute(classDefinition.label || "Operator")}" aria-hidden="true">${playerClassIcon(player.classId)}</span>
+      <div class="roster-main">
+        <div class="roster-name"><strong title="${escapeAttribute(player.name)}">${escapeHtml(displayPlayerName(player.name))}</strong><small>LV ${Math.max(1, Number(player.level) || 1)}</small></div>
+        <div class="roster-vitals"><span>${Math.max(0, displayedPlayer.hp)} / ${Math.max(10, Number(player.maxHp) || 10)} HP</span><span class="state-pill ${statusCodeClass(displayedPlayer)}" title="${escapeAttribute(player.status.length ? player.status.join(", ") : "No status effects")}">${escapeHtml(statusCodeText(displayedPlayer))}</span></div>
       </div>
-      <div class="player-card-stats"><strong>${Math.max(0, displayedPlayer.hp)} / ${Math.max(10, Number(player.maxHp) || 10)} HP</strong><span class="${statusCodeClass(displayedPlayer)}" title="${escapeAttribute(player.status.length ? player.status.join(", ") : "No status effects")}">${escapeHtml(statusCodeText(displayedPlayer))}</span></div>
-      ${playerItemSlotsHtml(player)}
-      ${abilityTargetPickerHtml(player)}
-    </div>
-  `;
+      <span class="ready-mark ${readyClass}" aria-label="${readyLabel}">${readyGlyph}</span>
+      <div class="gear-line"><span>${escapeHtml(classDefinition.gear || classAbilityLabel(player.classId))}</span><b>${escapeHtml(abilityUsedThisTurn(player) ? "ARMED" : abilityState.label)}</b><span class="roster-item-dots">${itemDots}</span></div>
+      <div class="roster-card-badges">${actionTurnBadge(player)}${answerSubmissionBadge(player)}${answerResultBadge(player)}${armedAbilityBadge(player)}${emsPlayerBadge(player)}${secondWindBadge(player)}</div>
+      <div class="roster-card-controls">${playerItemSlotsHtml(player)}${abilityTargetPickerHtml(player)}</div>
+    </article>`;
   }).join("");
 
   els.statusGrid.innerHTML = `
+    <div class="live-roster-heading"><span>Squad Roster</span><strong>${state.players.length} / 6 Operators</strong></div>
     ${combatStatus}
     ${playerCards}
   `;
+  const effectsList = document.getElementById("missionEffectsList");
+  if (effectsList) {
+    const effects = state.players.flatMap((player) => (player.status || []).map((status) => ({ player, status })));
+    effectsList.innerHTML = effects.length
+      ? effects.slice(0, 5).map(({ player, status }) => `<div class="mission-effect-row" style="--effect-color:${playerColor(player.name)}"><span>${playerClassIcon(player.classId)}</span><div><strong>${escapeHtml(status)}</strong><small>${escapeHtml(displayPlayerName(player.name))}</small></div></div>`).join("")
+      : '<p class="muted-small">No active effects.</p>';
+  }
   els.statusGrid.querySelectorAll("[data-item-ability]").forEach((button) => {
     if (!button.dataset.itemAbility) return;
     button.addEventListener("click", () => {
@@ -9189,10 +9814,23 @@ function renderStatus() {
       renderStatus();
     });
   });
+  els.statusGrid.querySelectorAll("[data-tactician-protocol-for]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (button.disabled) return;
+      const protocols = ["assault", "guard", "support"];
+      const current = protocols.indexOf(button.dataset.protocol || "assault");
+      const next = protocols[(current + 1 + protocols.length) % protocols.length];
+      button.dataset.protocol = next;
+      button.classList.remove("protocol-assault", "protocol-guard", "protocol-support");
+      button.classList.add(`protocol-${next}`);
+      const label = button.querySelector("[data-protocol-label]");
+      if (label) label.textContent = next.toUpperCase();
+    });
+  });
   els.statusGrid.querySelectorAll("[data-class-ability-use]").forEach((button) => {
     button.addEventListener("click", () => {
       const card = button.closest("[data-player-name]");
-      const protocol = card?.querySelector("[data-tactician-protocol-for]")?.value || "";
+      const protocol = card?.querySelector("[data-tactician-protocol-for]")?.dataset.protocol || "assault";
       const sourceName = button.dataset.classAbilityUse || "";
       const used = queueClassAbilityUse(sourceName, protocol, "teacher");
       if (!used) {
@@ -9238,6 +9876,7 @@ function renderStatus() {
   renderPlayerSessionPanel();
   renderRouteTelemetry();
   renderMapEmergencyTimer();
+  renderInitiativeTimeline();
   publishPlayerVitals();
 }
 
@@ -9275,6 +9914,7 @@ function playerPromptStatusClasses(player) {
     classes.push(sameName(player.name, info.operator.name) ? "status-card-locked-operator" : "status-card-locked-out");
   }
   if (state.deviceMode === "multi" && participantHasCurrentSubmission({ name: player.name })) classes.push("status-card-submitted");
+  if (abilityUsedThisTurn(player)) classes.push("status-card-ability-armed");
   return classes.join(" ");
 }
 
@@ -9326,6 +9966,14 @@ function answerResultBadge(player) {
   return "";
 }
 
+function armedAbilityBadge(player) {
+  if (!abilityUsedThisTurn(player)) return "";
+  const label = player.abilityNotice && /queued|armed/i.test(player.abilityNotice)
+    ? player.abilityNotice
+    : "Ability armed for this turn";
+  return `<span class="ability-armed-badge" title="${escapeAttribute(label)}" aria-label="Ability armed">ARMED</span>`;
+}
+
 // Keep answer markers ASCII-safe across teacher monitors with mixed encodings.
 function answerResultBadge(player) {
   const result = state.answerResults[normalize(player.name)];
@@ -9334,8 +9982,10 @@ function answerResultBadge(player) {
   return "";
 }
 
-function renderPreviousAnswer() {
+function renderPreviousAnswerLegacy() {
   const previous = state.previousAnswer;
+  const submissionCount = state.playerAnswers.filter((answer) => answer && (answer.playerName || answer.playerId)).length;
+  const submissionLabel = `${submissionCount} response${submissionCount === 1 ? "" : "s"} submitted`;
   els.lastAnswerPanel.hidden = false;
   if (!previous) {
     els.lastAnswerPanel.classList.remove("accepted", "rejected", "feedback-flash");
@@ -9349,6 +9999,40 @@ function renderPreviousAnswer() {
   els.lastAnswerPanel.classList.toggle("rejected", !previous.correct);
   els.lastAnswerResult.textContent = previous.correct ? "Accepted" : "Correction Required";
   els.lastSubmittedDisplay.textContent = previous.submitted;
+  els.lastCorrectDisplay.textContent = previous.required;
+  if (previous.id && previous.id !== state.previousAnswerFlashId) {
+    state.previousAnswerFlashId = previous.id;
+    els.lastAnswerPanel.classList.remove("feedback-flash");
+    void els.lastAnswerPanel.offsetWidth;
+    els.lastAnswerPanel.classList.add("feedback-flash");
+  }
+}
+
+function renderPreviousAnswer() {
+  const previous = state.previousAnswer;
+  const submissionCount = state.playerAnswers.filter((answer) => answer && (answer.playerName || answer.playerId)).length;
+  els.lastAnswerPanel.hidden = false;
+  els.lastSubmittedDisplay.textContent = String(submissionCount);
+  if (els.missionProgress) {
+    const resolvedResults = Object.values(state.missionAccuracyResults || {});
+    const correctTotal = resolvedResults.filter(Boolean).length;
+    const resolvedTotal = resolvedResults.length;
+    const accuracy = resolvedTotal ? Math.round((correctTotal / resolvedTotal) * 100) : 0;
+    els.missionProgress.style.setProperty("--mission-accuracy-angle", `${accuracy * 3.6}deg`);
+    els.missionProgress.dataset.accuracyLabel = resolvedTotal ? `${accuracy}%` : "--";
+    els.missionProgress.title = resolvedTotal
+      ? `${accuracy}% mission accuracy (${correctTotal} correct of ${resolvedTotal} player answers)`
+      : "Mission accuracy will appear after the first player answer is resolved";
+  }
+  if (!previous) {
+    els.lastAnswerPanel.classList.remove("accepted", "rejected", "feedback-flash");
+    els.lastAnswerResult.textContent = "Awaiting";
+    els.lastCorrectDisplay.textContent = "—";
+    return;
+  }
+  els.lastAnswerPanel.classList.toggle("accepted", previous.correct);
+  els.lastAnswerPanel.classList.toggle("rejected", !previous.correct);
+  els.lastAnswerResult.textContent = previous.correct ? "Accepted" : "Correction Required";
   els.lastCorrectDisplay.textContent = previous.required;
   if (previous.id && previous.id !== state.previousAnswerFlashId) {
     state.previousAnswerFlashId = previous.id;
@@ -9608,7 +10292,12 @@ function queueClassAbilityUse(sourceName, targetName = "", sourceMode = "teacher
   const marker = ["soldier", "tactician"].includes(classId)
     ? Number(encounter?.round || 0)
     : state.currentQuestion;
-  source.classCooldowns = { ...(source.classCooldowns || {}), [abilityState.key]: marker };
+  // Tactician cooldown starts when the selected protocol actually resolves,
+  // not when the player merely arms it. An unused or cancelled protocol no
+  // longer appears stuck on recharge.
+  if (classId !== "tactician") {
+    source.classCooldowns = { ...(source.classCooldowns || {}), [abilityState.key]: marker };
+  }
   if (classId === "scout") activateScoutHintForPrompt(currentQuestionInfo(), source);
   source._abilityTurnKey = currentAbilityTurnKey();
   state.pendingClassAbilityUses.push({ sourceName: source.name, classId, targetName: target?.name || "", protocol });
@@ -9690,7 +10379,7 @@ function playerItemSlotsHtml(player) {
     ? `<button type="button" class="player-ability-label class-ability-button" data-class-ability-use="${escapeAttribute(player.name)}" data-class-id="${escapeAttribute(classId)}" ${abilityState.ready && !abilityTurnUsed ? "" : "disabled"}>${abilityLabelHtml}<small>${classId === "tactician" ? "Choose protocol, then use" : classId === "enforcer" ? "Arm shield" : "Use now"}</small></button>`
     : `<span class="player-ability-label">${abilityLabelHtml}</span>`;
   const tacticianProtocolPicker = manualClass && classId === "tactician"
-    ? `<label class="tactician-protocol-picker"><span>Protocol</span><select data-tactician-protocol-for="${escapeAttribute(player.name)}" ${abilityState.ready && !abilityTurnUsed ? "" : "disabled"}><option value="assault">Assault</option><option value="guard">Guard</option><option value="support">Support</option></select></label>`
+    ? `<button type="button" class="tactician-protocol-button protocol-assault" data-tactician-protocol-for="${escapeAttribute(player.name)}" data-protocol="assault" ${abilityState.ready && !abilityTurnUsed ? "" : "disabled"}><span>PROTOCOL</span><strong data-protocol-label>ASSAULT</strong><small>Click to cycle</small></button>`
     : "";
   return `<div class="player-loadout" title="${escapeAttribute(definition?.summary || "Class ability")}">${tacticianProtocolPicker}${classAbilityControl}<div class="player-item-slots" aria-label="Equipped items">${itemText}</div>${player.itemNotice ? `<small class="player-item-notice-inline">${escapeHtml(player.itemNotice)}</small>` : ""}${player.abilityNotice ? `<small class="player-ability-notice-inline">${escapeHtml(player.abilityNotice)}</small>` : ""}</div>`;
 }
@@ -9887,70 +10576,467 @@ function setMissionFailureVisual(active) {
   if (els.mapFailureOverlay) els.mapFailureOverlay.hidden = !failed;
 }
 
+function renderLegacyInitiativeTimeline() {
+  const panel = els.initiativeTimeline;
+  const track = els.initiativeTimelineTrack;
+  if (!panel || !track) return;
+  const node = state.nodes[state.currentNode];
+  const encounter = isCombatNode(node) ? currentCombatEncounter() : null;
+  const hiddenAncestor = panel.parentElement?.closest("[hidden]");
+  if (!state.started || !encounter || encounter.cleared || hiddenAncestor || els.combatStage?.hidden) {
+    panel.hidden = true;
+    track.replaceChildren();
+    return;
+  }
+
+  const answers = new Map(state.playerAnswers.map((answer) => [normalize(answer.playerName || answer.playerId), answer]));
+  const players = (state.players || [])
+    .filter((player) => !player.incapacitated)
+    .map((player, index) => ({
+      kind: "player",
+      id: normalize(player.name) || `player-${index}`,
+      label: player.name || `Operator ${index + 1}`,
+      shortLabel: (player.name || `P${index + 1}`).slice(0, 1).toUpperCase(),
+      color: playerColor(player.name),
+      answer: answers.get(normalize(player.name)),
+      order: Number(answers.get(normalize(player.name))?.submittedAt || Number.MAX_SAFE_INTEGER) + index / 1000
+    }))
+    .sort((a, b) => a.order - b.order);
+  const enemies = encounter.enemies
+    .filter((enemy) => !enemy.defeated)
+    .map((enemy, index) => ({
+      kind: "enemy",
+      id: enemy.id || `enemy-${index}`,
+      label: enemy.label || `${titleCase(enemy.tier || "hostile")} hostile`,
+      shortLabel: enemy.boss ? "B" : "H",
+      color: enemy.boss ? "#e45858" : "#d6a84f",
+      enemy,
+      order: players.length + index
+    }));
+  const actors = [...players, ...enemies];
+  if (!actors.length) {
+    panel.hidden = true;
+    track.replaceChildren();
+    return;
+  }
+  const submittedCount = players.filter((actor) => actor.answer).length;
+  const roundLabel = Math.max(1, Number(encounter.round || 0) + 1);
+  if (els.initiativeTimelineStatus) {
+    els.initiativeTimelineStatus.textContent = `${submittedCount}/${players.length} responses locked · Round ${roundLabel}`;
+  }
+  track.innerHTML = actors.map((actor, index) => {
+    const isSubmitted = actor.kind === "player" && Boolean(actor.answer);
+    const isCorrect = isSubmitted && actor.answer.correct === true;
+    const isCurrent = actor.kind === "player" ? !isSubmitted && index === players.findIndex((entry) => !entry.answer) : submittedCount === players.length && index === players.length;
+    const status = actor.kind === "enemy" ? (actor.enemy.boss ? "BOSS" : "HOSTILE") : isCorrect ? "ATTACK" : isSubmitted ? "BRACE" : "READY";
+    const glyph = actor.kind === "enemy" ? (actor.enemy.boss ? "◆" : "◆") : actor.shortLabel;
+    return `<div class="initiative-actor ${actor.kind} ${isSubmitted ? "submitted" : ""} ${isCurrent ? "current" : ""}" role="listitem" title="${escapeAttribute(`${actor.label} · ${status}`)}" style="--initiative-color:${escapeAttribute(actor.color)}">
+      <span class="initiative-actor-glyph" aria-hidden="true">${escapeHtml(glyph)}</span>
+      <span class="initiative-actor-copy"><strong>${escapeHtml(actor.label)}</strong><small>${status}</small></span>
+      ${index < actors.length - 1 ? '<i class="initiative-link" aria-hidden="true">›</i>' : ""}
+    </div>`;
+  }).join("");
+  panel.hidden = false;
+}
+
+// The live console uses the same compact hex timeline as the approved visual
+// prototype. Keep labels in accessible text/title attributes so the visual
+// track can stay dense without losing actor/state information.
+function renderConceptInitiativeTimelineLegacy() {
+  const panel = els.initiativeTimeline;
+  const track = els.initiativeTimelineTrack;
+  if (!panel || !track) return;
+  const node = state.nodes[state.currentNode];
+  const encounter = isCombatNode(node) ? currentCombatEncounter() : null;
+  if (!state.started) {
+    panel.hidden = true;
+    track.replaceChildren();
+    return;
+  }
+  panel.hidden = false;
+  if (!encounter) {
+    state.initiativeCurrentTurn = null;
+    panel.classList.remove("awaiting-order");
+    panel.classList.add("initiative-standby");
+    track.replaceChildren();
+    if (els.initiativeTimelineStatus) els.initiativeTimelineStatus.textContent = "Standby · No active combat";
+    return;
+  }
+  panel.classList.remove("initiative-standby");
+
+  const answers = new Map(state.playerAnswers.map((answer) => [normalize(answer.playerName || answer.playerId), answer]));
+  const players = state.players.filter((player) => !player.incapacitated).map((player, index) => {
+    const answer = answers.get(normalize(player.name));
+    return {
+      kind: "player",
+      label: player.name,
+      glyph: (player.name || `P${index + 1}`).slice(0, 1).toUpperCase(),
+      color: playerColor(player.name),
+      answer,
+      order: Number(answer?.submittedAt || Number.MAX_SAFE_INTEGER) + index / 1000
+    };
+  }).sort((a, b) => a.order - b.order);
+  const enemies = encounter.enemies.filter((enemy) => !enemy.defeated).map((enemy) => ({
+    kind: "enemy",
+    label: enemy.label || "Hostile",
+    glyph: enemy.boss ? "B" : "H",
+    color: enemy.boss ? "#ff4a45" : "#d6a84f",
+    enemy
+  }));
+  const actors = [...players, ...enemies];
+  const submittedCount = players.filter((actor) => actor.answer).length;
+  const firstWaitingIndex = players.findIndex((actor) => !actor.answer);
+  if (els.initiativeTimelineStatus) {
+    els.initiativeTimelineStatus.textContent = `${submittedCount}/${players.length} responses locked · Round ${Math.max(1, Number(encounter.round || 0) + 1)}`;
+  }
+  track.innerHTML = actors.map((actor, index) => {
+    const submitted = actor.kind === "player" && Boolean(actor.answer);
+    const status = actor.kind === "enemy" ? (actor.enemy?.boss ? "BOSS" : "HOSTILE") : actor.answer?.correct === true ? "ATTACK" : submitted ? "BRACE" : "READY";
+    const current = actor.kind === "player" ? index === firstWaitingIndex : submittedCount === players.length && index === players.length;
+    return `<span class="initiative-actor turn-token ${actor.kind} ${submitted ? "submitted" : ""} ${current ? "current" : ""}" role="listitem" title="${escapeAttribute(`${actor.label} · ${status}`)}" aria-label="${escapeAttribute(`${actor.label}, ${status}`)}" style="--initiative-color:${escapeAttribute(actor.color)};--token:${escapeAttribute(actor.color)}"><span class="initiative-actor-glyph" aria-hidden="true">${escapeHtml(actor.glyph)}</span></span>`;
+  }).join("");
+  panel.hidden = actors.length === 0;
+}
+
+function renderInitiativeTimeline() {
+  const panel = els.initiativeTimeline;
+  const track = els.initiativeTimelineTrack;
+  if (!panel || !track) return;
+  const node = state.nodes[state.currentNode];
+  const encounter = isCombatNode(node) ? currentCombatEncounter() : null;
+  panel.hidden = false;
+  if (!encounter) {
+    state.initiativeCurrentTurn = null;
+    panel.classList.remove("awaiting-order");
+    panel.classList.add("initiative-standby");
+    track.replaceChildren();
+    if (els.initiativeTimelineStatus) els.initiativeTimelineStatus.textContent = "Standby · No active combat";
+    return;
+  }
+  panel.classList.remove("initiative-standby");
+
+  const answers = new Map(state.playerAnswers.map((answer) => [normalize(answer.playerName || answer.playerId), answer]));
+  const players = state.players.filter((player) => !player.incapacitated).map((player, index) => {
+    const answer = answers.get(normalize(player.name));
+    return {
+      label: player.name,
+      glyph: (player.name || `P${index + 1}`).slice(0, 1).toUpperCase(),
+      color: playerColor(player.name),
+      answer,
+      order: Number(answer?.submittedAt || Number.MAX_SAFE_INTEGER) + index / 1000
+    };
+  }).sort((a, b) => a.order - b.order);
+  const submittedCount = players.filter((actor) => actor.answer).length;
+  const combatPresentationResolving = Boolean(
+    encounter.cleared
+    || els.combatStage?.classList.contains("resolving")
+    || els.combatStage?.classList.contains("combat-cleared")
+    || els.combatStage?.classList.contains("exiting")
+  );
+  const acceptingSubmissions = state.questionPresentationReady
+    && !state.answerPending
+    && !state.resolved
+    && !combatPresentationResolving
+    && submittedCount < players.length;
+  const hasResolvedRound = encounter.lastRound?.round === encounter.round
+    && (!acceptingSubmissions || combatPresentationResolving);
+  const submissionsFinal = hasResolvedRound || state.answerPending || state.resolved || submittedCount >= players.length;
+  if (els.initiativeTimelineStatus) {
+    els.initiativeTimelineStatus.textContent = submissionsFinal
+      ? `Order locked · Round ${Math.max(1, Number(encounter.round || 0) + 1)}`
+      : `${submittedCount}/${players.length} responses submitted`;
+  }
+  panel.classList.toggle("awaiting-order", !submissionsFinal);
+  if (!submissionsFinal) {
+    track.replaceChildren();
+    return;
+  }
+
+  const pendingClassNames = new Set((state.pendingClassAbilityUses || []).map((use) => normalize(use.sourceName)));
+  const pendingItemNames = new Set((state.pendingAbilityUses || []).map((use) => normalize(use.sourceName)));
+  let abilityActors = players
+    .filter((actor) => actor.answer && (pendingClassNames.has(normalize(actor.label)) || pendingItemNames.has(normalize(actor.label))))
+    .map((actor) => ({ ...actor, kind: "ability", status: "ABILITY" }));
+  let attackActors = players
+    .filter((actor) => actor.answer?.correct === true)
+    .map((actor) => ({ ...actor, kind: "attack", status: "ATTACK" }));
+
+  const type = combatRoundChallengeType(state.currentQuestion);
+  const operator = type.locked ? selectOperator(state.currentQuestion) : null;
+  const lockedSuppression = Boolean(type.locked && operator && players.some((actor) => sameName(actor.label, operator.name) && actor.answer?.correct === true));
+  let disruptedActivations = (state.pendingClassAbilityUses || []).reduce((total, use) => {
+    if (String(use.classId || "").toLowerCase() !== "engineer") return total;
+    const source = state.players.find((player) => sameName(player.name, use.sourceName));
+    return total + 1 + (source ? itemBonus(source, "disruption") : 0);
+  }, 0);
+  disruptedActivations += (state.pendingAbilityUses || []).reduce((total, use) => {
+    const ability = itemAbilityDefinition(itemForPlayer(use.itemId));
+    if (ability?.effect !== "disrupt") return total;
+    const source = state.players.find((player) => sameName(player.name, use.sourceName));
+    return total + 1 + (source ? itemBonus(source, "disruption") : 0);
+  }, 0);
+
+  const enemyActors = [];
+  if (!lockedSuppression && !state.selectedEMS) {
+    encounter.enemies.filter((enemy) => !enemy.defeated).forEach((enemy) => {
+      const activations = Math.max(1, Number(enemy.activations) || 1);
+      for (let activation = 0; activation < activations; activation += 1) {
+        if (disruptedActivations > 0) {
+          disruptedActivations -= 1;
+          continue;
+        }
+        enemyActors.push({
+          label: enemy.label || "Hostile",
+          glyph: enemy.boss ? "B" : "H",
+          color: enemy.boss ? "#ff4a45" : "#d6a84f",
+          kind: "enemy",
+          status: "ATTACK"
+        });
+      }
+    });
+  }
+
+  const resolvedRound = hasResolvedRound ? encounter.lastRound : null;
+  if (resolvedRound) {
+    const actorForName = (name) => players.find((actor) => sameName(actor.label, name));
+    const seenAbilities = new Set();
+    abilityActors = (resolvedRound.supportEvents || []).map((event) => actorForName(event.source)).filter((actor) => {
+      const key = normalize(actor?.label);
+      if (!key || seenAbilities.has(key)) return false;
+      seenAbilities.add(key);
+      return true;
+    }).map((actor) => ({ ...actor, kind: "ability", status: "ABILITY" }));
+    attackActors = (resolvedRound.attackResults || []).map((attack) => actorForName(attack.player?.name)).filter(Boolean).map((actor) => ({ ...actor, kind: "attack", status: "ATTACK" }));
+    enemyActors.splice(0, enemyActors.length, ...(resolvedRound.enemyActions || []).filter((action) => !action.disrupted).map((action) => ({
+      label: action.enemy?.label || "Hostile",
+      glyph: action.enemy?.boss ? "B" : "H",
+      color: action.enemy?.boss ? "#ff4a45" : "#d6a84f",
+      kind: "enemy",
+      status: "ATTACK"
+    })));
+  }
+
+  const actors = [...abilityActors, ...attackActors, ...enemyActors];
+  const activeTurn = state.initiativeCurrentTurn;
+  const actorOccurrences = new Map();
+  let activeTokenRendered = false;
+  track.innerHTML = actors.map((actor) => {
+    const actorKey = normalize(actor.label);
+    const occurrenceKey = `${actor.kind}:${actorKey}`;
+    const occurrence = actorOccurrences.get(occurrenceKey) || 0;
+    actorOccurrences.set(occurrenceKey, occurrence + 1);
+    const current = Boolean(activeTurn
+      && activeTurn.kind === actor.kind
+      && activeTurn.actorKey === actorKey
+      && activeTurn.occurrence === occurrence);
+    if (current) activeTokenRendered = true;
+    return `<span class="initiative-actor turn-token ${actor.kind} ${current ? "current" : ""}" data-initiative-kind="${escapeAttribute(actor.kind)}" data-initiative-actor="${escapeAttribute(actorKey)}" role="listitem" title="${escapeAttribute(`${actor.label} · ${actor.status}`)}" aria-label="${escapeAttribute(`${actor.label}, ${actor.status}`)}"${current ? ' aria-current="step"' : ""} style="--initiative-color:${escapeAttribute(actor.color)};--token:${escapeAttribute(actor.color)}"><span class="initiative-actor-glyph" aria-hidden="true">${escapeHtml(actor.glyph)}</span></span>`;
+  }).join("");
+  panel.classList.toggle("turn-in-progress", activeTokenRendered);
+}
+
+function setInitiativeCurrentTurn(kind = "", actorName = "", occurrence = 0) {
+  const actorKey = normalize(actorName);
+  state.initiativeCurrentTurn = kind && actorKey
+    ? { kind, actorKey, occurrence: Math.max(0, Number(occurrence) || 0) }
+    : null;
+  const panel = els.initiativeTimeline;
+  const track = els.initiativeTimelineTrack;
+  if (!panel || !track) return;
+  const tokens = [...track.querySelectorAll(".initiative-actor")];
+  tokens.forEach((token) => {
+    if (token.classList.contains("current")) token.classList.add("completed");
+    token.classList.remove("current");
+    token.removeAttribute("aria-current");
+  });
+  if (!kind || !actorKey) {
+    panel.classList.remove("turn-in-progress");
+    return;
+  }
+  const candidates = tokens.filter((token) => token.dataset.initiativeKind === kind
+    && token.dataset.initiativeActor === actorKey);
+  const target = candidates[Math.max(0, Number(occurrence) || 0)];
+  if (!target) {
+    panel.classList.remove("turn-in-progress");
+    return;
+  }
+  target.classList.remove("completed");
+  target.classList.add("current");
+  target.setAttribute("aria-current", "step");
+  panel.classList.add("turn-in-progress");
+}
+
+function resetBossIntroVideo() {
+  els.combatStage?.classList.remove("boss-intro-playing", "boss-intro-handoff", "boss-intro-complete");
+  if (els.combatBossIntro) {
+    els.combatBossIntro.classList.remove("fading");
+    els.combatBossIntro.hidden = true;
+  }
+  const video = els.combatBossIntroVideo;
+  if (!video) return;
+  video.onended = null;
+  video.onerror = null;
+  video.pause();
+  video.muted = true;
+  video.defaultMuted = true;
+  video.volume = 0;
+  try {
+    video.currentTime = 0;
+  } catch {
+    // Metadata may not be ready during a fast reset. Playback still starts at
+    // zero once the resource is available.
+  }
+}
+
+function playBossIntroVideo(runId, nodeIndex, onComplete) {
+  const bossVideoStep = roomTransitionTraceStepStart("boss intro video", { runId, nodeIndex });
+  const stage = els.combatStage;
+  const shell = els.combatBossIntro;
+  const video = els.combatBossIntroVideo;
+  if (!stage || !shell || !video) {
+    roomTransitionTraceStepEnd(bossVideoStep, { skipped: true, reason: "elements missing" });
+    onComplete();
+    return;
+  }
+
+  const finalBoss = state.nodes?.[nodeIndex]?.bossPhase === "final";
+  const desiredSource = finalBoss ? video.dataset.finalSrc : video.dataset.midSrc;
+  if (desiredSource && video.getAttribute("src") !== desiredSource) {
+    video.pause();
+    video.setAttribute("src", desiredSource);
+    video.load();
+    roomTransitionTraceEmit("MARK", "boss video source loaded", { finalBoss, source: desiredSource });
+  }
+
+  let handoffStarted = false;
+  const valid = () => runId === state.combatPresentationRunId
+    && nodeIndex === state.currentNode
+    && !stage.hidden;
+  const finishHandoff = () => {
+    if (!valid()) return;
+    stage.classList.remove("boss-intro-playing", "boss-intro-handoff");
+    stage.classList.add("boss-intro-complete");
+    shell.classList.remove("fading");
+    shell.hidden = true;
+    video.onended = null;
+    video.onerror = null;
+    video.pause();
+    try { video.currentTime = 0; } catch {}
+    roomTransitionTraceStepEnd(bossVideoStep, { finalBoss, handoff: "complete" });
+    onComplete();
+  };
+  const revealStaticEyes = () => {
+    if (!valid()) return;
+    shell.hidden = true;
+    shell.classList.remove("fading");
+    video.pause();
+    try { video.currentTime = 0; } catch {}
+    stage.classList.remove("boss-intro-playing");
+    stage.classList.add("boss-intro-handoff");
+    combatPresentationTimer(finishHandoff, BOSS_INTRO_STATIC_FADE_MS, runId);
+  };
+  const beginHandoff = (reason = "ended") => {
+    if (handoffStarted || !valid()) return;
+    handoffStarted = true;
+    roomTransitionTraceEmit("MARK", "boss video handoff started", { reason });
+    video.onended = null;
+    video.onerror = null;
+    shell.classList.add("fading");
+    combatPresentationTimer(revealStaticEyes, BOSS_INTRO_VIDEO_FADE_MS, runId);
+  };
+
+  stage.classList.remove("boss-intro-handoff", "boss-intro-complete");
+  stage.classList.add("boss-intro-playing");
+  shell.hidden = false;
+  shell.classList.remove("fading");
+  video.muted = true;
+  video.defaultMuted = true;
+  video.volume = 0;
+  video.onended = () => beginHandoff("ended");
+  video.onerror = () => beginHandoff("media error");
+  try { video.currentTime = 0; } catch {}
+  const playRequest = video.play();
+  if (playRequest?.catch) playRequest.catch(() => beginHandoff("play rejected"));
+  combatPresentationTimer(
+    () => beginHandoff("watchdog"),
+    BOSS_INTRO_WATCHDOG_MS - BOSS_INTRO_START_DELAY_MS - BOSS_INTRO_VIDEO_FADE_MS - BOSS_INTRO_STATIC_FADE_MS - 500,
+    runId
+  );
+}
+
 function renderMap() {
+  const startedAt = state.roomTransitionTrace ? performance.now() : 0;
+  try {
+    return renderMapCore();
+  } finally {
+    if (startedAt) roomTransitionTraceRecordDuration("render map", performance.now() - startedAt);
+  }
+}
+
+function renderMapCore() {
   applyDashboardAtmosphere();
   syncEmsFieldVisual();
   els.mapTitle.textContent = state.title || "Awaiting Mission";
-  els.missionMap.innerHTML = "";
+  const routeVisible = state.teamReady || state.currentQuestion > 0 || state.currentNode > 0 || state.questionPresentationReady || state.bossReadyPending;
+  const svgSignature = mapSvgRenderSignature(routeVisible);
+  const svgNeedsRender = svgSignature !== state.mapRenderSignature
+    || Boolean(state.nodes.length && !els.missionMap.childElementCount);
   if (!state.nodes.length) {
+    if (svgNeedsRender) {
+      els.missionMap.replaceChildren();
+      state.mapRenderSignature = svgSignature;
+    }
+    hideHtmlRouteMarker();
+    renderInitiativeTimeline();
     renderMapQuestionOverlay();
     return;
   }
 
-  const positions = routePositions(state.nodes.length);
-  const height = Math.max(510, Math.max(...positions.map((pos) => pos.y)) + 76);
-  els.missionMap.setAttribute("viewBox", `0 0 900 ${height}`);
-  let activeTransition = null;
-  const routeVisible = state.teamReady || state.currentQuestion > 0 || state.currentNode > 0 || state.questionPresentationReady || state.bossReadyPending;
-  for (let i = 0; i < positions.length - 1; i++) {
-    const transmitting = state.routeTransition?.from === i
-      && state.routeTransition?.to === i + 1
-      && state.transmissionPending
-      && state.routeTransition.moving;
-    if (i >= state.currentNode && !transmitting) continue;
-    const line = svg("line", {
-      x1: positions[i].x,
-      y1: positions[i].y,
-      x2: positions[i + 1].x,
-      y2: positions[i + 1].y,
-      class: `route-line ${i < state.currentNode ? "cleared" : ""} ${transmitting ? "discovering" : ""}`
-    });
-    els.missionMap.appendChild(line);
-    if (transmitting) {
-      activeTransition = {
-        from: positions[i],
-        to: positions[state.routeTransition.to] || positions[i + 1],
-        correct: state.routeTransition.correct
-      };
+  if (svgNeedsRender) {
+    els.missionMap.replaceChildren();
+    const positions = routePositions(state.nodes.length);
+    const height = Math.max(510, Math.max(...positions.map((pos) => pos.y)) + 76);
+    els.missionMap.setAttribute("viewBox", `0 0 900 ${height}`);
+    for (let i = 0; i < positions.length - 1; i++) {
+      const transmitting = state.routeTransition?.from === i
+        && state.routeTransition?.to === i + 1
+        && state.transmissionPending
+        && state.routeTransition.moving;
+      if (i >= state.currentNode && !transmitting) continue;
+      const line = svg("line", {
+        x1: positions[i].x,
+        y1: positions[i].y,
+        x2: positions[i + 1].x,
+        y2: positions[i + 1].y,
+        class: `route-line ${i < state.currentNode ? "cleared" : ""} ${transmitting ? "active" : ""}`
+      });
+      els.missionMap.appendChild(line);
     }
+
+    state.nodes.forEach((node, index) => {
+      const pos = positions[index];
+      const receiving = state.transmissionPending && state.routeTransition?.to === index;
+      const discovered = index < state.currentNode || (routeVisible && index === state.currentNode) || receiving;
+      if (!discovered) return;
+      const newlyDiscovered = !state.mapRevealedNodes.has(index);
+      state.mapRevealedNodes.add(index);
+      const group = svg("g", { class: `map-location${newlyDiscovered ? " newly-discovered" : ""}` });
+      const status = index < state.currentNode ? "cleared" : routeVisible && index === state.currentNode ? "current" : receiving ? "receiving" : "base";
+      const resultClass = discovered && node.type !== "recovery" && state.nodeResults[index] !== undefined
+        ? state.nodeResults[index] ? "correct" : "incorrect"
+        : "";
+      const typeClass = resultClass || (discovered && node.type === "boss" ? "boss" : discovered && node.type === "combat" ? "combat" : discovered && node.type === "recovery" ? "recovery" : "");
+      const radius = discovered && node.type === "boss" ? 28 : discovered && node.type === "recovery" ? 24 : 21;
+      group.appendChild(svg("circle", { cx: pos.x, cy: pos.y, r: radius, class: `map-node ${typeClass || status} ${status}` }));
+      group.appendChild(svg("text", { x: pos.x, y: pos.y + 6, class: "map-label" }, discovered ? node.label : "?"));
+      group.appendChild(svg("text", { x: pos.x, y: pos.y + 47, class: "map-room-name" }, roomName(node, index)));
+      els.missionMap.appendChild(group);
+    });
+
+    state.mapRenderSignature = svgSignature;
   }
 
-  state.nodes.forEach((node, index) => {
-    const pos = positions[index];
-    const receiving = state.transmissionPending && state.routeTransition?.to === index;
-    const discovered = index < state.currentNode || (routeVisible && index === state.currentNode) || receiving;
-    if (!discovered) return;
-    const newlyDiscovered = !state.mapRevealedNodes.has(index);
-    state.mapRevealedNodes.add(index);
-    const group = svg("g", { class: `map-location${newlyDiscovered ? " newly-discovered" : ""}` });
-    const status = index < state.currentNode ? "cleared" : routeVisible && index === state.currentNode ? "current" : receiving ? "receiving" : "base";
-    const resultClass = discovered && node.type !== "recovery" && state.nodeResults[index] !== undefined
-      ? state.nodeResults[index] ? "correct" : "incorrect"
-      : "";
-    const typeClass = resultClass || (discovered && node.type === "boss" ? "boss" : discovered && node.type === "combat" ? "combat" : discovered && node.type === "recovery" ? "recovery" : "");
-    const radius = discovered && node.type === "boss" ? 28 : discovered && node.type === "recovery" ? 24 : 21;
-    group.appendChild(svg("circle", { cx: pos.x, cy: pos.y, r: radius, class: `map-node ${typeClass || status} ${status}` }));
-    group.appendChild(svg("text", { x: pos.x, y: pos.y + 6, class: "map-label" }, discovered ? node.label : "?"));
-    group.appendChild(svg("text", { x: pos.x, y: pos.y + 47, class: "map-room-name" }, roomName(node, index)));
-    els.missionMap.appendChild(group);
-  });
-
-  if (activeTransition) {
-    appendMovingRouteTrail(activeTransition.from, activeTransition.to, activeTransition.correct);
-    appendMovingSquadMarker(activeTransition.from, activeTransition.to, activeTransition.correct);
-  } else if (state.started && routeVisible && positions[state.currentNode]) {
-    appendStationarySquadMarker(positions[state.currentNode]);
-  }
+  syncHtmlRouteMarker(routePositions(state.nodes.length), routeVisible);
 
   els.mapPanel.classList.toggle("transmission-active", state.transmissionPending);
   els.mapPanel.classList.toggle("transmission-incorrect", Boolean(state.transmissionPending && state.routeTransition && !state.routeTransition.correct));
@@ -9960,7 +11046,34 @@ function renderMap() {
   renderRouteTelemetry();
   syncCombatStage();
   syncBossEyesVisual();
+  renderInitiativeTimeline();
   renderMapQuestionOverlay();
+}
+
+function mapSvgRenderSignature(routeVisible) {
+  const transition = state.routeTransition || {};
+  const positions = state.mapPositions.map((position) => [
+    Math.round((Number(position?.x) || 0) * 10) / 10,
+    Math.round((Number(position?.y) || 0) * 10) / 10
+  ]);
+  return JSON.stringify({
+    deployment: state.deploymentRunId,
+    layout: state.mapLayoutSeed,
+    started: Boolean(state.started),
+    currentNode: state.currentNode,
+    routeVisible: Boolean(routeVisible),
+    nodes: state.nodes.map((node, index) => [node.type, node.label, roomName(node, index)]),
+    positions,
+    results: state.nodes.map((_, index) => state.nodeResults[index] ?? null),
+    transmission: Boolean(state.transmissionPending),
+    transition: [
+      transition.from ?? null,
+      transition.to ?? null,
+      Boolean(transition.moving),
+      transition.correct ?? null,
+      Boolean(transition.boss)
+    ]
+  });
 }
 
 function clearCombatPresentation() {
@@ -9974,24 +11087,29 @@ function clearCombatPresentation() {
   state.combatNextNodeWaitStartedAt = 0;
   state.combatMountBlocked = false;
   state.combatDisplayedHp = {};
+  state.initiativeCurrentTurn = null;
+  resetBossIntroVideo();
   if (els?.combatStage) {
-    els.combatStage.classList.remove("entering", "resolving", "combat-cleared", "exiting", "boss-fight", "boss-eyes-attacking", "boss-eyes-hit", "final-boss-defeated");
+    els.combatStage.classList.remove("entering", "resolving", "combat-cleared", "exiting", "boss-fight", "mid-boss-visual", "final-boss-visual", "boss-eyes-attacking", "boss-eyes-hit", "final-boss-defeated", "boss-intro-playing", "boss-intro-handoff", "boss-intro-complete");
     els.combatStage.hidden = true;
     delete els.combatStage.dataset.nodeIndex;
   }
+  renderInitiativeTimeline();
 }
 
 function recoverCombatPresentationGate(reason = "combat transition") {
   state.combatPresentationRunId += 1;
   for (const timer of state.combatPresentationTimers || []) window.clearTimeout(timer);
   state.combatPresentationTimers = [];
+  state.initiativeCurrentTurn = null;
   window.clearTimeout(state.combatEntryWatchdogTimer);
   state.combatEntryWatchdogTimer = null;
   window.clearTimeout(state.combatNextNodeTimer);
   state.combatNextNodeTimer = null;
   state.combatNextNodeWaitStartedAt = 0;
   state.combatMountBlocked = false;
-  els.mapPanel?.classList.remove("combat-map-zooming");
+  resetBossIntroVideo();
+  els.mapPanel?.classList.remove("combat-map-transitioning");
   if (els.combatStage) {
     els.combatStage.classList.remove("entering", "resolving", "exiting");
     const currentNode = state.nodes[state.currentNode];
@@ -10018,13 +11136,51 @@ function combatEnemyGlyph(enemy) {
   return "▲";
 }
 
+function enemyVisualPool() {
+  return deploymentThemeClass() === "space-station"
+    ? ENEMY_VISUAL_POOLS.spaceStation
+    : ENEMY_VISUAL_POOLS.bunker;
+}
+
+function scheduleEnemyVisualPreload() {
+  const preload = () => enemyVisualPool().forEach((src) => {
+    const image = new Image();
+    image.decoding = "async";
+    image.src = src;
+  });
+  if (typeof window.requestIdleCallback === "function") {
+    window.requestIdleCallback(preload, { timeout: 1800 });
+  } else {
+    window.setTimeout(preload, 0);
+  }
+}
+
+function assignEnemyVisuals(enemies = []) {
+  const shuffled = [...enemyVisualPool()];
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(state.rng() * (index + 1));
+    [shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]];
+  }
+  enemies.forEach((enemy, index) => {
+    enemy.imageSrc = shuffled[index % shuffled.length] || "";
+  });
+}
+
 function renderCombatStage(encounter, options = {}) {
   if (!els.combatStage || !encounter) return;
   const enemyStates = new Map((options.enemyStates || []).map((entry) => [entry.id, entry]));
   const playerStates = new Map((options.playerStates || []).map((entry) => [normalize(entry.name), entry]));
   const playerResults = new Map((options.playerResults || []).map((entry) => [normalize(entry.name), entry.correct]));
   els.combatStage.hidden = false;
-  els.combatStage.classList.toggle("boss-fight", encounter.roomType === "boss");
+  const bossFight = encounter.roomType === "boss";
+  const bossNode = state.nodes?.[encounter.nodeIndex ?? state.currentNode];
+  const finalBoss = bossFight && bossNode?.bossPhase === "final";
+  if (!bossFight && encounter.enemies.some((enemy) => !enemy.imageSrc)) {
+    assignEnemyVisuals(encounter.enemies);
+  }
+  els.combatStage.classList.toggle("boss-fight", bossFight);
+  els.combatStage.classList.toggle("final-boss-visual", finalBoss);
+  els.combatStage.classList.toggle("mid-boss-visual", bossFight && !finalBoss);
   els.combatStage.dataset.nodeIndex = String(state.currentNode);
   els.combatStageLabel.textContent = encounter.roomType === "boss" ? "CRITICAL HOSTILE" : "HOSTILE CONTACT";
   els.combatStageRound.textContent = `ROUND ${Math.max(1, encounter.round + (options.beforeRound ? 0 : 1))}`;
@@ -10038,7 +11194,9 @@ function renderCombatStage(encounter, options = {}) {
     const percent = enemy.maxHp ? Math.max(0, Math.min(100, hp / enemy.maxHp * 100)) : 0;
     const sprite = enemy.boss
       ? `<div class="combat-unit-sprite combat-boss-eyes-target" aria-hidden="true"><span class="combat-hit-ring"></span></div>`
-      : `<div class="combat-unit-sprite"><i>${combatEnemyGlyph(enemy)}</i><span class="combat-hit-ring"></span></div>`;
+      : enemy.imageSrc
+        ? `<div class="combat-unit-sprite combat-enemy-image-sprite"><img class="combat-enemy-image" src="${escapeAttribute(enemy.imageSrc)}" alt="" draggable="false" decoding="async"><span class="combat-hit-ring"></span></div>`
+        : `<div class="combat-unit-sprite"><i>${combatEnemyGlyph(enemy)}</i><span class="combat-hit-ring"></span></div>`;
     return `<article class="combat-enemy-unit ${enemy.tier} ${enemy.boss ? "boss" : ""} ${defeated ? "defeated" : ""}" data-enemy-id="${escapeAttribute(enemy.id)}">
       ${sprite}
       <strong>${escapeHtml(enemy.label)}</strong>
@@ -10056,12 +11214,15 @@ function renderCombatStage(encounter, options = {}) {
     const hpPercent = player.maxHp ? Math.max(0, Math.min(100, visibleHp / player.maxHp * 100)) : 0;
     const classDefinition = combatSystem.classDefinition?.(player.classId) || {};
     const classLabel = classDefinition.label || "Operator";
+    const classArmed = (state.pendingClassAbilityUses || []).some((use) => sameName(use.sourceName, player.name));
+    const itemArmed = (state.pendingAbilityUses || []).some((use) => sameName(use.sourceName, player.name));
     const equippedNames = playerItems(player).map((item) => item.name).join(" · ");
-    return `<article class="combat-party-unit ${visibleDown ? "down" : ""} ${answerClass}" data-player-name="${escapeAttribute(normalize(player.name))}">
+    return `<article class="combat-party-unit ${visibleDown ? "down" : ""} ${answerClass} ${classArmed ? "class-armed" : ""} ${itemArmed ? "item-armed" : ""}" style="--player-color:${playerColor(player.name)}" data-player-name="${escapeAttribute(normalize(player.name))}">
       <div class="combat-party-avatar" style="--player-color:${playerColor(player.name)}"><span>${escapeHtml(player.name.slice(0, 1).toUpperCase())}</span></div>
       <div><strong>${escapeHtml(player.name)}${answerCue ? `<b class="combat-answer-cue">${answerCue}</b>` : ""}</strong><small>${escapeHtml(classLabel)} · LV ${player.level || 1}</small><em class="combat-ability-label">${escapeHtml(classDefinition.gear || "Ability ready")}</em>${equippedNames ? `<em class="combat-item-label">${escapeHtml(equippedNames)}</em>` : ""}<div class="combat-unit-hp party"><i style="width:${hpPercent}%"></i></div><em>${visibleHp} / ${player.maxHp} HP</em></div>
     </article>`;
   }).join("");
+  renderInitiativeTimeline();
 }
 
 function syncCombatStage() {
@@ -10088,43 +11249,70 @@ function syncCombatStage() {
   if (els.combatStage.classList.contains("entering")) return;
   const firstEntry = !state.combatStageEnteredNodes.has(state.currentNode);
   if (firstEntry) {
-    els.combatStage.classList.remove("resolving", "combat-cleared", "exiting", "boss-eyes-attacking", "boss-eyes-hit", "final-boss-defeated");
+    resetBossIntroVideo();
+    els.combatStage.classList.remove("resolving", "combat-cleared", "exiting", "boss-eyes-attacking", "boss-eyes-hit", "final-boss-defeated", "boss-intro-playing", "boss-intro-handoff", "boss-intro-complete");
     els.combatStage.classList.add("entering");
   }
   renderCombatStage(encounter);
   if (firstEntry) {
+    const combatEntryStep = roomTransitionTraceStepStart("combat stage entry", {
+      nodeIndex: state.currentNode,
+      roomType: encounter.roomType,
+      enemyCount: encounter.enemies?.filter((enemy) => !enemy.defeated).length || 0
+    });
     state.combatStageEnteredNodes.add(state.currentNode);
     void els.combatStage.offsetWidth;
     const entryNodeIndex = state.currentNode;
     const entryRunId = state.combatPresentationRunId;
+    const bossEntry = encounter.roomType === "boss";
     window.clearTimeout(state.combatEntryWatchdogTimer);
     state.combatEntryWatchdogTimer = window.setTimeout(() => {
       state.combatEntryWatchdogTimer = null;
       if (entryRunId !== state.combatPresentationRunId || state.currentNode !== entryNodeIndex) return;
-      if (els.combatStage?.classList.contains("entering")) recoverCombatPresentationGate("combat entry animation");
-    }, COMBAT_ENTRY_WATCHDOG_MS);
-    const currentPosition = routePositions(state.nodes.length)[state.currentNode] || { x: 450, y: 280 };
-    els.mapPanel?.style.setProperty("--combat-zoom-x", `${Math.max(0, Math.min(100, currentPosition.x / 9))}%`);
-    els.mapPanel?.style.setProperty("--combat-zoom-y", `${Math.max(0, Math.min(100, currentPosition.y / 5.6))}%`);
-    els.mapPanel?.classList.remove("combat-map-zooming");
-    void els.mapPanel?.offsetWidth;
-    els.mapPanel?.classList.add("combat-map-zooming");
-    if (state.backgroundMusicMode !== "boss") loadBackgroundMusic("boss", state.backgroundMusicLoaded ? { transition: true } : { fadeIn: true });
-    if (els.combatActionBanner) els.combatActionBanner.textContent = "HOSTILE CONTACT — FORMING BATTLE LINE";
-    const readyTimer = window.setTimeout(() => {
-      if (els.combatActionBanner) els.combatActionBanner.textContent = encounter.cleared ? "HOSTILE LINE CLEARED" : combatIntentText();
-    }, COMBAT_FORMATION_READY_MS);
-    const timer = window.setTimeout(() => {
+      if (els.combatStage?.classList.contains("entering")) {
+        roomTransitionTraceStepEnd(combatEntryStep, { watchdog: true }, "ERROR");
+        recoverCombatPresentationGate("combat entry animation");
+      }
+    }, bossEntry ? BOSS_INTRO_WATCHDOG_MS : COMBAT_ENTRY_WATCHDOG_MS);
+    els.mapPanel?.classList.remove("combat-map-transitioning");
+    window.requestAnimationFrame(() => {
+      if (entryRunId !== state.combatPresentationRunId || state.currentNode !== entryNodeIndex) return;
+      els.mapPanel?.classList.add("combat-map-transitioning");
+      roomTransitionTraceEmit("MARK", "combat map blackout started", { entryRunId, entryNodeIndex });
+    });
+    const completeEntry = () => {
+      if (entryRunId !== state.combatPresentationRunId || state.currentNode !== entryNodeIndex) return;
       if (entryRunId === state.combatPresentationRunId) {
         window.clearTimeout(state.combatEntryWatchdogTimer);
         state.combatEntryWatchdogTimer = null;
       }
       els.combatStage?.classList.remove("entering");
-      els.mapPanel?.classList.remove("combat-map-zooming");
+      els.mapPanel?.classList.remove("combat-map-transitioning");
+      roomTransitionTraceStepEnd(combatEntryStep, { bossEntry });
+      if (els.combatActionBanner) els.combatActionBanner.textContent = encounter.cleared ? "HOSTILE LINE CLEARED" : combatIntentText();
+      if (state.backgroundMusicMode !== "boss") {
+        loadBackgroundMusic("boss", state.backgroundMusicLoaded ? { transition: true } : { fadeIn: true });
+      }
       renderMapQuestionOverlay();
-    }, COMBAT_ENTRY_COMPLETE_MS);
-    state.combatPresentationTimers.push(readyTimer);
-    state.combatPresentationTimers.push(timer);
+    };
+    if (els.combatActionBanner) {
+      els.combatActionBanner.textContent = bossEntry
+        ? "CRITICAL SIGNAL — VISUAL CONTACT FORMING"
+        : "HOSTILE CONTACT — FORMING BATTLE LINE";
+    }
+    if (bossEntry) {
+      roomTransitionTraceEmit("MARK", "boss intro scheduled", { delayMs: BOSS_INTRO_START_DELAY_MS });
+      combatPresentationTimer(() => playBossIntroVideo(entryRunId, entryNodeIndex, completeEntry), BOSS_INTRO_START_DELAY_MS, entryRunId);
+    } else {
+      roomTransitionTraceEmit("MARK", "combat formation timers scheduled", {
+        formationReadyMs: COMBAT_FORMATION_READY_MS,
+        entryCompleteMs: COMBAT_ENTRY_COMPLETE_MS
+      });
+      combatPresentationTimer(() => {
+        if (els.combatActionBanner) els.combatActionBanner.textContent = encounter.cleared ? "HOSTILE LINE CLEARED" : combatIntentText();
+      }, COMBAT_FORMATION_READY_MS, entryRunId);
+      combatPresentationTimer(completeEntry, COMBAT_ENTRY_COMPLETE_MS, entryRunId);
+    }
     return;
   }
   if (els.combatActionBanner) els.combatActionBanner.textContent = encounter.cleared ? "HOSTILE LINE CLEARED" : combatIntentText();
@@ -10280,8 +11468,14 @@ function showBossSwipeAttack() {
 function appendCombatActionStatus(log, text) {
   if (!log || !text) return;
   const line = document.createElement("p");
+  line.className = "combat-status-live-line";
   line.textContent = text;
   log.appendChild(line);
+  const feed = els.statusUpdateFeed;
+  window.requestAnimationFrame(() => {
+    line.classList.add("visible");
+    if (feed) feed.scrollTop = feed.scrollHeight;
+  });
 }
 
 function showCombatXpAwards(result, runId) {
@@ -10305,6 +11499,7 @@ function showCombatXpAwards(result, runId) {
 function presentCombatResolution(result, options = {}) {
   if (!result?.combat || !els.combatStage) return;
   state.combatPresentationRunId += 1;
+  state.initiativeCurrentTurn = null;
   const runId = state.combatPresentationRunId;
   for (const timer of state.combatPresentationTimers) window.clearTimeout(timer);
   state.combatPresentationTimers = [];
@@ -10334,10 +11529,10 @@ function presentCombatResolution(result, options = {}) {
   publishPlayerVitals();
   els.combatStage.classList.add("resolving");
   const statusLog = renderCombatRoundStatus(result, { deferLines: true });
-  (result.combatAbilityEvents || []).forEach((event) => appendCombatActionStatus(statusLog, `ABILITY: ${event}`));
   let cursor = 520;
   for (const ability of result.combatSupportEvents || []) {
     combatPresentationTimer(() => {
+      setInitiativeCurrentTurn("ability", ability.source);
       const sourceCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(ability.source))}"]`);
       const targetCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(ability.target || ability.source))}"]`);
       sourceCard?.classList.add("ability-casting");
@@ -10374,6 +11569,7 @@ function presentCombatResolution(result, options = {}) {
   cursor += 260;
   for (const attack of result.attackResults || []) {
     combatPresentationTimer(() => {
+      setInitiativeCurrentTurn("attack", attack.player.name);
       const playerCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(attack.player.name))}"]`);
       playerCard?.classList.add("attacking");
       if (attack.empowered) playerCard?.classList.add("empowered");
@@ -10388,7 +11584,7 @@ function presentCombatResolution(result, options = {}) {
         updateCombatEnemyVisual(attack);
         appendCombatActionStatus(statusLog, `${attack.player.name} attacks ${attack.targetLabel} for ${attack.damage} damage${attack.defeated.length ? ` — KILLING BLOW (${attack.defeated.map((enemy) => enemy.label).join(", ")})` : ""}.`);
         combatPresentationTimer(() => playerCard?.classList.remove("empowered", "soldier-double-attack"), 520, runId);
-      }, 380, runId);
+      }, 500, runId);
     }, cursor, runId);
     cursor += 1350;
   }
@@ -10398,6 +11594,7 @@ function presentCombatResolution(result, options = {}) {
       ? "LOCKED OPERATOR SWEEP — ENEMY PHASE SUPPRESSED"
       : "ENEMY PHASE — INCOMING ATTACKS";
     if (result.lockedSuppression) {
+      setInitiativeCurrentTurn();
       const enemyCards = [...(els.combatEnemyFormation?.querySelectorAll(".combat-enemy-unit:not(.defeated)") || [])];
       for (const enemyCard of enemyCards) {
         enemyCard.classList.add("stunned");
@@ -10409,8 +11606,16 @@ function presentCombatResolution(result, options = {}) {
   }, cursor, runId);
   cursor += result.lockedSuppression ? 1500 : 950;
   let lastEnemyActionEndsAt = 0;
+  const enemyInitiativeOccurrences = new Map();
   for (const action of result.enemyActions || []) {
     combatPresentationTimer(() => {
+      if (action.disrupted) setInitiativeCurrentTurn();
+      else {
+        const enemyKey = normalize(action.enemy.label || "Hostile");
+        const occurrence = enemyInitiativeOccurrences.get(enemyKey) || 0;
+        enemyInitiativeOccurrences.set(enemyKey, occurrence + 1);
+        setInitiativeCurrentTurn("enemy", action.enemy.label || "Hostile", occurrence);
+      }
       const enemyCard = els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(action.enemy.id)}"]`);
       const bossSwipe = Boolean(action.enemy.boss && !action.disrupted);
       enemyCard?.classList.remove("attacking", "boss-swiping", "stunned", "hit");
@@ -10448,6 +11653,7 @@ function presentCombatResolution(result, options = {}) {
               ? `BRACED\n-${hit.damage}`
               : `-${hit.damage}`;
           showCombatFloat(playerCard, floatText, hit.redirected ? "redirect" : fullyProtected ? "block" : "damage");
+          if (fullyProtected) playGameSfx("blocked", { minInterval: 120 });
           if (hit.redirected?.target) {
             const redirectedTarget = hit.redirected.target;
             const redirectedCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(redirectedTarget.name))}"]`);
@@ -10485,6 +11691,7 @@ function presentCombatResolution(result, options = {}) {
   combatPresentationTimer(() => {
     if (result.combatCleared) applyCombatVictoryXp(result.encounter);
     renderCombatStage(result.encounter);
+    setInitiativeCurrentTurn();
     els.combatStage.classList.remove("resolving");
     els.combatStage.classList.toggle("combat-cleared", Boolean(result.combatCleared));
     els.combatActionBanner.textContent = result.combatCleared ? "HOSTILE LINE CLEARED" : combatIntentText();
@@ -10497,7 +11704,7 @@ function presentCombatResolution(result, options = {}) {
       const beginExit = () => {
         state.combatMountBlocked = true;
         els.combatStage.classList.add("exiting");
-        if (state.backgroundMusicMode !== "normal") loadBackgroundMusic("normal", { transition: true });
+        if (!state.bossReadyPending && state.backgroundMusicMode !== "normal") loadBackgroundMusic("normal", { transition: true });
         combatPresentationTimer(() => {
           if (els.combatStage) {
             els.combatStage.hidden = true;
@@ -10540,86 +11747,93 @@ function renderCombatRoundStatus(result, options = {}) {
   return log;
 }
 
-function appendMovingRouteTrail(from, to, correct) {
-  const nearX = from.x + (to.x - from.x) * 0.9;
-  const nearY = from.y + (to.y - from.y) * 0.9;
-  const animations = [];
-  const trail = svg("line", {
-    x1: from.x,
-    y1: from.y,
-    x2: from.x,
-    y2: from.y,
-    class: `route-trail ${correct ? "correct" : "incorrect"}`
-  });
-  const duration = `${ROUTE_TRAVEL_MS / 1000}s`;
-  animations.push(svg("animate", { attributeName: "x2", from: from.x, to: nearX, dur: duration, begin: "indefinite", fill: "freeze" }));
-  animations.push(svg("animate", { attributeName: "y2", from: from.y, to: nearY, dur: duration, begin: "indefinite", fill: "freeze" }));
-  animations.forEach((animation) => trail.appendChild(animation));
-  els.missionMap.appendChild(trail);
-  beginSvgAnimations(animations, 280);
+function routeMarkerPixelPoint(position) {
+  if (!position || !els.mapWrap || !els.missionMap) return null;
+  const svgRect = els.missionMap.getBoundingClientRect();
+  const wrapRect = els.mapWrap.getBoundingClientRect();
+  const viewBox = els.missionMap.viewBox?.baseVal;
+  const wrapScaleX = wrapRect.width / els.mapWrap.offsetWidth;
+  const wrapScaleY = wrapRect.height / els.mapWrap.offsetHeight;
+  if (!viewBox?.width || !viewBox?.height || !svgRect.width || !svgRect.height || !wrapScaleX || !wrapScaleY) return null;
+  // The live console is scaled to fit the viewport. Convert visual rects back
+  // into the map-wrap's logical CSS pixels before positioning the HTML marker,
+  // otherwise the dashboard scale is applied a second time.
+  const svgWidth = svgRect.width / wrapScaleX;
+  const svgHeight = svgRect.height / wrapScaleY;
+  const svgLeft = (svgRect.left - wrapRect.left) / wrapScaleX - els.mapWrap.clientLeft;
+  const svgTop = (svgRect.top - wrapRect.top) / wrapScaleY - els.mapWrap.clientTop;
+  const scale = Math.min(svgWidth / viewBox.width, svgHeight / viewBox.height);
+  const contentWidth = viewBox.width * scale;
+  const contentHeight = viewBox.height * scale;
+  return {
+    x: svgLeft + (svgWidth - contentWidth) / 2 + (position.x - viewBox.x) * scale,
+    y: svgTop + (svgHeight - contentHeight) / 2 + (position.y - viewBox.y) * scale
+  };
 }
 
-function appendMovingSquadMarker(from, to, correct) {
-  const marker = svg("g", { class: `squad-marker ${correct ? "correct" : "incorrect"}` });
-  const animations = [];
-  const halo = svg("circle", {
-    cx: from.x,
-    cy: from.y,
-    r: 14,
-    class: "squad-marker-halo"
-  });
-  const dot = svg("circle", {
-    cx: from.x,
-    cy: from.y,
-    r: 8,
-    class: "squad-marker-dot"
-  });
-  const nearX = to.x;
-  const nearY = to.y;
-  halo.appendChild(svg("animate", { attributeName: "r", values: "10;26;10", dur: "1.8s", repeatCount: "indefinite" }));
-  halo.appendChild(svg("animate", { attributeName: "opacity", values: "0.8;0.12;0.8", dur: "1.8s", repeatCount: "indefinite" }));
-  for (const part of [halo, dot]) {
-    const duration = `${ROUTE_TRAVEL_MS / 1000}s`;
-    const xAnimation = svg("animate", { attributeName: "cx", from: from.x, to: nearX, dur: duration, begin: "indefinite", fill: "freeze" });
-    const yAnimation = svg("animate", { attributeName: "cy", from: from.y, to: nearY, dur: duration, begin: "indefinite", fill: "freeze" });
-    animations.push(xAnimation, yAnimation);
-    part.appendChild(xAnimation);
-    part.appendChild(yAnimation);
-    marker.appendChild(part);
+function routeMarkerTransform(point) {
+  return `translate3d(${point.x}px, ${point.y}px, 0) translate3d(-50%, -50%, 0)`;
+}
+
+function hideHtmlRouteMarker() {
+  if (!els.squadMapMarker) return;
+  if (state.routeMarkerAnimationFrame) window.cancelAnimationFrame(state.routeMarkerAnimationFrame);
+  state.routeMarkerAnimationFrame = 0;
+  window.clearTimeout(state.routeMarkerSettleTimer);
+  state.routeMarkerSettleTimer = null;
+  state.routeMarkerAnimationKey = "";
+  els.squadMapMarker.hidden = true;
+  els.squadMapMarker.classList.remove("traveling", "incorrect");
+}
+
+function syncHtmlRouteMarker(positions, routeVisible) {
+  const marker = els.squadMapMarker;
+  if (!marker || !state.started || !routeVisible || !positions.length) {
+    hideHtmlRouteMarker();
+    return;
   }
-  els.missionMap.appendChild(marker);
-  beginSvgAnimations(animations);
-}
+  const transition = state.transmissionPending && state.routeTransition?.moving
+    ? state.routeTransition
+    : null;
+  const targetIndex = transition ? transition.to : state.currentNode;
+  const targetPoint = routeMarkerPixelPoint(positions[targetIndex]);
+  if (!targetPoint) {
+    hideHtmlRouteMarker();
+    return;
+  }
+  marker.hidden = false;
+  marker.classList.toggle("incorrect", Boolean(transition && !transition.correct));
+  if (!transition) {
+    if (state.routeMarkerAnimationFrame) window.cancelAnimationFrame(state.routeMarkerAnimationFrame);
+    state.routeMarkerAnimationFrame = 0;
+    window.clearTimeout(state.routeMarkerSettleTimer);
+    state.routeMarkerSettleTimer = null;
+    state.routeMarkerAnimationKey = "";
+    marker.classList.remove("traveling");
+    marker.style.transform = routeMarkerTransform(targetPoint);
+    return;
+  }
 
-function beginSvgAnimations(animations, delay = 0) {
-  window.setTimeout(() => {
-    window.requestAnimationFrame(() => {
-      animations.forEach((animation) => {
-        if (typeof animation.beginElement === "function") animation.beginElement();
-      });
+  const animationKey = `${transition.from}:${transition.to}:${state.transmissionStartedAt}`;
+  if (state.routeMarkerAnimationKey === animationKey) return;
+  const startPoint = routeMarkerPixelPoint(positions[transition.from]);
+  if (!startPoint) return;
+  state.routeMarkerAnimationKey = animationKey;
+  marker.classList.remove("traveling");
+  marker.style.transform = routeMarkerTransform(startPoint);
+  state.routeMarkerAnimationFrame = window.requestAnimationFrame(() => {
+    state.routeMarkerAnimationFrame = window.requestAnimationFrame(() => {
+      state.routeMarkerAnimationFrame = 0;
+      if (state.routeMarkerAnimationKey !== animationKey || marker.hidden) return;
+      marker.classList.add("traveling");
+      marker.style.transform = routeMarkerTransform(targetPoint);
+      window.clearTimeout(state.routeMarkerSettleTimer);
+      state.routeMarkerSettleTimer = window.setTimeout(() => {
+        if (state.routeMarkerAnimationKey === animationKey) marker.classList.remove("traveling");
+        state.routeMarkerSettleTimer = null;
+      }, ROUTE_TRAVEL_MS + 80);
     });
-  }, delay);
-}
-
-function appendStationarySquadMarker(pos) {
-  const marker = svg("g", { class: "squad-marker stationary" });
-  const halo = svg("circle", {
-    cx: pos.x,
-    cy: pos.y,
-    r: 14,
-    class: "squad-marker-halo"
   });
-  const dot = svg("circle", {
-    cx: pos.x,
-    cy: pos.y,
-    r: 8,
-    class: "squad-marker-dot"
-  });
-  halo.appendChild(svg("animate", { attributeName: "r", values: "10;22;10", dur: "2.2s", repeatCount: "indefinite" }));
-  halo.appendChild(svg("animate", { attributeName: "opacity", values: "0.66;0.14;0.66", dur: "2.2s", repeatCount: "indefinite" }));
-  marker.appendChild(halo);
-  marker.appendChild(dot);
-  els.missionMap.appendChild(marker);
 }
 
 function renderMapQuestionOverlay() {
@@ -10747,7 +11961,12 @@ function mapQuestionResponseProgress(info) {
   if (!required.size) return "Collecting responses";
   const submitted = new Set(state.playerAnswers.map((answer) => normalize(answer.playerName)));
   const count = [...required].filter((name) => submitted.has(name)).length;
-  if (info.type.locked && info.operator) return count ? `${info.operator.name} submitted` : `Waiting for ${info.operator.name}`;
+  if (info.type.locked && info.operator) {
+    const operatorSubmitted = submitted.has(normalize(info.operator.name));
+    return operatorSubmitted
+      ? `${count} / ${required.size} responses · ${info.operator.name} locked in`
+      : `Waiting for ${info.operator.name}`;
+  }
   return `${count} / ${required.size} responses`;
 }
 
@@ -11011,6 +12230,7 @@ function renderChallenge(node) {
   clearTypewriters();
   resetStatusUpdates();
   state.answerResults = {};
+  state.playerAnswerFeedback = {};
   state.questionPresentationReady = false;
   const presentationRunId = beginLogPresentation();
   const q = state.questions[state.currentQuestion];
@@ -11021,21 +12241,10 @@ function renderChallenge(node) {
   state.resolved = false;
   state.selectedEMS = false;
 
-  const narrowed = new Set(state.narrowedChoices[state.currentQuestion] || []);
-  const choicesHtml = q.mode === "multiple"
-    ? `<div class="choices">${q.choices.filter((choice) => !narrowed.has(choice.key)).map((choice) => `<div class="choice-chip">${choice.key}. ${escapeHtml(choice.text)}</div>`).join("")}</div>`
-    : "";
-
   els.encounterCard.innerHTML = `
     <span class="encounter-tag">${escapeHtml(formatEncounterTag(type.label))}</span>
     <h3>${escapeHtml(setup.heading)}</h3>
     <p class="typewriter" data-text="${escapeAttribute(setup.story)}"></p>
-    <div class="question-text pending-content">
-      <strong>${q.mode === "fill" ? "Fill in the blank:" : "Question:"}</strong>
-      <p>${escapeHtml(displayQuestionText(q))}</p>
-      ${choicesHtml}
-      ${state.classHints[state.currentQuestion] ? `<div class="player-class-hint">${escapeHtml(state.classHints[state.currentQuestion])}</div>` : ""}
-    </div>
   `;
 
   els.answerControls.innerHTML = "";
@@ -11046,7 +12255,7 @@ function renderChallenge(node) {
     queueMapQuestionReveal(() => {
       startEmergencyTimerForCurrentEncounter(type, { publish: false });
       publishCurrentPlayerPrompt({ renderOverlay: false });
-      renderAnswerControls(q);
+      if (state.deviceMode === "single") renderAnswerControls(q);
     });
   });
 }
@@ -11054,6 +12263,7 @@ function renderChallenge(node) {
 function renderChatCheckpoint(node) {
   clearTypewriters();
   state.answerResults = {};
+  state.playerAnswerFeedback = {};
   const actionRoom = state.actionDrivenMode ? state.actionRooms[state.currentQuestion] : null;
   const type = actionRoom
     ? { label: actionRoom.label || "Action Turn", kind: "action", actionRoom: true }
@@ -11644,7 +12854,13 @@ function confirmBossReady() {
   if (!state.bossReadyPending) return;
   const node = state.nodes[state.currentNode];
   if (!node || node.type !== "boss") return;
+  roomTransitionTraceStart("boss readiness to combat prompt", {
+    nodeIndex: state.currentNode,
+    bossPhase: node.bossPhase || "mid"
+  });
   state.bossReadyPending = false;
+  window.clearTimeout(state.bossReadyAudioTimer);
+  state.bossReadyAudioTimer = null;
   state.bossReadyChecks.add(state.currentNode);
   state.combatMountBlocked = false;
   state.questionPresentationReady = false;
@@ -11662,6 +12878,21 @@ function confirmBossReady() {
     recordHistory: false
   });
   startPassiveTransmissionFeedback({ type: qInfo.type });
+
+  if (!ENABLE_TRANSITION_NARRATION_GENERATION) {
+    roomTransitionTraceEmit("MARK", "boss opening LM skipped", { fallbackChars: fallbackStory.length });
+    window.setTimeout(() => {
+      stopTransmissionFeedback();
+      appendTranscript({
+        tag: qInfo.tag,
+        areaName: qInfo.areaName,
+        story: fallbackStory,
+        activeObstacle: qInfo.activeObstacle,
+        question: qInfo.questionText
+      });
+    }, 0);
+    return;
+  }
 
   requestOllama(makeLocalBossOpeningPrompt(qInfo), { temperature: 0.82 })
     .then((text) => {
@@ -13010,6 +14241,14 @@ function startTransmissionFeedback({ correct, context, playerEvents = [] }) {
     boss: destinationIsBoss,
     moving: false
   };
+  roomTransitionTraceStart("answer resolution to next prompt", {
+    correct: Boolean(correct),
+    fromNode: state.currentNode,
+    toNode: routeTo,
+    destinationType: state.nodes[routeTo]?.type || "",
+    playerEvents: playerEvents.length
+  });
+  state.answerResults = {};
   if (!progression.stayInRoom) updateCurrentNodeResult(Boolean(correct));
   renderStatus();
   if (!isCombatNode(context.node)) {
@@ -13028,6 +14267,14 @@ function startTransmissionFeedback({ correct, context, playerEvents = [] }) {
 
 function startPassiveTransmissionFeedback({ type = {}, playerEvents = [] } = {}) {
   stopTransmissionFeedback();
+  if (!state.roomTransitionTrace) {
+    roomTransitionTraceStart("passive transmission", {
+      nodeIndex: state.currentNode,
+      nodeType: state.nodes[state.currentNode]?.type || "",
+      challengeType: type?.kind || type?.label || ""
+    });
+  }
+  state.answerResults = {};
   state.transmissionPending = true;
   state.transmissionStartedAt = Date.now();
   renderStatus();
@@ -13043,14 +14290,21 @@ function captureDeferredRouteTransition(payload, shouldDefer) {
 }
 
 function beginDeferredRouteTransition(payload) {
+  const step = roomTransitionTraceStepStart("begin deferred route transition", {
+    hasDeferredRoute: Boolean(payload.deferredRouteTransition)
+  });
   const transition = payload.deferredRouteTransition;
-  if (!transition) return 0;
+  if (!transition) {
+    roomTransitionTraceStepEnd(step, { skipped: true });
+    return 0;
+  }
   if (state.transmissionUiTimer) window.clearInterval(state.transmissionUiTimer);
   state.transmissionUiTimer = null;
   state.transmissionPending = true;
   state.transmissionStartedAt = Date.now();
   state.routeTransition = { ...transition };
-  state.routeTransition.moving = transition.to !== transition.from;
+  state.routeTransition.moving = ENABLE_ROUTE_MARKER_TRANSITION && transition.to !== transition.from;
+  state.answerResults = {};
   const leavingBoss = state.routeTransition.moving && state.nodes[transition.from]?.type === "boss" && state.nodes[transition.to]?.type !== "boss";
   if (leavingBoss) beginBossEyesExit(true);
   else els.mapPanel?.classList.remove("boss-eyes-exiting");
@@ -13060,10 +14314,16 @@ function beginDeferredRouteTransition(payload) {
   }
   renderMap();
   renderRouteTelemetry();
+  roomTransitionTraceStepEnd(step, {
+    fromNode: transition.from,
+    toNode: transition.to,
+    moving: state.routeTransition.moving
+  });
   return state.transmissionStartedAt;
 }
 
 function stopTransmissionFeedback(render = false) {
+  roomTransitionTraceEmit("MARK", "stop transmission feedback", { render });
   if (state.transmissionUiTimer) window.clearInterval(state.transmissionUiTimer);
   state.transmissionUiTimer = null;
   state.transmissionPending = false;
@@ -13225,6 +14485,38 @@ function resolveLocalSubmittedAnswer(answer, options = {}) {
   });
 
   setAnswerPendingText("Receiving transmission...");
+  if (!ENABLE_TRANSITION_NARRATION_GENERATION) {
+    const continuationStory = assembleLocalContinuation(fallbackBlocks);
+    roomTransitionTraceEmit("MARK", "resolution LM skipped", {
+      continuationChars: continuationStory.length,
+      destinationType: nextInfo.isRecovery ? "recovery" : nextInfo.readyCheck ? "boss readiness" : "room"
+    });
+    window.setTimeout(() => {
+      appendTranscript({
+        tag: nextInfo.tag,
+        areaName: nextInfo.areaName,
+        story: fallbackBlocks.impact || assembleLocalNarration(fallbackBlocks),
+        continuationStory,
+        pauseBeforeContinuation: Boolean(continuationStory),
+        activeObstacle: nextInfo.activeObstacle,
+        question: nextInfo.questionText,
+        readyCheck: Boolean(nextInfo.readyCheck),
+        bossNodeIndex: nextInfo.bossNodeIndex,
+        bossPhase: nextInfo.bossPhase,
+        isRecovery: Boolean(nextInfo.isRecovery),
+        recoveryTier: nextInfo.recoveryTier,
+        advanceRoom: true,
+        correct,
+        players: playerEvents,
+        suppressEffectFlash: true,
+        inventory: { ...state.inventory },
+        statusLog
+      });
+      recordLocalTurnFact({ correct, context, currentArea, nextInfo, playerEvents });
+      if (state.currentQuestion >= state.questions.length) renderEnding();
+    }, 0);
+    return;
+  }
   requestOllama(prompt, { temperature: 0.68, format: "json" })
     .then((text) => {
       const blocks = parseLocalNarrationBlocks(text, playerEvents, fallbackBlocks, nextInfo);
@@ -13314,21 +14606,21 @@ function resolveLocalEmergencyDeviceAnswer(submitted, timerSnapshot = null) {
 }
 
 function resolveLocalDeviceTeamAnswers(answers) {
-  if (!state.localDmMode || state.resolved || state.answerPending) return;
-  if (state.nodes[state.currentNode]?.type === "recovery") return;
+  if (!state.localDmMode || state.resolved || state.answerPending) return false;
+  if (state.nodes[state.currentNode]?.type === "recovery") return false;
   const context = currentLocalContext();
-  if (!context.question || !["individual", "team", "truefalse"].includes(context.type.kind)) return;
+  if (!context.question || !["individual", "team", "truefalse", "locked"].includes(context.type.kind)) return false;
   if (!everyoneActiveSubmitted(answers)) {
     logDebugEvent({
       kind: "state",
       label: "Device answer resolution blocked",
       detail: `waiting for required responders: ${[...requiredDeviceAnswerNames(currentQuestionInfo())].join(", ") || "unknown"}`
     });
-    return;
+    return false;
   }
 
   const entries = deviceTeamAnswerEntries(answers, context.question);
-  if (!entries.length || entries.some((entry) => !entry.answer)) return;
+  if (!entries.length || entries.some((entry) => !entry.answer)) return false;
   const challengeSucceeded = deviceChallengeSucceeded(entries, context.type);
 
   state.resolved = true;
@@ -13357,7 +14649,7 @@ function resolveLocalDeviceTeamAnswers(answers) {
     const showFailure = () => beginLocalTeamFailure({ context, result, currentArea, playerEvents });
     if (result.combat) presentCombatResolution(result, { onComplete: showFailure });
     else showFailure();
-    return;
+    return true;
   }
   if (result.combat) presentCombatResolution(result);
 
@@ -13381,6 +14673,38 @@ function resolveLocalDeviceTeamAnswers(answers) {
   });
 
   setAnswerPendingText("Receiving transmission...");
+  if (!ENABLE_TRANSITION_NARRATION_GENERATION) {
+    const continuationStory = assembleLocalContinuation(fallbackBlocks);
+    roomTransitionTraceEmit("MARK", "team resolution LM skipped", {
+      continuationChars: continuationStory.length,
+      destinationType: nextInfo.isRecovery ? "recovery" : nextInfo.readyCheck ? "boss readiness" : "room"
+    });
+    window.setTimeout(() => {
+      appendTranscript({
+        tag: nextInfo.tag,
+        areaName: nextInfo.areaName,
+        story: fallbackBlocks.impact || assembleLocalNarration(fallbackBlocks),
+        continuationStory,
+        pauseBeforeContinuation: Boolean(continuationStory),
+        activeObstacle: nextInfo.activeObstacle,
+        question: nextInfo.questionText,
+        readyCheck: Boolean(nextInfo.readyCheck),
+        bossNodeIndex: nextInfo.bossNodeIndex,
+        bossPhase: nextInfo.bossPhase,
+        isRecovery: Boolean(nextInfo.isRecovery),
+        recoveryTier: nextInfo.recoveryTier,
+        advanceRoom: true,
+        correct: challengeSucceeded,
+        players: playerEvents,
+        suppressEffectFlash: true,
+        inventory: { ...state.inventory },
+        statusLog
+      });
+      recordLocalTurnFact({ correct: challengeSucceeded, context, currentArea, nextInfo, playerEvents });
+      if (state.currentQuestion >= state.questions.length) renderEnding();
+    }, 0);
+    return true;
+  }
   requestOllama(prompt, { temperature: 0.7, format: "json" })
     .then((text) => {
       const blocks = parseLocalNarrationBlocks(text, playerEvents, fallbackBlocks, nextInfo);
@@ -13444,6 +14768,7 @@ function resolveLocalDeviceTeamAnswers(answers) {
       });
       recordLocalTurnFact({ correct: challengeSucceeded, context, currentArea, nextInfo, playerEvents });
     });
+  return true;
 }
 
 function teamFullyIncapacitated() {
@@ -13587,6 +14912,7 @@ function rememberPreviousAnswer(answer, question, correct) {
     required: answerRevealText(question),
     correct: Boolean(correct)
   };
+  state.missionAccuracyResults[`${state.currentQuestion}:single`] = Boolean(correct);
 }
 
 function submittedAnswerDisplayText(answer, question) {
@@ -13604,6 +14930,10 @@ function rememberPreviousDeviceTeamAnswers(entries, question, allCorrect) {
     required: answerRevealText(question),
     correct: Boolean(allCorrect)
   };
+  entries.forEach((entry, index) => {
+    const playerKey = normalize(entry.player?.name || entry.playerName || entry.playerId || `player-${index + 1}`);
+    state.missionAccuracyResults[`${state.currentQuestion}:${playerKey}`] = Boolean(entry.correct);
+  });
 }
 
 function rememberSkippedQuestion(question) {
@@ -13767,10 +15097,16 @@ function projectedProgressAfterRound() {
   };
 }
 
+function recoveryAmounts(tier = 1) {
+  return {
+    hp: Number(tier) === 1 ? 5 : 10,
+    medkits: Number(tier) === 1 ? 3 : 6,
+    ems: Number(tier) === 1 ? 1 : 2
+  };
+}
+
 function recoveryQuestionText(node) {
-  const hp = node.tier === 1 ? 2 : 4;
-  const medkits = node.tier === 1 ? 2 : 3;
-  const ems = node.tier === 1 ? 1 : 2;
+  const { hp, medkits, ems } = recoveryAmounts(node?.tier);
   const revive = state.players.some((player) => player.incapacitated)
     ? "\n\nOne incapacitated player will be revived for free."
     : "";
@@ -13843,9 +15179,7 @@ function resolveLocalRecovery(answer) {
   state.resolved = true;
   const before = snapshotPlayers();
   const choice = String(answer).trim().toUpperCase();
-  const hp = node.tier === 1 ? 2 : 4;
-  const medkits = node.tier === 1 ? 2 : 3;
-  const ems = node.tier === 1 ? 1 : 2;
+  const { hp, medkits, ems } = recoveryAmounts(node.tier);
   const down = state.players.find((player) => player.incapacitated);
   if (down) {
     down.incapacitated = false;
@@ -13901,6 +15235,11 @@ function resolveLocalRecovery(answer) {
 
   setAnswerPendingText("Receiving recovery transmission...");
   startPassiveTransmissionFeedback({ type: { label: "Recovery Event" }, playerEvents });
+  if (!ENABLE_TRANSITION_NARRATION_GENERATION) {
+    roomTransitionTraceEmit("MARK", "recovery departure LM skipped", { nextAreaName });
+    window.setTimeout(() => finishRecovery(""), 0);
+    return;
+  }
   requestOllama(prompt, { temperature: 0.72 })
     .then((text) => {
       finishRecovery(cleanLocalNarration(text));
@@ -14190,6 +15529,7 @@ function bossPlanKey(node, index) {
 }
 
 function preloadBossPhasePlan(payload) {
+  if (!ENABLE_BOSS_PHASE_PLAN_GENERATION) return;
   const nodeIndex = Number.isFinite(Number(payload.bossNodeIndex)) ? Number(payload.bossNodeIndex) : state.currentNode + 1;
   const node = state.nodes[nodeIndex];
   if (!node || node.type !== "boss") return;
@@ -15074,6 +16414,11 @@ function requestOllamaNow(prompt, options = {}) {
   const requestId = ++state.localRequestCounter;
   const model = state.ollamaModel || els.ollamaModel.value || defaultLocalDmModel(provider);
   const startedAt = Date.now();
+  const transitionStep = roomTransitionTraceStepStart(`local DM request #${requestId}`, {
+    provider,
+    model,
+    promptChars: prompt.length
+  });
   logDebugEvent({
     kind: "request",
     label: `#${requestId} sent`,
@@ -15117,7 +16462,8 @@ function requestOllamaNow(prompt, options = {}) {
         });
       }
       throw error;
-    });
+    })
+    .finally(() => roomTransitionTraceStepEnd(transitionStep, { requestId, provider, model }));
 }
 
 function finalOnlyPrompt(prompt) {
@@ -15172,6 +16518,164 @@ function logDebugEvent(event) {
   state.debugEvents.unshift(entry);
   state.debugEvents = state.debugEvents.slice(0, 80);
   renderDebugConsole();
+}
+
+function roomTransitionTraceSnapshot() {
+  const node = state.nodes?.[state.currentNode] || null;
+  const memory = performance?.memory;
+  return {
+    nodeIndex: state.currentNode,
+    nodeType: node?.type || "",
+    nodeLabel: node?.label || "",
+    questionIndex: state.currentQuestion,
+    resolved: Boolean(state.resolved),
+    answerPending: Boolean(state.answerPending),
+    resolutionDelayPending: Boolean(state.resolutionDelayPending),
+    transmissionPending: Boolean(state.transmissionPending),
+    routeFrom: state.routeTransition?.from ?? null,
+    routeTo: state.routeTransition?.to ?? null,
+    routeMoving: Boolean(state.routeTransition?.moving),
+    logPresentationPending: Boolean(state.logPresentationPending),
+    logPresentationRunId: state.logPresentationRunId,
+    questionSurfaceVisible: Boolean(state.questionSurfaceVisible),
+    questionPresentationReady: Boolean(state.questionPresentationReady),
+    questionRevealRunId: state.questionRevealRunId,
+    combatMountBlocked: Boolean(state.combatMountBlocked),
+    combatRunId: state.combatPresentationRunId,
+    combatHidden: Boolean(els.combatStage?.hidden),
+    combatClasses: els.combatStage?.className || "",
+    mapClasses: els.mapPanel?.className || "",
+    bodyClasses: document.body?.className || "",
+    typeTimers: state.typeTimers?.length || 0,
+    combatTimers: state.combatPresentationTimers?.length || 0,
+    playerSyncInFlight: Boolean(state.playerSyncInFlight),
+    visibility: document.visibilityState,
+    heapMb: memory?.usedJSHeapSize ? Math.round(memory.usedJSHeapSize / 1048576) : null
+  };
+}
+
+function postRoomTransitionTrace(payload) {
+  fetch("/api/debug/client-trace", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+    keepalive: true
+  }).catch(() => {});
+}
+
+function roomTransitionTraceEmit(marker, phase, details = {}, options = {}) {
+  const trace = state.roomTransitionTrace;
+  if (!trace) return;
+  const now = performance.now();
+  const payload = {
+    traceId: trace.id,
+    marker,
+    phase,
+    elapsedMs: Math.round(now - trace.startedAt),
+    phaseMs: Math.max(0, Math.round(Number(options.phaseMs) || 0)),
+    details,
+    snapshot: roomTransitionTraceSnapshot()
+  };
+  postRoomTransitionTrace(payload);
+  if (options.debugConsole) {
+    logDebugEvent({
+      kind: marker === "TIMEOUT" || marker === "MAIN_THREAD_GAP" || marker === "ERROR" ? "error" : "state",
+      label: `Transition ${trace.id} ${marker}`,
+      detail: `${phase} | ${payload.elapsedMs}ms${payload.phaseMs ? ` | phase ${payload.phaseMs}ms` : ""}`
+    });
+  }
+}
+
+function roomTransitionTraceStart(reason, details = {}) {
+  if (state.roomTransitionTrace) roomTransitionTraceFinish("superseded", { nextReason: reason });
+  const now = performance.now();
+  const id = `rt-${Date.now().toString(36)}-${++state.roomTransitionTraceCounter}`;
+  const trace = {
+    id,
+    reason,
+    startedAt: now,
+    expectedHeartbeatAt: now + ROOM_TRANSITION_TRACE_HEARTBEAT_MS,
+    heartbeatTimer: null,
+    timeoutTimer: null,
+    metrics: new Map()
+  };
+  state.roomTransitionTrace = trace;
+  roomTransitionTraceEmit("START", reason, details, { debugConsole: true });
+  trace.heartbeatTimer = window.setInterval(() => {
+    if (state.roomTransitionTrace !== trace) return;
+    const heartbeatAt = performance.now();
+    const gapMs = Math.max(0, heartbeatAt - trace.expectedHeartbeatAt);
+    trace.expectedHeartbeatAt = heartbeatAt + ROOM_TRANSITION_TRACE_HEARTBEAT_MS;
+    if (gapMs >= ROOM_TRANSITION_MAIN_THREAD_GAP_MS) {
+      roomTransitionTraceEmit("MAIN_THREAD_GAP", "event-loop heartbeat delayed", { gapMs: Math.round(gapMs) }, { debugConsole: true });
+    } else {
+      roomTransitionTraceEmit("HEARTBEAT", "transition active", { gapMs: Math.round(gapMs) });
+    }
+  }, ROOM_TRANSITION_TRACE_HEARTBEAT_MS);
+  trace.timeoutTimer = window.setTimeout(() => {
+    if (state.roomTransitionTrace !== trace) return;
+    roomTransitionTraceEmit("TIMEOUT", "transition exceeded watchdog", {
+      timeoutMs: ROOM_TRANSITION_TRACE_TIMEOUT_MS,
+      metrics: roomTransitionTraceMetricSummary(trace)
+    }, { debugConsole: true });
+  }, ROOM_TRANSITION_TRACE_TIMEOUT_MS);
+  return trace.id;
+}
+
+function roomTransitionTraceStepStart(phase, details = {}) {
+  const trace = state.roomTransitionTrace;
+  if (!trace) return null;
+  const token = { trace, phase, startedAt: performance.now(), finished: false };
+  roomTransitionTraceEmit("STEP_START", phase, details);
+  return token;
+}
+
+function roomTransitionTraceStepEnd(token, details = {}, marker = "STEP_END") {
+  if (!token || token.finished) return 0;
+  token.finished = true;
+  const durationMs = Math.max(0, performance.now() - token.startedAt);
+  roomTransitionTraceRecordDuration(token.phase, durationMs);
+  if (state.roomTransitionTrace === token.trace) {
+    roomTransitionTraceEmit(marker, token.phase, details, { phaseMs: durationMs });
+  }
+  return durationMs;
+}
+
+function roomTransitionTraceRecordDuration(phase, durationMs) {
+  const trace = state.roomTransitionTrace;
+  if (!trace) return;
+  const current = trace.metrics.get(phase) || { count: 0, totalMs: 0, maxMs: 0 };
+  current.count += 1;
+  current.totalMs += Math.max(0, durationMs);
+  current.maxMs = Math.max(current.maxMs, Math.max(0, durationMs));
+  trace.metrics.set(phase, current);
+}
+
+function roomTransitionTraceMetricSummary(trace = state.roomTransitionTrace) {
+  if (!trace?.metrics) return [];
+  return [...trace.metrics.entries()]
+    .map(([phase, metric]) => ({
+      phase,
+      count: metric.count,
+      totalMs: Math.round(metric.totalMs),
+      maxMs: Math.round(metric.maxMs)
+    }))
+    .sort((a, b) => b.maxMs - a.maxMs)
+    .slice(0, 12);
+}
+
+function roomTransitionTraceFinish(reason, details = {}) {
+  const trace = state.roomTransitionTrace;
+  if (!trace) return;
+  window.clearInterval(trace.heartbeatTimer);
+  window.clearTimeout(trace.timeoutTimer);
+  const elapsedMs = Math.round(performance.now() - trace.startedAt);
+  roomTransitionTraceEmit("COMPLETE", reason, {
+    ...details,
+    totalMs: elapsedMs,
+    slowest: roomTransitionTraceMetricSummary(trace)
+  }, { debugConsole: true });
+  state.roomTransitionTrace = null;
 }
 
 function logRoomDebug(label, detail, options = {}) {
@@ -15296,6 +16800,15 @@ function appendTranscript(feed) {
 
   const payload = typeof feed === "string" ? { text: feed } : feed;
   normalizeFeedText(payload);
+  roomTransitionTraceEmit("MARK", "append transcript", {
+    tag: payload.tag || "",
+    storyChars: String(payload.story || payload.text || "").length,
+    questionChars: String(payload.question || "").length,
+    continuationChars: String(payload.continuationStory || "").length,
+    advanceRoom: Boolean(payload.advanceRoom),
+    readyCheck: Boolean(payload.readyCheck),
+    recovery: Boolean(payload.isRecovery)
+  });
   addMissionLogHistory(payload);
   const pendingRouteMove = Boolean(
     payload.advanceRoom
@@ -15309,6 +16822,10 @@ function appendTranscript(feed) {
   const hasContinuationGate = Boolean(payload.advanceRoom && payload.continuationStory);
   const deferQuestionUntilContinuation = hasContinuationGate && Boolean(payload.isRecovery);
   const presentationRunId = beginLogPresentation();
+  const transitionPresentationStep = roomTransitionTraceStepStart("mission log presentation", {
+    presentationRunId,
+    tag: payload.tag || ""
+  });
   const bossProgressBeforeAdvance = currentBossProgress();
   const keepBossTimer = payload.question
     && state.emergencyTimer?.kind === "boss"
@@ -15316,8 +16833,6 @@ function appendTranscript(feed) {
     && !bossProgressBeforeAdvance.finalStep;
   if (payload.readyCheck) {
     state.bossReadyPending = true;
-    startBossReadyAudio(payload);
-    if (state.backgroundMusicMode === "normal") fadeOutBackgroundMusicForBossReady();
     applyDashboardAtmosphere();
     publishPlayerSession({ status: "briefing", prompt: null, resetAnswers: true });
   }
@@ -15401,7 +16916,7 @@ function appendTranscript(feed) {
     return waitForTtsPlayback(autoRead.playback);
   }).then(() => {
     if (presentationRunId !== state.logPresentationRunId) return;
-    completeTranscriptPresentation(entry, payload, presentationRunId, { deferStatusPresentation, hasContinuationGate });
+    completeTranscriptPresentation(entry, payload, presentationRunId, { deferStatusPresentation, hasContinuationGate, transitionPresentationStep });
   }).catch((error) => {
     if (presentationRunId !== state.logPresentationRunId) return;
     logDebugEvent({
@@ -15409,13 +16924,17 @@ function appendTranscript(feed) {
       label: "Mission log presentation recovered",
       detail: String(error?.message || error || "presentation interrupted").slice(0, 500)
     });
-    completeTranscriptPresentation(entry, payload, presentationRunId, { deferStatusPresentation, hasContinuationGate });
+    completeTranscriptPresentation(entry, payload, presentationRunId, { deferStatusPresentation, hasContinuationGate, transitionPresentationStep });
   });
   return true;
 }
 
 function completeTranscriptPresentation(entry, payload, presentationRunId, options = {}) {
   if (presentationRunId !== state.logPresentationRunId) return;
+  roomTransitionTraceStepEnd(options.transitionPresentationStep, {
+    presentationRunId,
+    hasContinuationGate: Boolean(options.hasContinuationGate)
+  });
   finishLogPresentation(presentationRunId);
   if (typeof payload.onTypedComplete === "function") payload.onTypedComplete(entry, payload);
   if (options.deferStatusPresentation) {
@@ -15435,7 +16954,7 @@ function completeTranscriptPresentation(entry, payload, presentationRunId, optio
   }
   if (payload.readyCheck) {
     if (state.chatMode) renderChatControls();
-    renderBossReadyGate(entry);
+    renderBossReadyGate(entry, payload);
     return;
   }
   if (payload.isRecovery) {
@@ -15485,6 +17004,10 @@ function revealPreparedVoiceText(entry) {
 }
 
 function completeTranscriptAdvance(payload) {
+  roomTransitionTraceEmit("MARK", "complete transcript advance", {
+    advanceRoom: Boolean(payload.advanceRoom),
+    correct: Boolean(payload.correct)
+  });
   if (payload.advanceRoom) {
     state.combatMountBlocked = false;
     advanceChatProgress(Boolean(payload.correct));
@@ -15498,6 +17021,10 @@ function finishTranscriptQuestionFlow(payload) {
   if (payload.readyCheck) {
     if (state.chatMode) renderChatControls();
   } else if (payload.question) {
+    state.answerResults = {};
+    state.playerAnswerFeedback = {};
+    state.statusRenderSignature = "";
+    renderStatus();
     const waitForRoom = state.actionDrivenMode
       ? preloadActionRoomOpening(currentQuestionInfo())
       : Promise.resolve();
@@ -15552,7 +17079,11 @@ function renderTeamReadyGate(entry) {
   }, { once: true });
 }
 
-function renderBossReadyGate(entry) {
+function renderBossReadyGate(entry, payload = {}) {
+  // The prior encounter, narration, and route movement are complete when this
+  // gate renders. Fade whichever background track is active and only now play
+  // the readiness sting; boss fight music starts later with the first prompt.
+  scheduleBossReadyAudioHandoff(payload);
   const gate = document.createElement("div");
   gate.className = "mission-continue-gate boss-ready-gate";
   gate.innerHTML = `
@@ -15561,6 +17092,7 @@ function renderBossReadyGate(entry) {
   `;
   entry.appendChild(gate);
   startMissionLogAutoScroll({ startAtBottom: true });
+  roomTransitionTraceFinish("boss readiness gate ready", { nodeIndex: state.currentNode });
   document.getElementById("missionBossReadyBtn")?.addEventListener("click", () => {
     const button = document.getElementById("missionBossReadyBtn");
     if (button) button.disabled = true;
@@ -15585,14 +17117,17 @@ function renderRecoveryPromptAfterTransition(entry, payload) {
 function renderRecoveryGateForEntry(entry, payload) {
   const node = state.nodes[state.currentNode] || {};
   const tier = Number(payload.recoveryTier || node.tier || 1);
-  const hp = tier === 1 ? 2 : 4;
-  const medkits = tier === 1 ? 2 : 3;
-  const ems = tier === 1 ? 1 : 2;
+  const { hp, medkits, ems } = recoveryAmounts(tier);
   renderRecoveryChoiceGate(entry, tier, { hp, medkits, ems });
   startMissionLogAutoScroll({ startAtBottom: true });
+  roomTransitionTraceFinish("recovery options ready", { tier, hp, medkits, ems });
 }
 
 function revealMissionContinuation(entry, payload, gate) {
+  const continuationStep = roomTransitionTraceStepStart("mission continuation", {
+    advanceRoom: Boolean(payload.advanceRoom),
+    continuationChars: String(payload.continuationStory || "").length
+  });
   const runId = beginLogPresentation();
   const transcript = document.getElementById("chatTranscript");
   const inner = resetMissionLogScroll(transcript);
@@ -15613,7 +17148,11 @@ function revealMissionContinuation(entry, payload, gate) {
   const transitionStartedAt = beginDeferredRouteTransition(payload);
   renderInventoryActions();
   const autoRead = maybeAutoReadMissionLog(continuationEntry);
+  const ttsPreparationStep = roomTransitionTraceStepStart("continuation TTS preparation", {
+    audioDiagnosticsDisabled: DISABLE_AUDIO_LOADING_FOR_TRANSITION_DIAGNOSTICS
+  });
   syncTtsPresentation(autoRead).then(() => {
+    roomTransitionTraceStepEnd(ttsPreparationStep);
     if (runId !== state.logPresentationRunId) throw new Error("Mission continuation superseded");
     return typeText(continuation, payload.continuationStory);
   }).then(() => {
@@ -15621,16 +17160,23 @@ function revealMissionContinuation(entry, payload, gate) {
   }).then(() => {
     if (runId !== state.logPresentationRunId) return;
     const finishContinuation = () => {
+      roomTransitionTraceStepEnd(routeHoldStep, { fired: true });
       if (payload.deferredRouteTransition && state.transmissionPending) stopTransmissionFeedback(false);
+      const advanceStep = roomTransitionTraceStepStart("advance mission progress");
       completeTranscriptAdvance(payload);
+      roomTransitionTraceStepEnd(advanceStep, {
+        nodeIndex: state.currentNode,
+        questionIndex: state.currentQuestion
+      });
       renderActionRoomArrivalAfterTransition(continuationEntry, payload, runId).then((handledArrival) => {
         if (runId !== state.logPresentationRunId) return;
+        roomTransitionTraceStepEnd(continuationStep, { handledArrival });
         finishLogPresentation(runId);
         startMissionLogAutoScroll({ startAtBottom: true });
         recordSceneHistory({ ...payload, story: payload.continuationStory });
         if (payload.readyCheck) {
           if (state.chatMode) renderChatControls();
-          renderBossReadyGate(continuationEntry);
+          renderBossReadyGate(continuationEntry, payload);
           return;
         }
         if (payload.isRecovery) {
@@ -15645,13 +17191,19 @@ function revealMissionContinuation(entry, payload, gate) {
         finishTranscriptQuestionFlow(payload);
       });
     };
-    const projectedDestination = payload.advanceRoom ? projectedProgressAfterRound() : null;
-    const combatHandoffDelay = projectedDestination && isCombatNode(state.nodes[projectedDestination.nextNode]) ? 450 : 0;
-    const routeHold = (transitionStartedAt ? Math.max(0, ROUTE_TRAVEL_MS - (Date.now() - transitionStartedAt)) : 0) + combatHandoffDelay;
-    if (routeHold) window.setTimeout(finishContinuation, routeHold);
+    // Narration and route motion run concurrently. Preserve only the unfinished
+    // fraction of the short travel animation so the marker arrives smoothly
+    // before mission state advances; do not add a second handoff delay.
+    const routeHold = ENABLE_ROUTE_MARKER_TRANSITION && transitionStartedAt
+      ? Math.max(0, ROUTE_TRAVEL_MS - (Date.now() - transitionStartedAt))
+      : 0;
+    const routeHoldStep = roomTransitionTraceStepStart("route travel hold", { routeHold, remainingAnimationMs: routeHold });
+    if (routeHold) trackTypeTimer(finishContinuation, routeHold);
     else finishContinuation();
   }).catch((error) => {
     if (runId !== state.logPresentationRunId) return;
+    roomTransitionTraceStepEnd(ttsPreparationStep, { recovered: true, error: String(error?.message || error || "") }, "ERROR");
+    roomTransitionTraceStepEnd(continuationStep, { recovered: true, error: String(error?.message || error || "") }, "ERROR");
     logDebugEvent({
       kind: "error",
       label: "Mission continuation recovered",
@@ -15660,7 +17212,7 @@ function revealMissionContinuation(entry, payload, gate) {
     if (payload.deferredRouteTransition && state.transmissionPending) stopTransmissionFeedback(false);
     completeTranscriptAdvance(payload);
     finishLogPresentation(runId);
-    if (payload.readyCheck) renderBossReadyGate(continuationEntry);
+    if (payload.readyCheck) renderBossReadyGate(continuationEntry, payload);
     else if (payload.isRecovery) renderRecoveryPromptAfterTransition(continuationEntry, payload);
     else if (payload.advanceRoom && state.currentQuestion >= state.questions.length) renderFinalResultGate(continuationEntry);
     else finishTranscriptQuestionFlow(payload);
@@ -15709,6 +17261,7 @@ function renderFinalResultGate(entry) {
   `;
   entry.appendChild(gate);
   startMissionLogAutoScroll({ startAtBottom: true });
+  roomTransitionTraceFinish("final result gate ready");
   document.getElementById("missionFinalResultBtn")?.addEventListener("click", () => {
     const button = document.getElementById("missionFinalResultBtn");
     if (button) button.disabled = true;
@@ -15724,8 +17277,12 @@ function clearMissionContinueGateTimer() {
 }
 
 function queueMapQuestionReveal(onReady, waitStartedAt = Date.now(), alertDelayMs = questionAlertDelayMs()) {
+  roomTransitionTraceEmit("MARK", "queue question reveal", {
+    alertDelayMs,
+    waitElapsedMs: Date.now() - waitStartedAt
+  });
   const revealRunId = ++state.questionRevealRunId;
-  const alertDelay = window.setTimeout(() => {
+  trackTypeTimer(() => {
     if (revealRunId !== state.questionRevealRunId || state.resolved) return;
     const combatRevealPending = isCombatNode(state.nodes[state.currentNode]) && (
       !state.combatStageEnteredNodes.has(state.currentNode)
@@ -15736,6 +17293,10 @@ function queueMapQuestionReveal(onReady, waitStartedAt = Date.now(), alertDelayM
       if (Date.now() - waitStartedAt >= COMBAT_GATE_MAX_WAIT_MS) {
         recoverCombatPresentationGate("question reveal");
       } else {
+        roomTransitionTraceEmit("WAIT", "question waiting for combat entry", {
+          waitedMs: Date.now() - waitStartedAt,
+          revealRunId
+        });
         trackTypeTimer(() => {
           if (revealRunId === state.questionRevealRunId && !state.resolved) queueMapQuestionReveal(onReady, waitStartedAt, 0);
         }, 350);
@@ -15745,6 +17306,7 @@ function queueMapQuestionReveal(onReady, waitStartedAt = Date.now(), alertDelayM
     state.questionSurfaceVisible = false;
     state.questionPresentationReady = false;
     state.mapQuestionAlertActive = true;
+    roomTransitionTraceEmit("MARK", "query incoming alert shown", { revealRunId });
     state.mapQuestionOverlayKey = "";
     const alertInfo = currentQuestionInfo();
     if (!state.actionDrivenMode && alertInfo?.type?.kind !== "action") playGameSfx("question");
@@ -15754,6 +17316,7 @@ function queueMapQuestionReveal(onReady, waitStartedAt = Date.now(), alertDelayM
       if (revealRunId !== state.questionRevealRunId || state.resolved) return;
       state.mapQuestionAlertActive = false;
       state.questionSurfaceVisible = true;
+      roomTransitionTraceEmit("MARK", "question surface shown", { revealRunId });
       state.questionPresentationReady = false;
       resetStatusUpdates();
       state.mapQuestionOverlayKey = "";
@@ -15761,7 +17324,7 @@ function queueMapQuestionReveal(onReady, waitStartedAt = Date.now(), alertDelayM
       const autoRead = maybeAutoReadQuestion({ allowBeforeReady: true });
       Promise.resolve(autoRead.playback).catch(() => {});
       const unlockDelay = Math.min(1200, Math.max(250, Number(autoRead.visualDelay) || 0));
-      const unlockTimer = window.setTimeout(() => {
+      trackTypeTimer(() => {
         if (revealRunId !== state.questionRevealRunId || state.resolved) return;
         state.questionSurfaceVisible = false;
         state.questionPresentationReady = true;
@@ -15770,19 +17333,17 @@ function queueMapQuestionReveal(onReady, waitStartedAt = Date.now(), alertDelayM
         state.questionPauseStartedAt = 0;
         state.questionPausedTotalMs = 0;
         renderMapQuestionOverlay();
+        roomTransitionTraceEmit("MARK", "question input unlocked", { revealRunId, unlockDelay });
         if (typeof onReady === "function") onReady();
       }, unlockDelay);
-      state.typeTimers.push(unlockTimer);
     });
   }, alertDelayMs);
-  state.typeTimers.push(alertDelay);
 }
 
 function shouldShowTranscriptQuestion(payload) {
-  const tag = String(payload.tag || "").toLowerCase();
-  if (payload.readyCheck || tag.includes("readiness")) return false;
-  if (tag.includes("recovery")) return true;
-  if (state.nodes[state.currentNode]?.type === "recovery") return true;
+  // The map owns the study prompt in both teacher and player-device modes.
+  // Keeping it out of the mission log prevents duplicate questions and leaves
+  // that rail dedicated to narration and mission events.
   return false;
 }
 
@@ -15938,7 +17499,7 @@ function appendDamageLog(entry, payload) {
   log.className = "damage-log";
 
   if (payload.statusLog) {
-    String(payload.statusLog).split(/\r?\n/).filter(Boolean).forEach((text) => {
+    String(payload.statusLog).split(/\r?\n/).map((text) => text.trim()).filter(Boolean).forEach((text) => {
       const line = document.createElement("p");
       line.textContent = text;
       log.appendChild(line);
@@ -16128,11 +17689,13 @@ function flashStatusEffects(effects) {
 
 function showStatusImpactFloat(card, kind, amount) {
   const numeric = Math.max(0, Number(amount || 0));
-  if (!numeric || !["hit", "heal"].includes(kind)) return;
+  // Damage is already presented in turn order on the battle screen. Keep the
+  // left roster visually quiet while retaining useful positive-heal feedback.
+  if (!numeric || kind !== "heal") return;
   card.querySelectorAll(".status-impact-float").forEach((node) => node.remove());
   const float = document.createElement("span");
-  float.className = `status-impact-float ${kind === "heal" ? "heal" : "damage"}`;
-  float.textContent = kind === "heal" ? `+${numeric}` : `-${numeric}`;
+  float.className = "status-impact-float heal";
+  float.textContent = `+${numeric}`;
   card.appendChild(float);
   window.setTimeout(() => float.remove(), 1450);
 }
@@ -16150,6 +17713,11 @@ function advanceChatRoom() {
 }
 
 function advanceChatProgress(correct) {
+  const transitionStep = roomTransitionTraceStepStart("advance chat progress", {
+    correct: Boolean(correct),
+    fromNode: state.currentNode,
+    fromQuestion: state.currentQuestion
+  });
   state.resolved = true;
   const nodeBeforeAdvance = state.nodes[state.currentNode];
   const progression = projectedProgressAfterRound();
@@ -16166,6 +17734,11 @@ function advanceChatProgress(correct) {
   renderStatus();
   renderMap();
   updateChatRoomTitle();
+  roomTransitionTraceStepEnd(transitionStep, {
+    toNode: state.currentNode,
+    toQuestion: state.currentQuestion,
+    stayInRoom: progression.stayInRoom
+  });
 }
 
 function updateChatRoomTitle() {
@@ -16205,6 +17778,10 @@ function clearPlayerStatus(index) {
 
 function renderAnswerControls(q, { locked = false, nextLabel = "" } = {}) {
   syncAnswerControlsDock();
+  if (state.started && state.deviceMode !== "single") {
+    els.answerControls.innerHTML = "";
+    return;
+  }
   const sideActionHtml = classicTeamActionControlsHtml();
   const availableChoices = new Set(q.mode === "multiple" ? q.choices.map((choice) => choice.key) : []);
   els.answerControls.innerHTML = `
@@ -16213,12 +17790,11 @@ function renderAnswerControls(q, { locked = false, nextLabel = "" } = {}) {
         <div class="answer-grid">
           ${["A", "B", "C", "D"].map((letter) => `<button class="answerBtn" data-answer="${letter}" type="button" ${!locked && availableChoices.has(letter) ? "" : "disabled"}>${letter}</button>`).join("")}
         </div>
-        <div class="answer-submit-row">
-          <input id="fillAnswer" class="text-answer" type="text" placeholder="${nextLabel ? "Challenge resolved" : q.mode === "fill" ? "Enter answer" : "Use the answer buttons"}" ${!locked && q.mode === "fill" ? "" : "disabled"}>
-          ${nextLabel
-            ? `<button id="nextBtn" type="button">${escapeHtml(nextLabel)}</button>`
-            : `<button id="submitFillBtn" type="submit" ${!locked && q.mode === "fill" ? "" : "disabled"}>Submit</button>`}
-        </div>
+        ${nextLabel
+          ? `<div class="answer-submit-row"><button id="nextBtn" type="button">${escapeHtml(nextLabel)}</button></div>`
+          : q.mode === "fill"
+            ? `<div class="answer-submit-row"><input id="fillAnswer" class="text-answer" type="text" placeholder="Enter answer" ${!locked ? "" : "disabled"}><button id="submitFillBtn" type="submit" ${!locked ? "" : "disabled"}>Submit</button></div>`
+            : ""}
       </form>
       ${sideActionHtml}
     </div>
@@ -16324,36 +17900,65 @@ function resolveChallenge(answer, options = {}) {
   state.challengeHistory.push({ correct, type: type.label });
   flashAnswerFeedback(correct, { boss: bossAnswer });
 
-  const correctness = correct ? `<p class="success">Correct. The answer is ${escapeHtml(answerRevealText(question))}.</p>` : `<p class="critical">Incorrect. The correct answer is ${escapeHtml(answerRevealText(question))}.</p>`;
-
   const resolution = document.createElement("div");
   resolution.className = "resolution";
   resolution.innerHTML = `
-    ${correctness}
     <p class="typewriter" data-text="${escapeAttribute(result.narration)}"></p>
     ${result.loot ? `<p class="success typewriter" data-text="${escapeAttribute(result.loot)}"></p>` : ""}
     ${result.incapacitated ? `<p class="critical typewriter" data-text="${escapeAttribute(result.incapacitated)}"></p>` : ""}
   `;
   els.encounterCard.appendChild(resolution);
 
-  renderAnswerControls(question, { locked: true });
+  if (state.deviceMode === "single") renderAnswerControls(question, { locked: true });
   const presentationRunId = beginLogPresentation();
   typeQueuedText(resolution).then(() => {
     finishLogPresentation(presentationRunId);
-    renderAnswerControls(question, {
-      locked: true,
-      nextLabel: state.currentQuestion >= state.questions.length ? "Finish Mission" : "Next Challenge"
-    });
+    if (state.deviceMode === "single") {
+      renderAnswerControls(question, {
+        locked: true,
+        nextLabel: state.currentQuestion >= state.questions.length ? "Finish Mission" : "Next Challenge"
+      });
+    } else {
+      renderClassicMultiContinueGate(resolution);
+    }
   });
 
   renderStatus();
   renderMap();
 }
 
+function renderClassicMultiContinueGate(container) {
+  clearMissionContinueGateTimer();
+  const gate = document.createElement("div");
+  gate.className = "mission-continue-gate classic-multi-continue-gate";
+  const countdownSeconds = continueCountdownSeconds();
+  gate.innerHTML = `
+    <button type="button">Continue</button>
+    <span>Auto-advancing in <strong>${countdownSeconds}</strong></span>
+  `;
+  container.appendChild(gate);
+  let remaining = countdownSeconds;
+  const button = gate.querySelector("button");
+  const countdown = gate.querySelector("strong");
+  const continueNow = () => {
+    clearMissionContinueGateTimer();
+    if (button) button.disabled = true;
+    gate.classList.add("resolving");
+    beginNextNode();
+  };
+  button?.addEventListener("click", continueNow, { once: true });
+  state.continueGateTimer = window.setInterval(() => {
+    remaining -= 1;
+    if (countdown) countdown.textContent = String(Math.max(0, remaining));
+    if (remaining <= 0) continueNow();
+  }, 1000);
+}
+
 function typeQueuedText(container) {
   const nodes = [...container.querySelectorAll("[data-text]")];
   const startedAt = Date.now();
   const charCount = nodes.reduce((total, node) => total + String(node.dataset.text || "").length, 0);
+  const transitionStep = roomTransitionTraceStepStart("queued typewriter", { nodes: nodes.length, charCount });
   const generation = state.typewriterGeneration;
   return nodes.reduce((chain, node) => {
     return chain.then(() => typeText(node, node.dataset.text || "", generation));
@@ -16365,44 +17970,68 @@ function typeQueuedText(container) {
         detail: `${Date.now() - startedAt}ms reveal | ${charCount} chars`
       });
     }
-  });
+  }).finally(() => roomTransitionTraceStepEnd(transitionStep, { nodes: nodes.length, charCount }));
 }
 
 function typeText(element, text, generation = state.typewriterGeneration) {
   element.textContent = "";
   return new Promise((resolve) => {
+    const transitionStep = roomTransitionTraceStepStart("typewriter text", { charCount: text.length });
+    let finished = false;
+    const finish = (reason = "complete") => {
+      if (finished) return;
+      finished = true;
+      roomTransitionTraceStepEnd(transitionStep, { charCount: text.length, reason });
+      resolve();
+    };
+    const textNode = document.createTextNode("");
+    element.appendChild(textNode);
     let index = 0;
+    let nextCharacterAt = 0;
+    const startedAt = performance.now();
     const step = () => {
       if (generation !== state.typewriterGeneration) {
-        resolve();
+        finish("generation changed");
         return;
       }
       if (!document.body.contains(element)) {
-        resolve();
+        finish("element removed");
         return;
       }
-      renderRichText(element, text.slice(0, index));
+      const elapsed = performance.now() - startedAt;
+      const previousIndex = index;
+      while (index < text.length && elapsed >= nextCharacterAt) {
+        const typedCharacter = text[index];
+        index += 1;
+        nextCharacterAt += typewriterDelayFor(typedCharacter);
+      }
+      if (index !== previousIndex) textNode.data = text.slice(0, index);
       const typedCharacter = index > 0 ? text[index - 1] : "";
-      if (typedCharacter && /\S/.test(typedCharacter) && index % 3 === 0) {
+      if (index !== previousIndex && typedCharacter && /\S/.test(typedCharacter) && index % 3 === 0) {
         playGameSfx("typewriter", { minInterval: 55, volumeScale: 0.13, pulse: false });
       }
       keepMissionLogTypingInView(element);
-      index += 1;
-      if (index <= text.length) {
-        const previous = text[index - 2] || "";
-        const delay = typewriterDelayFor(previous);
-        trackTypeTimer(step, delay, resolve);
+      if (index < text.length) {
+        // Cap DOM work at roughly one update per frame. If the main thread is
+        // briefly busy, elapsed time catches the reveal up in a single update.
+        const delay = Math.max(8, Math.min(32, nextCharacterAt - elapsed));
+        trackTypeTimer(step, delay, () => finish("timer cancelled"));
       } else {
+        renderRichText(element, text);
         element.removeAttribute("data-text");
-        keepMissionLogTypingInView(element);
-        resolve();
+        keepMissionLogTypingInView(element, true);
+        finish();
       }
     };
     step();
   });
 }
 
-function keepMissionLogTypingInView(element) {
+function keepMissionLogTypingInView(element, force = false) {
+  const now = performance.now();
+  const lastScrollAt = Number(element.dataset.lastTypingScrollAt || 0);
+  if (!force && now - lastScrollAt < 120) return;
+  element.dataset.lastTypingScrollAt = String(now);
   const containers = [
     element.closest?.("#encounterCard")
   ].filter(Boolean);
@@ -16411,6 +18040,7 @@ function keepMissionLogTypingInView(element) {
     const max = container.scrollHeight - container.clientHeight;
     if (max > 6) container.scrollTop = max;
   }
+  if (force) delete element.dataset.lastTypingScrollAt;
 }
 
 function renderRichText(element, text) {
@@ -16783,24 +18413,7 @@ function challengeType(index, total) {
 }
 
 function combatRoundChallengeType(index = state.currentQuestion) {
-  const base = challengeType(index, state.questions.length);
-  const encounter = isCombatNode(state.nodes[state.currentNode]) ? ensureCombatEncounter(state.currentNode) : null;
-  const previousKind = encounter?.lastRound?.challengeKind;
-  if (!previousKind || base.kind !== previousKind) return base;
-
-  const rotation = ["individual", "team", "locked", "emergency"];
-  const question = state.questions[index];
-  let nextKind = "individual";
-  for (let offset = 1; offset <= rotation.length; offset += 1) {
-    const candidate = rotation[(rotation.indexOf(previousKind) + offset + rotation.length) % rotation.length];
-    if (candidate === "emergency" && question?.type === "fill") continue;
-    nextKind = candidate;
-    break;
-  }
-  if (nextKind === "team") return { label: "Team Challenge", kind: "team", locked: false, damage: 2 };
-  if (nextKind === "locked") return { label: "Locked Operator Challenge", kind: "locked", locked: true, damage: 3, teamDamage: 2 };
-  if (nextKind === "emergency") return { label: "Emergency Response Challenge", kind: "emergency", locked: false, damage: 2 };
-  return { label: "Individual Challenge", kind: "individual", locked: false, damage: 2 };
+  return challengeType(index, state.questions.length);
 }
 
 function buildChallengePlan(total) {
@@ -16818,10 +18431,8 @@ function buildChallengePlan(total) {
       const { group, stepIndex } = bossInfo;
       const finalStep = stepIndex === group.questionIndexes.length - 1;
       plan.push({
-        label: finalStep
-          ? `${group.phase === "final" ? "Final Confrontation" : "Critical Contact"} - Team Breakthrough`
-          : `${group.phase === "final" ? "Final Confrontation" : "Critical Contact"} - Individual Lock ${stepIndex + 1}/${group.questionIndexes.length}`,
-        kind: finalStep ? "team" : "individual",
+        label: `${group.phase === "final" ? "Final Confrontation" : "Critical Contact"} - Individual Challenge ${stepIndex + 1}/${group.questionIndexes.length}`,
+        kind: "individual",
         locked: false,
         damage: group.phase === "final" ? 3 : 2,
         boss: true,
@@ -16839,23 +18450,6 @@ function buildChallengePlan(total) {
 }
 
 function buildChallengeType(index, total, plan = []) {
-  const recent = plan.slice(-2).map((type) => type?.kind);
-  const options = [
-    { kind: "individual", weight: 34 },
-    { kind: "team", weight: 30 },
-    { kind: "locked", weight: 22 },
-    { kind: "emergency", weight: 14 }
-  ].map((option) => {
-    let weight = option.weight;
-    if (recent.length === 2 && recent.every((kind) => kind === option.kind)) weight = 0;
-    if (option.kind === "emergency" && recent.includes("emergency")) weight = 0;
-    if (option.kind === "locked" && recent.includes("locked")) weight -= 12;
-    return { ...option, weight: Math.max(0, weight) };
-  });
-  const kind = chooseWeightedKind(options) || "individual";
-  if (kind === "locked") return { label: "Locked Operator Challenge", kind: "locked", locked: true, damage: state.rng() < 0.45 ? 4 : 3, teamDamage: 2 };
-  if (kind === "emergency") return { label: "Emergency Response Challenge", kind: "emergency", locked: false, damage: 2 };
-  if (kind === "team") return { label: "Team Challenge", kind: "team", locked: false, damage: 2 };
   return { label: "Individual Challenge", kind: "individual", locked: false, damage: 2 };
 }
 
@@ -17240,6 +18834,8 @@ const themeHazardPacks = {
 
 function selectedHazardTheme() {
   const text = `${state.missionType} ${state.environment}`;
+  if (normalize(state.missionType) === "decayed bunker") return "Horror";
+  if (normalize(state.missionType) === "abandoned space station") return "Space Station";
   if (/alien/i.test(text)) return "Alien Survival";
   if (/space|orbital|station/i.test(text)) return "Space Station";
   if (/naval|carrier|ship|submarine/i.test(text)) return "Naval Operations";
@@ -17321,9 +18917,7 @@ function renderRecovery(node) {
     <div id="chatTranscript" class="chat-transcript"></div>
   `;
 
-  const hp = tier === 1 ? 2 : 4;
-  const medkits = tier === 1 ? 2 : 3;
-  const ems = tier === 1 ? 1 : 2;
+  const { hp, medkits, ems } = recoveryAmounts(tier);
   const entry = document.createElement("section");
   entry.className = "transcript-entry";
   entry.innerHTML = `
@@ -17358,9 +18952,7 @@ function renderRecoveryChoiceGate(entry, tier, amounts) {
 function applyRecovery(kind, tier, entry = null, gate = null) {
   playGameSfx(kind === "hp" ? "recovery" : "loot");
   const recoveryNode = state.nodes[state.currentNode] || { type: "recovery", tier };
-  const hp = tier === 1 ? 2 : 4;
-  const medkits = tier === 1 ? 2 : 3;
-  const ems = tier === 1 ? 1 : 2;
+  const { hp, medkits, ems } = recoveryAmounts(tier);
   const before = snapshotPlayers();
   state.resolved = true;
   state.questionPresentationReady = false;
@@ -17372,6 +18964,10 @@ function applyRecovery(kind, tier, entry = null, gate = null) {
     down.hp = 3;
     down.status = [];
   }
+
+  state.players.forEach((player) => {
+    player.status = [];
+  });
 
   if (kind === "hp") {
     state.players.forEach((player) => {
@@ -17396,18 +18992,18 @@ function applyRecovery(kind, tier, entry = null, gate = null) {
 }
 
 function appendRecoveryStatusUpdate(summary, fallbackEntry) {
+  const cleanSummary = String(summary || "").trim();
+  if (!cleanSummary) return;
   const log = document.createElement("div");
   log.className = "damage-log";
   const line = document.createElement("p");
-  line.textContent = summary;
+  line.textContent = cleanSummary;
   log.appendChild(line);
   appendStatusUpdateLog(log, fallbackEntry);
 }
 
 function recoveryChoiceSummary(kind, tier, revivedPlayer) {
-  const hp = tier === 1 ? 2 : 4;
-  const medkits = tier === 1 ? 2 : 3;
-  const ems = tier === 1 ? 1 : 2;
+  const { hp, medkits, ems } = recoveryAmounts(tier);
   const reviveText = revivedPlayer ? ` ${revivedPlayer.name} is revived and cleared for movement.` : "";
   const cleared = " All status effects are cleared.";
   if (kind === "hp") return `Recovery chosen: all active operators recover ${hp} HP.${cleared}${reviveText}`;
@@ -17454,6 +19050,7 @@ function continueAfterRecovery(summary, playerEvents = [], recoveryNode = null) 
 
 function travelFromRecoveryRoom(fromNode, toNode, onArrive) {
   stopTransmissionFeedback();
+  state.answerResults = {};
   state.transmissionPending = true;
   state.transmissionStartedAt = Date.now();
   state.routeTransition = {
@@ -17461,7 +19058,7 @@ function travelFromRecoveryRoom(fromNode, toNode, onArrive) {
     to: toNode,
     correct: true,
     boss: state.nodes[toNode]?.type === "boss",
-    moving: toNode !== fromNode,
+    moving: ENABLE_ROUTE_MARKER_TRANSITION && toNode !== fromNode,
     soundPlayed: true
   };
   if (state.routeTransition.moving) playGameSfx("transition");
@@ -17587,18 +19184,10 @@ function openingScene() {
 
 function defaultEnvironment(type) {
   const defaults = {
-    Horror: "a buried communications bunker under a blacked-out ridge",
-    "Military Thriller": "a forward operating relay site under electronic attack",
-    "Sci-Fi Survival": "a failing orbital power station",
-    Cyberpunk: "a corporate grid-control tower in lockdown",
-    "Fantasy Tech": "an arcane generator vault beneath a fortress",
-    "Post-Apocalyptic": "a flooded infrastructure hub outside the safe zone",
-    "Naval Operations": "a damaged carrier engineering deck during a storm",
-    "Space Station": "a decompression-scarred station maintenance ring",
-    "Alien Survival": "a research outpost built around an alien signal",
-    Custom: "a hostile training facility full of unstable systems"
+    "Decayed Bunker": "an overgrown communications bunker abandoned beneath a blacked-out ridge",
+    "Abandoned Space Station": "a decompression-scarred station habitation ring left without a crew"
   };
-  return defaults[type] || defaults.Custom;
+  return defaults[type] || defaults["Decayed Bunker"];
 }
 
 function chooseThreat(type, environment) {
@@ -17646,6 +19235,8 @@ function behaviorFromThreatSummary(summary, identity) {
 
 function selectedThreatTheme(type, environment) {
   const text = `${type} ${environment}`;
+  if (/decayed bunker/i.test(text)) return "Horror";
+  if (/abandoned space station/i.test(text)) return "Space Station";
   if (/alien/i.test(text)) return "Alien Survival";
   if (/space|orbital|station/i.test(text)) return "Space Station";
   if (/naval|carrier|ship|submarine/i.test(text)) return "Naval Operations";
