@@ -79,9 +79,12 @@
     }).then((response) => response.json().catch(() => null)).catch(() => null);
   }
 
-  function fetchSession() {
-    return fetchWithTimeout(`/api/player-session?ts=${Date.now()}`, { cache: "no-store" })
-      .then((response) => response.ok ? response.json() : null);
+  function fetchSession(sinceRevision = null) {
+    const revisionQuery = sinceRevision === null
+      ? ""
+      : `&sinceRevision=${encodeURIComponent(Math.max(0, Number(sinceRevision) || 0))}`;
+    return fetchWithTimeout(`/api/player-session?ts=${Date.now()}${revisionQuery}`, { cache: "no-store" })
+      .then((response) => response.status === 204 ? { ok: true, unchanged: true } : response.ok ? response.json() : null);
   }
 
   function fetchAnswers(roomCode, promptId) {
@@ -89,9 +92,9 @@
       .then((response) => response.ok ? response.json() : null);
   }
 
-  function fetchSync(roomCode, promptId) {
-    return fetchWithTimeout(`/api/player-sync?roomCode=${encodeURIComponent(roomCode || "")}&promptId=${encodeURIComponent(promptId || "")}&ts=${Date.now()}`, { cache: "no-store" })
-      .then((response) => response.ok ? response.json() : null);
+  function fetchSync(roomCode, promptId, sinceRevision = 0) {
+    return fetchWithTimeout(`/api/player-sync?roomCode=${encodeURIComponent(roomCode || "")}&promptId=${encodeURIComponent(promptId || "")}&sinceRevision=${encodeURIComponent(Math.max(0, Number(sinceRevision) || 0))}&ts=${Date.now()}`, { cache: "no-store" })
+      .then((response) => response.status === 204 ? { ok: true, unchanged: true } : response.ok ? response.json() : null);
   }
 
   function joinPlayer(roomCode, name, options = {}) {

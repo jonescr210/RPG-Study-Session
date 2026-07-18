@@ -49,8 +49,12 @@ The local model creates mission briefings, room descriptions, consequences, acti
 - `index.html` - Teacher mission console.
 - `player.html` - Student/player device page.
 - `app.js` - Main game flow and UI orchestration.
+- `dashboard-optional.js` - Lazy-loaded simulator, item overlay, and debug-console rendering.
 - `server.js` - Local HTTP server and API endpoints.
 - `player.js` - Player device behavior.
+- `styles.css` - Authoritative shared UI stylesheet source.
+- `dashboard.css` / `player.css` - Generated runtime stylesheets for the teacher and player screens.
+- `build-ui-css.js` - Rebuilds the two runtime stylesheets after `styles.css` changes (`node build-ui-css.js`).
 - `question-bank.js` - Question parsing and demo question support.
 - `local-dm-prompts.js` - Prompt builders for local AI narration.
 - `action-rooms.js` - Action-driven room types and room entity helpers.

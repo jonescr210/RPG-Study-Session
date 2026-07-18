@@ -323,6 +323,25 @@ function sendJson(res, status, payload) {
   res.end(body);
 }
 
+function sendNoContent(res) {
+  res.writeHead(204, {
+    "cache-control": "no-store"
+  });
+  res.end();
+}
+
+function touchPlayerSession() {
+  playerSession.updatedAt = Date.now();
+  playerSession.revision = Math.max(0, Number(playerSession.revision) || 0) + 1;
+}
+
+function armPlayerSessionPromptIfReady() {
+  const acceptAfter = Number(playerSession.promptAcceptAfter || 0);
+  if (!playerSession.prompt?.accepting || !acceptAfter || Date.now() < acceptAfter) return;
+  playerSession.promptAcceptAfter = 0;
+  touchPlayerSession();
+}
+
 function publicPlayerSession() {
   const session = {
     ...playerSession,
@@ -334,6 +353,19 @@ function publicPlayerSession() {
     session.prompt.acceptAfter = playerSession.promptAcceptAfter;
   }
   return session;
+}
+
+function publicPlayerSyncSession() {
+  const session = publicPlayerSession();
+  return {
+    roomCode: session.roomCode,
+    title: session.title,
+    status: session.status,
+    prompt: session.prompt,
+    revision: session.revision,
+    hostRevision: session.hostRevision,
+    updatedAt: session.updatedAt
+  };
 }
 
 function readBody(req) {
@@ -1056,6 +1088,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/player-session" && req.method === "GET") {
+      armPlayerSessionPromptIfReady();
       const playerId = String(url.searchParams.get("playerId") || "").trim();
       const participant = playerId ? playerSession.participants.find((entry) => entry.id === playerId) : null;
       if (participant) {
@@ -1070,6 +1103,10 @@ const server = http.createServer(async (req, res) => {
             heartbeatGapMs
           }, "warn");
         }
+      }
+      const sinceRevision = Math.max(0, Number(url.searchParams.get("sinceRevision")) || 0);
+      if (sinceRevision > 0 && sinceRevision === Math.max(0, Number(playerSession.revision) || 0)) {
+        return sendNoContent(res);
       }
       return sendJson(res, 200, publicPlayerSession());
     }
@@ -1157,6 +1194,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/player-sync" && req.method === "GET") {
+      armPlayerSessionPromptIfReady();
       const roomCode = String(url.searchParams.get("roomCode") || "").trim().toUpperCase();
       const promptId = String(url.searchParams.get("promptId") || "");
       if (!roomCode || roomCode !== playerSession.roomCode) {
@@ -1166,7 +1204,7 @@ const server = http.createServer(async (req, res) => {
           requestedPromptId: promptId,
           activePromptId: playerSession.prompt?.id || ""
         });
-        return sendJson(res, 409, { ok: false, error: "Session room changed", session: publicPlayerSession() });
+        return sendJson(res, 409, { ok: false, error: "Session room changed", session: publicPlayerSyncSession() });
       }
       if (promptId && playerSession.prompt?.id && promptId !== playerSession.prompt.id) {
         serverTraceThrottled(`sync-prompt:${promptId}:${playerSession.prompt.id}`, 5_000, "sync.prompt_mismatch", {
@@ -1177,12 +1215,21 @@ const server = http.createServer(async (req, res) => {
           accepting: Boolean(playerSession.prompt.accepting)
         });
       }
+      const sinceRevision = Math.max(0, Number(url.searchParams.get("sinceRevision")) || 0);
+      if (sinceRevision > 0 && sinceRevision === Math.max(0, Number(playerSession.revision) || 0)) {
+        return sendJson(res, 200, {
+          ok: true,
+          unchanged: true,
+          revision: playerSession.revision,
+          participants: playerSession.participants
+        });
+      }
       const answers = playerSession.answers.filter((answer) => !promptId || answer.promptId === promptId);
       const actions = playerSession.actions.filter((action) => !promptId || action.promptId === promptId);
       const queuedActions = playerSession.queuedActions.filter((action) => action.roomCode === roomCode);
       return sendJson(res, 200, {
         ok: true,
-        session: publicPlayerSession(),
+        session: publicPlayerSyncSession(),
         promptId,
         answers,
         actions,
@@ -1208,7 +1255,7 @@ const server = http.createServer(async (req, res) => {
       if (existing && simulated) existing.simulated = true;
       participant.lastSeenAt = Date.now();
       if (!existing) playerSession.participants.push(participant);
-      playerSession.updatedAt = Date.now();
+      touchPlayerSession();
       serverTrace(existing ? "player.rejoined" : "player.joined", {
         roomCode,
         playerId: participant.id,
@@ -1235,7 +1282,7 @@ const server = http.createServer(async (req, res) => {
       const reserved = playerSession.participants.find((player) => player.id !== playerId && player.classId === classId);
       if (reserved) return sendJson(res, 409, { ok: false, error: `${classId} is already reserved` });
       participant.classId = classId;
-      playerSession.updatedAt = Date.now();
+      touchPlayerSession();
       serverTrace("player.class_selected", {
         roomCode,
         playerId,
@@ -1278,7 +1325,7 @@ const server = http.createServer(async (req, res) => {
         if (!name) return true;
         return String(player || "").toLowerCase() !== name;
       });
-      playerSession.updatedAt = Date.now();
+      touchPlayerSession();
       serverTrace("player.removed", {
         roomCode,
         requestedPlayerId: playerId,
@@ -1286,7 +1333,7 @@ const server = http.createServer(async (req, res) => {
         removed: before !== playerSession.participants.length,
         participants: playerSession.participants.length
       }, before !== playerSession.participants.length ? "info" : "warn");
-      return sendJson(res, 200, { ok: true, removed: before !== playerSession.participants.length, session: playerSession });
+      return sendJson(res, 200, { ok: true, removed: before !== playerSession.participants.length, session: publicPlayerSession() });
     }
 
     if (url.pathname === "/api/player-answers" && req.method === "GET") {
@@ -1335,7 +1382,7 @@ const server = http.createServer(async (req, res) => {
       };
       if (priorIndex >= 0) playerSession.answers[priorIndex] = entry;
       else playerSession.answers.push(entry);
-      playerSession.updatedAt = Date.now();
+      touchPlayerSession();
       serverTrace("answer.accepted", {
         roomCode,
         promptId,
@@ -1406,7 +1453,7 @@ const server = http.createServer(async (req, res) => {
       if (queued) playerSession.queuedActions.push(entry);
       else playerSession.actions.push(entry);
       if (!isAbilityAction) participant.lastActionAt = now;
-      playerSession.updatedAt = Date.now();
+      touchPlayerSession();
       serverTrace(queued ? "action.queued" : "action.accepted", {
         roomCode,
         promptId: entry.promptId,
@@ -1428,7 +1475,7 @@ const server = http.createServer(async (req, res) => {
       if (!roomCode || roomCode !== playerSession.roomCode) return sendJson(res, 400, { ok: false, error: "Invalid room code" });
       const before = playerSession.queuedActions.length;
       playerSession.queuedActions = playerSession.queuedActions.filter((entry) => entry.id !== actionId);
-      playerSession.updatedAt = Date.now();
+      touchPlayerSession();
       serverTrace("action.consumed", {
         roomCode,
         actionId,

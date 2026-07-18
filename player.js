@@ -27,6 +27,7 @@ const playerState = {
   submittedActionPromptId: "",
   queuedActionId: "",
   queuedActionSignature: "",
+  sessionRevision: 0,
   pollTimer: null,
   pollInFlight: false,
   sessionRecoveryInFlight: false,
@@ -184,10 +185,10 @@ function pollSession() {
   }
   playerState.pollInFlight = true;
   const playerId = encodeURIComponent(playerState.playerId || "");
-  fetchWithTimeout(`/api/player-session?playerId=${playerId}&ts=${Date.now()}`, { cache: "no-store" })
-    .then((response) => response.ok ? response.json() : null)
+  fetchWithTimeout(`/api/player-session?playerId=${playerId}&sinceRevision=${encodeURIComponent(Math.max(0, Number(playerState.sessionRevision) || 0))}&ts=${Date.now()}`, { cache: "no-store" })
+    .then((response) => response.status === 204 ? { unchanged: true } : response.ok ? response.json() : null)
     .then((session) => {
-      if (!session) return;
+      if (!session || session.unchanged) return;
       renderSession(session);
     })
     .catch(() => renderWaiting("Connection lost. Waiting for Mission Control."))
@@ -208,6 +209,7 @@ document.addEventListener("visibilitychange", () => {
 });
 
 function renderSession(session) {
+  playerState.sessionRevision = Math.max(playerState.sessionRevision, Number(session.revision) || 0);
   if (session.roomCode && session.roomCode !== playerState.roomCode) {
     renderWaiting("This device is joined to a different room code.");
     return;

@@ -5,8 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Study Adventure Mission Console</title>
     <link rel="preload" as="image" href="assets/boss-swipe-sprite.webp?v=2" type="image/webp">
-    <link rel="preload" as="video" href="assets/boss-eyes-final-intro-60fps.mp4?v=1" type="video/mp4">
-  <link rel="stylesheet" href="styles.css?v=mission-log-overflow-10">
+  <link rel="stylesheet" href="dashboard.css?v=ui-split-1">
   <link rel="stylesheet" href="mission-console-live.css?v=37">
   </head>
   <body>
@@ -509,10 +508,9 @@ Generate [NUMBER] questions.</textarea>
             <section id="combatStage" class="combat-stage" hidden aria-label="Combat visualization">
               <div class="combat-stage-wipe" aria-hidden="true"><i></i><i></i><i></i></div>
               <div id="combatBossIntro" class="combat-boss-intro" hidden aria-hidden="true">
-                <video id="combatBossIntroVideo" muted playsinline preload="auto" disablepictureinpicture controlslist="nodownload noremoteplayback"
+                <video id="combatBossIntroVideo" muted playsinline preload="metadata" disablepictureinpicture controlslist="nodownload noremoteplayback"
                   data-mid-src="assets/boss-eyes-intro-july17.mp4?v=1"
                   data-final-src="assets/boss-eyes-final-intro-60fps.mp4?v=1">
-                  <source src="assets/boss-eyes-intro-july17.mp4?v=1" type="video/mp4">
                 </video>
               </div>
               <div class="combat-stage-header">
