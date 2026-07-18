@@ -70,6 +70,46 @@ const LOCKED_OPERATOR_FOLLOWUP_MS = 10_000;
 const EMERGENCY_SIM_TARGET_REMAINING_MS = 4_500;
 const DEPLOYMENT_ROSTER_REVEAL_DELAY_MS = 1450;
 const DEPLOYMENT_ROSTER_STAGGER_MS = 160;
+const BOSS_VISUAL_PROFILES = Object.freeze({
+  "blood-red": Object.freeze({
+    id: "blood-red",
+    phase: "mid",
+    imageSrc: "assets/boss-eyes-red-black.png",
+    introSrc: "assets/boss-eyes-intro-july17.mp4?v=1"
+  }),
+  "spectral-green": Object.freeze({
+    id: "spectral-green",
+    phase: "final",
+    imageSrc: "assets/boss-eyes-final-green.png?v=1",
+    introSrc: "assets/boss-eyes-final-intro-60fps.mp4?v=1"
+  }),
+  "signal-yellow": Object.freeze({
+    id: "signal-yellow",
+    phase: "mid",
+    imageSrc: "assets/boss-eyes-signal-yellow.png?v=1",
+    introSrc: "assets/boss-eyes-signal-yellow-intro-60fps.mp4?v=1"
+  }),
+  "arc-blue": Object.freeze({
+    id: "arc-blue",
+    phase: "final",
+    imageSrc: "assets/boss-eyes-arc-blue.png?v=1",
+    introSrc: "assets/boss-eyes-arc-blue-intro-60fps.mp4?v=1"
+  })
+});
+const DEFAULT_BOSS_VISUAL_BY_PHASE = Object.freeze({
+  mid: "blood-red",
+  final: "spectral-green"
+});
+const BOSS_VISUAL_BY_MISSION_TYPE = Object.freeze({
+  "decayed bunker": Object.freeze({
+    mid: "blood-red",
+    final: "spectral-green"
+  }),
+  "abandoned space station": Object.freeze({
+    mid: "signal-yellow",
+    final: "arc-blue"
+  })
+});
 const GAME_SFX_EVENTS = [
   { id: "ui", label: "UI / Button" },
   { id: "typewriter", label: "Text Typewriter" },
@@ -88,6 +128,23 @@ const GAME_SFX_EVENTS = [
   { id: "failure", label: "Mission Failure" },
   { id: "ending", label: "Mission Ending" }
 ];
+
+function defaultBossVisualId(phase = "mid") {
+  return DEFAULT_BOSS_VISUAL_BY_PHASE[phase === "final" ? "final" : "mid"];
+}
+
+function selectBossVisualId(phase = "mid", missionType = state.missionType) {
+  const phaseKey = phase === "final" ? "final" : "mid";
+  const missionKey = normalize(missionType);
+  const missionVisuals = BOSS_VISUAL_BY_MISSION_TYPE[missionKey]
+    || BOSS_VISUAL_BY_MISSION_TYPE["decayed bunker"];
+  return missionVisuals[phaseKey] || defaultBossVisualId(phaseKey);
+}
+
+function bossVisualProfileForNode(node) {
+  const requestedId = node?.bossVisualId || defaultBossVisualId(node?.bossPhase);
+  return BOSS_VISUAL_PROFILES[requestedId] || BOSS_VISUAL_PROFILES[defaultBossVisualId(node?.bossPhase)];
+}
 
 function readStoredAudioEffectSelections() {
   try {
@@ -388,6 +445,9 @@ const ENABLE_ROUTE_MARKER_TRANSITION = true;
 // Keep route travel readable without making room transitions feel stalled.
 // Mission progression waits only for the unfinished portion of this animation.
 const ROUTE_TRAVEL_MS = 2200;
+// Boss-readiness approaches move at half speed so the audio and visual handoff
+// have room to build before the squad reaches the critical-contact marker.
+const BOSS_READY_ROUTE_TRAVEL_MS = ROUTE_TRAVEL_MS * 2;
 const ENEMY_VISUAL_POOLS = Object.freeze({
   bunker: Object.freeze([
     ...Array.from({ length: 5 }, (_, index) => `enemy_assets/ghosts/shadow-enemy-${index + 1}.png`),
@@ -1904,6 +1964,16 @@ function startBossReadyAudio(payload = {}) {
   playGameSfx("boss");
 }
 
+function routeTravelDurationMs(transition = state.routeTransition) {
+  return transition?.boss ? BOSS_READY_ROUTE_TRAVEL_MS : ROUTE_TRAVEL_MS;
+}
+
+function startBossReadyAudioForRoute(transition = state.routeTransition) {
+  if (!transition?.moving || !transition.boss) return;
+  fadeOutBackgroundMusicForBossReady();
+  startBossReadyAudio({ bossNodeIndex: transition.to });
+}
+
 function scheduleBossReadyAudioHandoff(payload = {}) {
   const nodeIndex = Number.isInteger(payload.bossNodeIndex) ? payload.bossNodeIndex : state.currentNode;
   window.clearTimeout(state.bossReadyAudioTimer);
@@ -1920,6 +1990,7 @@ function scheduleBossReadyAudioHandoff(payload = {}) {
       state.bossReadyAudioTimer = window.setTimeout(attempt, 160);
       return;
     }
+    // Fallback for readiness gates reached without a moving route marker.
     fadeOutBackgroundMusicForBossReady();
     startBossReadyAudio(payload);
   };
@@ -1934,6 +2005,72 @@ function startBossQuestionMusic() {
   syncBossEyesVisual();
   fadeOutGameSfx("boss", 480);
   loadBackgroundMusic("boss", state.backgroundMusicLoaded ? { transition: true } : { fadeIn: true });
+}
+
+function primeBossThemeForNode(nodeIndex) {
+  const bossNode = state.nodes?.[nodeIndex];
+  if (!document.body || bossNode?.type !== "boss") return null;
+  const profile = bossVisualProfileForNode(bossNode);
+  if (!profile) return null;
+  document.body.dataset.bossVisual = profile.id;
+  document.body.classList.add("boss-theme-active");
+  return profile;
+}
+
+function syncBossThemePresence() {
+  if (!document.body) return;
+  const mapEyesVisible = Boolean(els.mapPanel && (
+    els.mapPanel.classList.contains("boss-eyes-active")
+    || els.mapPanel.classList.contains("boss-eyes-exiting")
+  ));
+  const combatBossVisible = Boolean(els.combatStage
+    && !els.combatStage.hidden
+    && els.combatStage.classList.contains("boss-fight"));
+  const routeBossNodeIndex = state.transmissionPending
+    && state.routeTransition?.moving
+    && state.routeTransition?.boss
+    ? state.routeTransition.to
+    : -1;
+  const currentBossNode = state.nodes?.[state.currentNode]?.type === "boss"
+    ? state.nodes[state.currentNode]
+    : null;
+  const bossReadinessActive = Boolean(currentBossNode && (
+    state.bossReadyPending
+    || state.bossReadyChecks.has(state.currentNode)
+  ));
+  const themeActive = document.body.classList.contains("mission-active") && (
+    mapEyesVisible
+    || combatBossVisible
+    || routeBossNodeIndex >= 0
+    || bossReadinessActive
+  );
+
+  if (!themeActive) {
+    document.body.classList.remove("boss-theme-active");
+    delete document.body.dataset.bossVisual;
+    return;
+  }
+
+  let bossNode = null;
+  if (combatBossVisible) {
+    const stageNodeIndex = Number(els.combatStage.dataset.nodeIndex);
+    if (Number.isInteger(stageNodeIndex)) bossNode = state.nodes?.[stageNodeIndex] || null;
+  }
+  if (!bossNode && routeBossNodeIndex >= 0) bossNode = state.nodes?.[routeBossNodeIndex] || null;
+  if (!bossNode && currentBossNode) bossNode = currentBossNode;
+
+  let visualId = bossNode ? bossVisualProfileForNode(bossNode)?.id : "";
+  if (!visualId && combatBossVisible) {
+    visualId = els.combatStage.classList.contains("final-boss-visual") ? "spectral-green" : "blood-red";
+  }
+  if (!visualId && mapEyesVisible) {
+    visualId = els.mapPanel.classList.contains("boss-final-visual") ? "spectral-green" : "blood-red";
+  }
+  if (!BOSS_VISUAL_PROFILES[visualId]) visualId = document.body.dataset.bossVisual;
+  if (!BOSS_VISUAL_PROFILES[visualId]) visualId = defaultBossVisualId(bossNode?.bossPhase);
+
+  document.body.dataset.bossVisual = visualId;
+  document.body.classList.add("boss-theme-active");
 }
 
 function syncBossEyesVisual() {
@@ -1954,22 +2091,26 @@ function syncBossEyesVisual() {
   ));
   if (eyesExiting && !combatStageActive) {
     els.mapPanel.classList.add("boss-eyes-active");
+    syncBossThemePresence();
     return;
   }
   if (!bossActive || combatStageActive) {
     window.clearTimeout(state.bossEyesExitTimer);
     state.bossEyesExitTimer = null;
     els.mapPanel?.classList.remove("boss-eyes-active", "boss-eyes-exiting", "boss-eyes-strike");
+    syncBossThemePresence();
     return;
   }
   const revealActive = bossActive && state.bossMusicStartedNodes.has(state.currentNode);
   els.mapPanel?.classList.toggle("boss-eyes-active", revealActive);
+  syncBossThemePresence();
 }
 
 function beginBossEyesExit(force = false) {
   if (!force && !els.mapPanel?.classList.contains("boss-eyes-active")) return;
   window.clearTimeout(state.bossEyesExitTimer);
   els.mapPanel.classList.add("boss-eyes-active", "boss-eyes-exiting");
+  syncBossThemePresence();
   state.bossEyesExitTimer = window.setTimeout(() => {
     state.bossEyesExitTimer = null;
     els.mapPanel?.classList.remove("boss-eyes-active", "boss-eyes-exiting");
@@ -1996,7 +2137,10 @@ function triggerBossDamageImpact(effects = []) {
   const damageHits = effects.filter((effect) => effect.kind === "hit" && Number(effect.amount || 0) > 0);
   const node = state.nodes[state.currentNode];
   const bossActive = node?.type === "boss" || Boolean(currentBossProgress());
-  if (!bossActive || !damageHits.length || !els.mapPanel) return;
+  const failureActive = state.teamFailurePending
+    || document.body.classList.contains("situation-failure")
+    || els.mapPanel?.classList.contains("mission-failed");
+  if (!bossActive || failureActive || !damageHits.length || !els.mapPanel) return;
 
   if (state.bossScreenCrackNode !== state.currentNode) {
     clearBossDamageVisual();
@@ -2034,9 +2178,9 @@ function desiredBackgroundMusicMode() {
 
 function syncBackgroundMusicForEncounter() {
   if (!state.backgroundMusicLoaded) return;
-  // A boss-readiness payload is created before combat resolution, narration,
-  // and route travel finish. Keep the current bed in place until the readiness
-  // gate is actually visible; that gate owns the fade into the boss sting.
+  // A boss-readiness payload exists before route travel begins. Let that route
+  // transition own the fade into the readiness cue without encounter sync
+  // switching the background bed underneath it.
   if (state.bossReadyPending) return;
   const desiredMode = desiredBackgroundMusicMode();
   if (desiredMode === state.backgroundMusicMode) return;
@@ -3012,6 +3156,7 @@ function performMissionReset({ preserveTransition = false } = {}) {
     "mission-active",
     "setup-to-deployment",
     "dashboard-online",
+    "boss-theme-active",
     "situation-boss",
     "situation-emergency",
     "situation-recovery",
@@ -3021,6 +3166,7 @@ function performMissionReset({ preserveTransition = false } = {}) {
     "mission-log-streaming"
   );
   delete document.body.dataset.missionTheme;
+  delete document.body.dataset.bossVisual;
   setMissionFailureVisual(false);
   stopOpeningWaitCounter();
   els.setupPanel.style.display = "";
@@ -3398,6 +3544,10 @@ function publishPlayerSession(extra = {}) {
   const roomCode = state.roomCode;
   state.playerHostRevision += 1;
   const requestedPrompt = extra.prompt === undefined ? buildPlayerPrompt() : extra.prompt;
+  const activeNode = state.nodes?.[state.currentNode];
+  const activeBossVisualId = activeNode?.type === "boss"
+    ? bossVisualProfileForNode(activeNode)?.id || ""
+    : "";
   const payload = {
     roomCode,
     status: extra.status || (state.questionPresentationReady ? "open" : "waiting"),
@@ -3406,6 +3556,7 @@ function publishPlayerSession(extra = {}) {
     playerStates: extra.playerStates || playerStatePayload(),
     actionCooldownMs: state.actionDrivenMode ? 0 : PLAYER_ACTION_COOLDOWN_MS,
     allowQueuedPlayerActions: Boolean(state.started && state.teamReady && state.localDmMode && state.deviceMode === "multi" && !state.actionDrivenMode),
+    bossVisualId: extra.bossVisualId === undefined ? activeBossVisualId : String(extra.bossVisualId || ""),
     prompt: requestedPrompt,
     resetAnswers: Boolean(extra.resetAnswers),
     resetQueuedActions: Boolean(extra.resetQueuedActions),
@@ -3608,6 +3759,7 @@ function buildPlayerPrompt() {
     kind: info.type.kind,
     actionOnly: Boolean(state.actionDrivenMode),
     boss: Boolean(info.type.boss),
+    bossVisualId: node?.type === "boss" ? bossVisualProfileForNode(node)?.id || "" : "",
     bossStep: info.type.bossStep || 0,
     bossTotal: info.type.bossTotal || 0,
     bossPhase: info.type.bossPhase || "",
@@ -7835,6 +7987,7 @@ function buildNodes(questionCount) {
       nodes.push({
         type: "boss",
         bossPhase: bossGroup.phase,
+        bossVisualId: selectBossVisualId(bossGroup.phase),
         questionIndex: bossGroup.start,
         questionIndexes: bossGroup.questionIndexes,
         label: bossGroup.phase === "final" ? "Final" : "Boss"
@@ -10571,6 +10724,7 @@ function playerStatusClasses(player) {
 
 function setMissionFailureVisual(active) {
   const failed = Boolean(active);
+  if (failed) clearBossDamageVisual();
   els.mapPanel?.classList.toggle("mission-failed", failed);
   document.body.classList.toggle("situation-failure", failed);
   if (els.mapFailureOverlay) els.mapFailureOverlay.hidden = !failed;
@@ -10899,8 +11053,10 @@ function playBossIntroVideo(runId, nodeIndex, onComplete) {
     return;
   }
 
-  const finalBoss = state.nodes?.[nodeIndex]?.bossPhase === "final";
-  const desiredSource = finalBoss ? video.dataset.finalSrc : video.dataset.midSrc;
+  const bossNode = state.nodes?.[nodeIndex];
+  const finalBoss = bossNode?.bossPhase === "final";
+  const profile = primeBossThemeForNode(nodeIndex) || bossVisualProfileForNode(bossNode);
+  const desiredSource = profile?.introSrc || (finalBoss ? video.dataset.finalSrc : video.dataset.midSrc);
   if (desiredSource && video.getAttribute("src") !== desiredSource) {
     video.pause();
     video.setAttribute("src", desiredSource);
@@ -11094,6 +11250,7 @@ function clearCombatPresentation() {
     els.combatStage.hidden = true;
     delete els.combatStage.dataset.nodeIndex;
   }
+  syncBossThemePresence();
   renderInitiativeTimeline();
 }
 
@@ -11122,6 +11279,7 @@ function recoverCombatPresentationGate(reason = "combat transition") {
       els.combatStage.hidden = true;
     }
   }
+  syncBossThemePresence();
   logDebugEvent({
     kind: "state",
     label: "Combat presentation watchdog recovered",
@@ -11171,7 +11329,6 @@ function renderCombatStage(encounter, options = {}) {
   const enemyStates = new Map((options.enemyStates || []).map((entry) => [entry.id, entry]));
   const playerStates = new Map((options.playerStates || []).map((entry) => [normalize(entry.name), entry]));
   const playerResults = new Map((options.playerResults || []).map((entry) => [normalize(entry.name), entry.correct]));
-  els.combatStage.hidden = false;
   const bossFight = encounter.roomType === "boss";
   const bossNode = state.nodes?.[encounter.nodeIndex ?? state.currentNode];
   const finalBoss = bossFight && bossNode?.bossPhase === "final";
@@ -11181,7 +11338,10 @@ function renderCombatStage(encounter, options = {}) {
   els.combatStage.classList.toggle("boss-fight", bossFight);
   els.combatStage.classList.toggle("final-boss-visual", finalBoss);
   els.combatStage.classList.toggle("mid-boss-visual", bossFight && !finalBoss);
-  els.combatStage.dataset.nodeIndex = String(state.currentNode);
+  els.combatStage.dataset.nodeIndex = String(encounter.nodeIndex ?? state.currentNode);
+  if (bossFight) primeBossThemeForNode(encounter.nodeIndex ?? state.currentNode);
+  els.combatStage.hidden = false;
+  syncBossThemePresence();
   els.combatStageLabel.textContent = encounter.roomType === "boss" ? "CRITICAL HOSTILE" : "HOSTILE CONTACT";
   els.combatStageRound.textContent = `ROUND ${Math.max(1, encounter.round + (options.beforeRound ? 0 : 1))}`;
   els.combatEnemyFormation.innerHTML = encounter.enemies.filter((enemy) => {
@@ -11229,6 +11389,7 @@ function syncCombatStage() {
   const node = state.nodes[state.currentNode];
   if (!isCombatNode(node) || state.currentNode >= state.nodes.length) {
     if (els.combatStage && !els.combatStage.classList.contains("resolving") && !els.combatStage.classList.contains("exiting")) els.combatStage.hidden = true;
+    syncBossThemePresence();
     return;
   }
   const stageNodeIndex = Number(els.combatStage?.dataset.nodeIndex);
@@ -11236,11 +11397,13 @@ function syncCombatStage() {
     els.combatStage.classList.remove("exiting");
     els.combatStage.hidden = true;
     state.combatMountBlocked = false;
+    syncBossThemePresence();
   }
   if (node.type === "boss" && !state.bossReadyChecks.has(state.currentNode)) {
     if (els.combatStage && !els.combatStage.classList.contains("resolving") && !els.combatStage.classList.contains("exiting")) {
       els.combatStage.hidden = true;
     }
+    syncBossThemePresence();
     return;
   }
   if (state.combatMountBlocked) return;
@@ -11709,6 +11872,7 @@ function presentCombatResolution(result, options = {}) {
           if (els.combatStage) {
             els.combatStage.hidden = true;
             els.combatStage.classList.remove("exiting");
+            syncBossThemePresence();
             // The route can advance while the fade is still running. If the
             // destination is another combat node, retry the mount after the
             // old stage is fully clear instead of leaving the new room behind
@@ -11818,8 +11982,10 @@ function syncHtmlRouteMarker(positions, routeVisible) {
   if (state.routeMarkerAnimationKey === animationKey) return;
   const startPoint = routeMarkerPixelPoint(positions[transition.from]);
   if (!startPoint) return;
+  const travelDuration = routeTravelDurationMs(transition);
   state.routeMarkerAnimationKey = animationKey;
   marker.classList.remove("traveling");
+  marker.style.setProperty("--route-travel-duration", `${travelDuration}ms`);
   marker.style.transform = routeMarkerTransform(startPoint);
   state.routeMarkerAnimationFrame = window.requestAnimationFrame(() => {
     state.routeMarkerAnimationFrame = window.requestAnimationFrame(() => {
@@ -11831,7 +11997,7 @@ function syncHtmlRouteMarker(positions, routeVisible) {
       state.routeMarkerSettleTimer = window.setTimeout(() => {
         if (state.routeMarkerAnimationKey === animationKey) marker.classList.remove("traveling");
         state.routeMarkerSettleTimer = null;
-      }, ROUTE_TRAVEL_MS + 80);
+      }, travelDuration + 80);
     });
   });
 }
@@ -14312,6 +14478,7 @@ function beginDeferredRouteTransition(payload) {
     state.routeTransition.soundPlayed = true;
     playGameSfx("transition");
   }
+  startBossReadyAudioForRoute(state.routeTransition);
   renderMap();
   renderRouteTelemetry();
   roomTransitionTraceStepEnd(step, {
@@ -17080,9 +17247,8 @@ function renderTeamReadyGate(entry) {
 }
 
 function renderBossReadyGate(entry, payload = {}) {
-  // The prior encounter, narration, and route movement are complete when this
-  // gate renders. Fade whichever background track is active and only now play
-  // the readiness sting; boss fight music starts later with the first prompt.
+  // Route travel normally owns the readiness sting. Keep this handoff as a
+  // fallback for starts or recovery paths that reach the gate without movement.
   scheduleBossReadyAudioHandoff(payload);
   const gate = document.createElement("div");
   gate.className = "mission-continue-gate boss-ready-gate";
@@ -17194,10 +17360,11 @@ function revealMissionContinuation(entry, payload, gate) {
     // Narration and route motion run concurrently. Preserve only the unfinished
     // fraction of the short travel animation so the marker arrives smoothly
     // before mission state advances; do not add a second handoff delay.
+    const routeDuration = routeTravelDurationMs(payload.deferredRouteTransition);
     const routeHold = ENABLE_ROUTE_MARKER_TRANSITION && transitionStartedAt
-      ? Math.max(0, ROUTE_TRAVEL_MS - (Date.now() - transitionStartedAt))
+      ? Math.max(0, routeDuration - (Date.now() - transitionStartedAt))
       : 0;
-    const routeHoldStep = roomTransitionTraceStepStart("route travel hold", { routeHold, remainingAnimationMs: routeHold });
+    const routeHoldStep = roomTransitionTraceStepStart("route travel hold", { routeDuration, routeHold, remainingAnimationMs: routeHold });
     if (routeHold) trackTypeTimer(finishContinuation, routeHold);
     else finishContinuation();
   }).catch((error) => {
@@ -19062,6 +19229,7 @@ function travelFromRecoveryRoom(fromNode, toNode, onArrive) {
     soundPlayed: true
   };
   if (state.routeTransition.moving) playGameSfx("transition");
+  startBossReadyAudioForRoute(state.routeTransition);
   renderMap();
   renderRouteTelemetry();
 
@@ -19071,7 +19239,7 @@ function travelFromRecoveryRoom(fromNode, toNode, onArrive) {
     renderMap();
     renderRouteTelemetry();
     if (typeof onArrive === "function") onArrive();
-  }, state.routeTransition.moving ? ROUTE_TRAVEL_MS : 0);
+  }, state.routeTransition.moving ? routeTravelDurationMs(state.routeTransition) : 0);
 }
 
 function renderEnding() {

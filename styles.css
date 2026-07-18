@@ -654,6 +654,13 @@ body {
     --surface-panel-bottom 1.35s ease,
     --surface-card-top 1.35s ease,
     --surface-card-bottom 1.35s ease,
+    --console-panel 1.35s ease,
+    --console-panel-raised 1.35s ease,
+    --console-line 1.35s ease,
+    --console-line-bright 1.35s ease,
+    --console-panel-fill 1.35s ease,
+    --console-panel-sheen 1.35s ease,
+    --console-hairline 1.35s ease,
     background-color 0.8s ease,
     color 0.35s ease;
 }
@@ -1639,7 +1646,6 @@ body.mission-active.situation-failure {
   .player-prompt > p,
   .player-prompt .player-submit-status,
   .player-prompt .player-class-hint,
-  .player-prompt .player-combat-status,
   .player-prompt .player-countdown,
   .player-vitals-modern small,
   .player-inventory-row small {
@@ -4488,8 +4494,8 @@ body.mission-active.single-device-mode .map-control-dock:empty {
 }
 
 .map-panel.boss-encounter {
-  border-color: rgba(188, 81, 72, 0.64);
-  box-shadow: 0 0 0 1px rgba(166, 104, 167, 0.22), 0 0 34px rgba(188, 81, 72, 0.14);
+  border-color: rgba(var(--atmo-primary), 0.64);
+  box-shadow: 0 0 0 1px rgba(var(--atmo-primary), 0.22), 0 0 34px rgba(var(--atmo-primary), 0.14);
 }
 
 .map-panel.boss-encounter .map-wrap {
@@ -7092,7 +7098,8 @@ body.reset-confirm-open { overflow: hidden; }
   100% { filter: brightness(1); }
 }
 
-body.boss-damage-impact .app-shell {
+body.boss-damage-impact:not(.situation-failure) .map-panel.live-console-dashboard {
+  transform-origin: center;
   animation: bossDamageCabinetImpact 0.76s cubic-bezier(0.22, 0.68, 0.28, 1) both;
 }
 
@@ -7102,8 +7109,8 @@ body.boss-damage-impact .app-shell {
 
 @keyframes bossTransmissionStrobe {
   50% {
-    border-color: rgba(166, 104, 167, 0.74);
-    box-shadow: inset 0 0 26px rgba(166, 104, 167, 0.12);
+    border-color: rgba(var(--atmo-primary), 0.74);
+    box-shadow: inset 0 0 26px rgba(var(--atmo-primary), 0.12);
   }
 }
 
@@ -8433,7 +8440,7 @@ body.mission-active .player-dm-controls {
 }
 
 .map-squad-marker.traveling {
-  transition: transform 2.2s cubic-bezier(0.22, 0.72, 0.2, 1);
+  transition: transform var(--route-travel-duration, 2200ms) cubic-bezier(0.22, 0.72, 0.2, 1);
   will-change: transform;
 }
 
@@ -8789,7 +8796,7 @@ body.mission-active .player-dm-controls {
   .map-panel.mission-failed .map-failure-overlay::after,
   .map-panel.mission-failed .map-failure-skull,
   .map-panel.mission-failed .map-failure-short,
-  body.boss-damage-impact .app-shell,
+  body.boss-damage-impact:not(.situation-failure) .map-panel.live-console-dashboard,
   .map-panel.boss-damage-impact .map-wrap,
   .setup-transition-lock span,
   body.dashboard-exiting .app-shell,
@@ -9688,26 +9695,6 @@ html.app-tab-hidden .combat-stage-header {
 .combat-status-card p {
   margin: 0;
   color: #d9e2e7;
-  font-size: 0.78rem;
-}
-
-.player-combat-status {
-  margin: 0.65rem 0 1rem;
-  padding: 0.7rem;
-  border: 1px solid rgba(255, 104, 84, 0.45);
-  background: rgba(58, 9, 13, 0.62);
-}
-
-.player-combat-status > div:first-child {
-  display: flex;
-  justify-content: space-between;
-  gap: 0.7rem;
-  text-transform: uppercase;
-  color: #ffb3a6;
-}
-
-.player-combat-status p {
-  margin: 0;
   font-size: 0.78rem;
 }
 
@@ -11110,4 +11097,352 @@ body.console-visual-test button {
   font-family: Consolas, "Courier New", monospace;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+
+/* Player-device console palette -----------------------------------------
+   The player screen shares the mission console's neutral graphite base.
+   During boss encounters, the host-provided visual profile replaces these
+   tokens so the whole device inherits the same red, green, yellow, or blue
+   presence without adding extra animated layers. */
+.player-body,
+.player-body.player-status-ok {
+  --player-primary-rgb: 62, 199, 223;
+  --player-secondary-rgb: 215, 173, 85;
+  --player-theme-rgb: 86, 96, 103;
+  --player-panel: #020507;
+  --player-panel-raised: #060a0d;
+  --player-panel-deep: #010204;
+  --atmo-r: 86;
+  --atmo-g: 96;
+  --atmo-b: 103;
+  --atmo-secondary-r: 112;
+  --atmo-secondary-g: 100;
+  --atmo-secondary-b: 82;
+  --atmo-deep: #010204;
+  --atmo-mid: #05080b;
+  --atmo-edge: #090a0c;
+  --surface-shell-top: #080c10;
+  --surface-shell-bottom: #020406;
+  --surface-panel-top: #090d10;
+  --surface-panel-bottom: #030609;
+  --surface-card-top: #0c1115;
+  --surface-card-bottom: #04070a;
+  --accent: rgb(var(--player-secondary-rgb));
+  --accent-2: rgb(var(--player-primary-rgb));
+  --line: #252c32;
+  --panel: var(--player-panel);
+  --panel-2: var(--player-panel-raised);
+  color: #e8e5e2;
+  font-family: "Bahnschrift SemiCondensed", "Arial Narrow", "Roboto Condensed", Arial, sans-serif;
+  background:
+    linear-gradient(rgba(var(--atmo-primary), .026) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(var(--atmo-primary), .024) 1px, transparent 1px),
+    radial-gradient(circle at 50% 22%, rgba(var(--atmo-primary), .07), transparent 42%),
+    radial-gradient(circle at 50% 24%, var(--surface-shell-top) 0, var(--atmo-deep) 56%, #000 100%);
+  background-size: 34px 34px, 34px 34px, auto, auto;
+  transition:
+    --atmo-r 1.35s ease,
+    --atmo-g 1.35s ease,
+    --atmo-b 1.35s ease,
+    --atmo-secondary-r 1.35s ease,
+    --atmo-secondary-g 1.35s ease,
+    --atmo-secondary-b 1.35s ease,
+    --atmo-deep 1.35s ease,
+    --atmo-mid 1.35s ease,
+    --atmo-edge 1.35s ease,
+    --surface-shell-top 1.35s ease,
+    --surface-shell-bottom 1.35s ease,
+    --surface-panel-top 1.35s ease,
+    --surface-panel-bottom 1.35s ease,
+    --surface-card-top 1.35s ease,
+    --surface-card-bottom 1.35s ease,
+    color .35s ease;
+}
+
+.player-body:not(.player-boss-active).player-status-low {
+  background:
+    radial-gradient(circle at 50% 8%, rgba(188, 81, 72, .16), transparent 38%),
+    radial-gradient(circle at 50% 24%, #0b090a 0, #030405 58%, #000 100%);
+}
+
+.player-body:not(.player-boss-active).player-status-downed {
+  background:
+    radial-gradient(circle at 50% 4%, rgba(188, 81, 72, .28), transparent 42%),
+    radial-gradient(circle at 50% 24%, #100506 0, #030202 58%, #000 100%);
+}
+
+.player-body:not(.player-boss-active).player-status-burned {
+  background: radial-gradient(circle at 50% 8%, rgba(221, 123, 68, .16), transparent 38%), var(--atmo-deep);
+}
+
+.player-body:not(.player-boss-active).player-status-bleeding {
+  background: radial-gradient(circle at 50% 8%, rgba(198, 56, 70, .16), transparent 38%), var(--atmo-deep);
+}
+
+.player-body:not(.player-boss-active).player-status-shocked {
+  background: radial-gradient(circle at 50% 8%, rgba(91, 184, 214, .16), transparent 38%), var(--atmo-deep);
+}
+
+.player-body:not(.player-boss-active).player-status-concussed {
+  background: radial-gradient(circle at 50% 8%, rgba(183, 122, 219, .16), transparent 38%), var(--atmo-deep);
+}
+
+.player-body.player-boss-active[data-boss-visual="blood-red"] {
+  --player-boss-r: 255;
+  --player-boss-g: 52;
+  --player-boss-b: 56;
+  --player-boss-secondary-r: 154;
+  --player-boss-secondary-g: 31;
+  --player-boss-secondary-b: 40;
+  --player-boss-panel: #050203;
+  --player-boss-panel-raised: #0b0305;
+  --player-boss-panel-deep: #020102;
+}
+
+.player-body.player-boss-active[data-boss-visual="spectral-green"] {
+  --player-boss-r: 70;
+  --player-boss-g: 255;
+  --player-boss-b: 126;
+  --player-boss-secondary-r: 32;
+  --player-boss-secondary-g: 154;
+  --player-boss-secondary-b: 75;
+  --player-boss-panel: #010603;
+  --player-boss-panel-raised: #031008;
+  --player-boss-panel-deep: #000301;
+}
+
+.player-body.player-boss-active[data-boss-visual="signal-yellow"] {
+  --player-boss-r: 255;
+  --player-boss-g: 218;
+  --player-boss-b: 28;
+  --player-boss-secondary-r: 184;
+  --player-boss-secondary-g: 126;
+  --player-boss-secondary-b: 14;
+  --player-boss-panel: #050400;
+  --player-boss-panel-raised: #0e0b01;
+  --player-boss-panel-deep: #020200;
+}
+
+.player-body.player-boss-active[data-boss-visual="arc-blue"] {
+  --player-boss-r: 50;
+  --player-boss-g: 165;
+  --player-boss-b: 255;
+  --player-boss-secondary-r: 30;
+  --player-boss-secondary-g: 72;
+  --player-boss-secondary-b: 180;
+  --player-boss-panel: #010409;
+  --player-boss-panel-raised: #020b16;
+  --player-boss-panel-deep: #000204;
+}
+
+.player-body.player-boss-active {
+  --player-primary-rgb: var(--player-boss-r), var(--player-boss-g), var(--player-boss-b);
+  --player-secondary-rgb: var(--player-boss-secondary-r), var(--player-boss-secondary-g), var(--player-boss-secondary-b);
+  --player-theme-rgb: var(--player-primary-rgb);
+  --player-panel: var(--player-boss-panel);
+  --player-panel-raised: var(--player-boss-panel-raised);
+  --player-panel-deep: var(--player-boss-panel-deep);
+  --atmo-r: var(--player-boss-r);
+  --atmo-g: var(--player-boss-g);
+  --atmo-b: var(--player-boss-b);
+  --atmo-secondary-r: var(--player-boss-secondary-r);
+  --atmo-secondary-g: var(--player-boss-secondary-g);
+  --atmo-secondary-b: var(--player-boss-secondary-b);
+  --atmo-deep: var(--player-boss-panel-deep);
+  --atmo-mid: var(--player-boss-panel);
+  --atmo-edge: var(--player-boss-panel-raised);
+  --surface-shell-top: var(--player-boss-panel-raised);
+  --surface-shell-bottom: var(--player-boss-panel-deep);
+  --surface-panel-top: var(--player-boss-panel-raised);
+  --surface-panel-bottom: var(--player-boss-panel);
+  --surface-card-top: var(--player-boss-panel-raised);
+  --surface-card-bottom: var(--player-boss-panel-deep);
+  --accent: rgb(var(--player-primary-rgb));
+  --accent-2: rgb(var(--player-secondary-rgb));
+  --line: rgba(var(--player-primary-rgb), .3);
+  background:
+    linear-gradient(rgba(var(--atmo-primary), .035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(var(--atmo-primary), .032) 1px, transparent 1px),
+    radial-gradient(circle at 50% 18%, rgba(var(--atmo-primary), .17), transparent 43%),
+    radial-gradient(circle at 50% 24%, var(--surface-shell-top) 0, var(--atmo-deep) 57%, #000 100%);
+  background-size: 34px 34px, 34px 34px, auto, auto;
+}
+
+.player-body .player-signal-field::before {
+  background:
+    linear-gradient(90deg, transparent 49.6%, rgba(var(--player-primary-rgb), .075) 50%, transparent 50.4%),
+    repeating-linear-gradient(0deg, transparent 0 5px, rgba(var(--player-theme-rgb), .03) 5px 6px);
+}
+
+.player-body .player-signal-field i {
+  background: rgba(var(--player-primary-rgb), .76);
+  box-shadow: 0 0 8px rgba(var(--player-primary-rgb), .38);
+}
+
+.player-body .player-card {
+  border-color: rgba(var(--player-theme-rgb), .34);
+  background:
+    linear-gradient(135deg, rgba(var(--player-primary-rgb), .025), transparent 42%),
+    linear-gradient(180deg, var(--surface-card-top), var(--surface-card-bottom));
+  box-shadow: 0 20px 58px rgba(0, 0, 0, .62), inset 0 0 28px rgba(var(--player-theme-rgb), .025);
+}
+
+.player-body .player-card::before {
+  background: linear-gradient(90deg, transparent, rgba(var(--player-primary-rgb), .82), transparent);
+}
+
+.player-body .eyebrow {
+  color: rgb(var(--player-primary-rgb));
+}
+
+.player-body .player-topline > strong,
+.player-body .player-prompt > span {
+  border-color: rgba(var(--player-secondary-rgb), .5);
+  color: rgb(var(--player-secondary-rgb));
+  background: rgba(var(--player-secondary-rgb), .075);
+}
+
+.player-body .player-vitals,
+.player-body .player-waiting,
+.player-body .player-loadout-area,
+.player-body .player-queued-action-panel,
+.player-body .player-class-panel,
+.player-body .player-haptics-toggle {
+  border-color: rgba(var(--player-theme-rgb), .3);
+  background:
+    linear-gradient(135deg, rgba(var(--player-primary-rgb), .025), transparent 46%),
+    var(--surface-panel-bottom);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .018);
+}
+
+.player-body .player-queued-action-panel.player-action-unavailable {
+  border-color: rgba(var(--player-theme-rgb), .2);
+  background:
+    repeating-linear-gradient(135deg, transparent 0 12px, rgba(var(--player-theme-rgb), .018) 12px 13px),
+    var(--surface-panel-bottom);
+}
+
+.player-body .player-queued-action-panel.player-action-unavailable .player-action-heading {
+  color: #7d878c;
+}
+
+.player-body .player-prompt {
+  border-color: rgba(var(--player-secondary-rgb), .34);
+  background:
+    linear-gradient(135deg, rgba(var(--player-secondary-rgb), .035), transparent 48%),
+    var(--surface-panel-bottom);
+}
+
+.player-body .player-class-loadout,
+.player-body .player-inventory-panel,
+.player-body .player-vitals-modern-summary span,
+.player-body .player-target-picker-device {
+  background-color: var(--player-panel-deep);
+}
+
+.player-body input,
+.player-body select,
+.player-body textarea {
+  border-color: rgba(var(--player-theme-rgb), .38);
+  color: #e7ecee;
+  background: var(--player-panel-deep);
+}
+
+.player-body input:focus,
+.player-body select:focus,
+.player-body textarea:focus {
+  border-color: rgba(var(--player-primary-rgb), .72);
+  box-shadow: 0 0 0 2px rgba(var(--player-primary-rgb), .1);
+}
+
+.player-body .playerChoiceBtn,
+.player-body .player-fill-form button,
+.player-body .player-action-row button,
+.player-body .player-auto-action-btn,
+.player-body .playerClassBtn {
+  border-color: rgba(var(--player-primary-rgb), .34);
+  color: #dfe5e7;
+  background:
+    linear-gradient(180deg, rgba(var(--player-primary-rgb), .06), transparent),
+    linear-gradient(180deg, var(--player-panel-raised), var(--player-panel));
+  box-shadow: inset 0 1px rgba(255, 255, 255, .025), 0 8px 18px rgba(0, 0, 0, .24);
+}
+
+.player-body .playerChoiceBtn:hover:not(:disabled),
+.player-body .player-fill-form button:hover:not(:disabled),
+.player-body .player-action-row button:hover:not(:disabled),
+.player-body .player-auto-action-btn:hover:not(:disabled),
+.player-body .playerClassBtn:hover:not(:disabled),
+.player-body .playerClassBtn.selected {
+  border-color: rgba(var(--player-primary-rgb), .72);
+  color: #fff;
+  box-shadow: 0 0 0 1px rgba(var(--player-primary-rgb), .22), 0 0 18px rgba(var(--player-primary-rgb), .12);
+}
+
+.player-body .player-countdown {
+  border-color: rgba(var(--player-secondary-rgb), .38);
+  background: rgba(var(--player-secondary-rgb), .055);
+}
+
+.player-body.player-boss-active .player-card {
+  border-color: rgba(var(--player-primary-rgb), .58);
+  box-shadow: 0 0 0 1px rgba(var(--player-primary-rgb), .1), 0 20px 58px rgba(0, 0, 0, .66), inset 0 0 42px rgba(var(--player-primary-rgb), .055);
+}
+
+.player-body.player-boss-active .player-signal-field i {
+  height: 18px;
+  background: rgba(var(--player-primary-rgb), .9);
+  box-shadow: 0 0 11px rgba(var(--player-primary-rgb), .6);
+}
+
+.player-body.player-boss-active .player-prompt.boss-prompt {
+  border-color: rgba(var(--player-primary-rgb), .82);
+  box-shadow: 0 0 0 1px rgba(var(--player-secondary-rgb), .3), 0 0 28px rgba(var(--player-primary-rgb), .18);
+}
+
+.player-body.player-boss-active .player-prompt > span,
+.player-body.player-boss-active .player-topline > strong {
+  border-color: rgba(var(--player-primary-rgb), .62);
+  color: rgb(var(--player-primary-rgb));
+  background: rgba(var(--player-primary-rgb), .1);
+}
+
+.player-body.player-boss-active .player-boss-alert {
+  border-color: rgba(var(--player-primary-rgb), .6);
+  color: color-mix(in srgb, rgb(var(--player-primary-rgb)) 48%, white);
+  background: rgba(var(--player-primary-rgb), .1);
+}
+
+.player-body.player-boss-active .player-prompt.boss-prompt .player-countdown {
+  border-color: rgba(var(--player-primary-rgb), .6);
+  background: rgba(var(--player-primary-rgb), .075);
+}
+
+.player-body.player-boss-active .player-prompt.boss-prompt .player-countdown-fill {
+  background: linear-gradient(90deg, rgb(var(--player-secondary-rgb)), rgb(var(--player-primary-rgb)));
+  box-shadow: 0 0 10px rgba(var(--player-primary-rgb), .35);
+}
+
+.player-body .player-card,
+.player-body .player-vitals,
+.player-body .player-waiting,
+.player-body .player-loadout-area,
+.player-body .player-queued-action-panel,
+.player-body .player-class-panel,
+.player-body .player-prompt,
+.player-body .player-haptics-toggle,
+.player-body .playerChoiceBtn,
+.player-body input,
+.player-body select,
+.player-body textarea {
+  transition: background-color 1.35s ease, border-color 1.35s ease, box-shadow 1.35s ease, color .45s ease;
+}
+
+@keyframes bossPromptPulse {
+  0%, 100% {
+    box-shadow: 0 0 0 1px rgba(var(--player-secondary-rgb), .26), 0 0 18px rgba(var(--player-primary-rgb), .1);
+  }
+  50% {
+    box-shadow: 0 0 0 1px rgba(var(--player-primary-rgb), .54), 0 0 34px rgba(var(--player-primary-rgb), .24);
+  }
 }

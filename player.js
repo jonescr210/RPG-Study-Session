@@ -409,9 +409,16 @@ function bindPromptControls(prompt) {
   }
 }
 
+const PLAYER_BOSS_VISUAL_IDS = new Set(["blood-red", "spectral-green", "signal-yellow", "arc-blue"]);
+
 function syncPlayerAtmosphere(session = {}, prompt = null) {
   const resolving = session.status === "resolving" || Boolean(prompt && !prompt.accepting);
-  document.body.classList.toggle("player-boss-active", Boolean(prompt?.boss));
+  const requestedBossVisualId = String(prompt?.bossVisualId || session.bossVisualId || "").trim().toLowerCase();
+  const bossVisualId = PLAYER_BOSS_VISUAL_IDS.has(requestedBossVisualId) ? requestedBossVisualId : "";
+  const bossThemeActive = Boolean(bossVisualId && !["setup", "lobby", "ended"].includes(session.status));
+  document.body.classList.toggle("player-boss-active", bossThemeActive);
+  if (bossThemeActive) document.body.dataset.bossVisual = bossVisualId;
+  else delete document.body.dataset.bossVisual;
   document.body.classList.toggle("player-emergency-active", prompt?.timer?.kind === "emergency");
   document.body.classList.toggle("player-action-active", Boolean(prompt?.actionOnly));
   document.body.classList.toggle("player-briefing-active", session.status === "briefing" || session.status === "lobby");
@@ -445,40 +452,44 @@ function renderQueuedActionPanel(session = {}) {
   if (!panel) return;
   const prompt = session.prompt;
   const available = Boolean(session.allowQueuedPlayerActions && !prompt?.actionOnly);
-  if (!available) {
-    panel.hidden = true;
-    panel.innerHTML = "";
-    playerState.queuedActionSignature = "hidden";
-    return;
-  }
-
   const queued = Array.isArray(session.queuedActions)
     ? session.queuedActions.find((entry) => entry.playerId === playerState.playerId || sameName(entry.playerName, playerState.playerName))
     : null;
   const cooldown = actionCooldownInfo(session);
   const incapacitated = Boolean(playerState.lastVitals?.incapacitated);
-  const enabled = !queued && !incapacitated && cooldown.remainingMs <= 0;
+  const enabled = available && !queued && !incapacitated && cooldown.remainingMs <= 0;
   const statusText = queued
     ? "Action queued. It will deploy at the next safe opening."
     : incapacitated
       ? "Incapacitated players cannot queue actions."
-      : cooldown.remainingMs > 0
+      : prompt?.actionOnly
+        ? "Use the active challenge controls while this action window is open."
+        : session.status === "lobby"
+          ? "Actions unlock when Mission Control deploys the squad."
+          : session.status === "briefing"
+            ? "Player actions are on standby during the mission briefing."
+            : session.status === "ended"
+              ? "Mission ended. Player actions are offline."
+              : !session.allowQueuedPlayerActions
+                ? "Player actions are currently on standby."
+                : cooldown.remainingMs > 0
         ? `Action recharging: ${formatCooldown(cooldown.remainingMs)} remaining.`
         : "Queue an action before or after answering. It will not count as an answer.";
-  const signature = JSON.stringify({ available, queued: queued?.id || "", enabled, incapacitated, cooling: cooldown.remainingMs > 0 });
+  const signature = JSON.stringify({ available, queued: queued?.id || "", enabled, incapacitated, statusText });
+  panel.hidden = false;
+  panel.classList.toggle("player-action-unavailable", !available);
   if (playerState.queuedActionSignature === signature) return;
   playerState.queuedActionSignature = signature;
   playerState.queuedActionId = queued?.id || "";
-  panel.hidden = false;
   panel.innerHTML = `
     <form id="playerQueuedActionForm" class="player-action-form player-queued-action-form">
       <strong class="player-action-heading">Player Action</strong>
       <div class="player-action-row">
-        <input id="playerQueuedActionInput" type="text" maxlength="180" autocomplete="off" placeholder="Search, inspect, brace, help..." ${enabled ? "" : "disabled"}>
+        <input id="playerQueuedActionInput" type="text" maxlength="180" autocomplete="off" placeholder="${available ? "Search, inspect, brace, help..." : "Player actions on standby"}" ${enabled ? "" : "disabled"}>
         <button type="submit" ${enabled ? "" : "disabled"}>Queue</button>
       </div>
       <button id="playerQueuedAutoActionBtn" class="player-auto-action-btn" type="button" ${enabled ? "" : "disabled"}>Act for me!</button>
-      <div id="playerQueuedActionStatus" class="player-submit-status">${escapeHtml(statusText)}</div>
+      <div id="playerQueuedActionStatus" class="player-submit-status" role="status">${escapeHtml(statusText)}</div>
     </form>
   `;
   document.getElementById("playerQueuedActionForm")?.addEventListener("submit", (event) => {
@@ -574,14 +585,6 @@ function renderPrompt(prompt, enabled, note, session = {}) {
       </div>
     </section>
   ` : "";
-  const combatHtml = prompt.combat?.boss ? `
-    <section class="player-combat-status ${prompt.combat.boss ? "boss" : ""}">
-      <div><span>${prompt.combat.boss ? "Boss" : "Hostiles"}</span><strong>${Number(prompt.combat.enemyCount) || 0} active · Round ${Number(prompt.combat.round) || 1}</strong></div>
-      <div class="combat-health-track"><i style="width:${Math.max(0, Math.min(100, (Number(prompt.combat.hp) || 0) / Math.max(1, Number(prompt.combat.maxHp) || 1) * 100))}%"></i></div>
-      <p>${Number(prompt.combat.hp) || 0} / ${Number(prompt.combat.maxHp) || 0} shared integrity</p>
-      <p class="combat-intent">${escapeHtml(prompt.combat.intent || "Enemy intent pending.")}</p>
-    </section>` : "";
-
   const existingPrompt = playerEls.playerPromptArea.querySelector(".player-prompt");
   if (existingPrompt) {
     existingPrompt.className = `player-prompt ${prompt.boss ? "boss-prompt" : ""}`.trim();
@@ -591,8 +594,7 @@ function renderPrompt(prompt, enabled, note, session = {}) {
     existingPrompt.querySelector("[data-area-name]")?.replaceChildren(document.createTextNode(prompt.areaName || "Active Area"));
     const bossAlert = existingPrompt.querySelector("[data-prompt-boss-alert]");
     if (bossAlert) bossAlert.innerHTML = prompt.boss && !prompt.combat ? `<div class="player-boss-alert">Critical sequence ${Number(prompt.bossStep) || 1} / ${Number(prompt.bossTotal) || 1}</div>` : "";
-    const combatSlot = existingPrompt.querySelector("[data-prompt-combat]");
-    if (combatSlot) combatSlot.innerHTML = combatHtml;
+    existingPrompt.querySelector("[data-prompt-combat]")?.remove();
     const hintSlot = existingPrompt.querySelector("[data-prompt-class-hint]");
     if (hintSlot) hintSlot.innerHTML = prompt.classHint ? `<div class="player-class-hint">${escapeHtml(prompt.classHint)}</div>` : "";
     const timerSlot = existingPrompt.querySelector("[data-prompt-timer]");
@@ -652,7 +654,6 @@ function renderPrompt(prompt, enabled, note, session = {}) {
       <span data-prompt-label>${escapeHtml(prompt.challengeLabel || "Challenge")}</span>
       <h2 data-area-name>${escapeHtml(prompt.areaName || "Active Area")}</h2>
       <div data-prompt-boss-alert>${prompt.boss && !prompt.combat ? `<div class="player-boss-alert">Critical sequence ${Number(prompt.bossStep) || 1} / ${Number(prompt.bossTotal) || 1}</div>` : ""}</div>
-      <div data-prompt-combat>${combatHtml}</div>
       <div data-prompt-class-hint>${prompt.classHint ? `<div class="player-class-hint">${escapeHtml(prompt.classHint)}</div>` : ""}</div>
       <div data-prompt-timer>${timerHtml}</div>
       <p data-prompt-question>${escapeHtml(prompt.question || "")}</p>

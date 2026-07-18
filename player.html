@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Study Adventure Player</title>
-    <link rel="stylesheet" href="styles.css?v=mobile-width-3">
+    <link rel="stylesheet" href="styles.css?v=player-actions-1">
   </head>
   <body class="player-body">
     <div class="player-signal-field" aria-hidden="true">
@@ -42,7 +42,17 @@
         </div>
         <section id="playerLoadoutArea" class="player-loadout-area" hidden></section>
         <section id="playerClassPanel" class="player-class-panel" hidden></section>
-        <section id="playerQueuedActionPanel" class="player-queued-action-panel" hidden></section>
+        <section id="playerQueuedActionPanel" class="player-queued-action-panel player-action-unavailable">
+          <form class="player-action-form player-queued-action-form">
+            <strong class="player-action-heading">Player Action</strong>
+            <div class="player-action-row">
+              <input type="text" placeholder="Player actions on standby" disabled>
+              <button type="button" disabled>Queue</button>
+            </div>
+            <button class="player-auto-action-btn" type="button" disabled>Act for me!</button>
+            <div class="player-submit-status" role="status">Waiting for Mission Control.</div>
+          </form>
+        </section>
         <div id="playerPromptArea" class="player-prompt-area">
           <div class="player-waiting">
             <span class="signal-bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
@@ -59,6 +69,6 @@
     </main>
     <script src="shared-data.js?v=cleanup-1"></script>
     <script src="combat-system.js?v=enforcer-reserve-1"></script>
-    <script src="player.js?v=hostiles-panel-1"></script>
+    <script src="player.js?v=player-actions-1"></script>
   </body>
 </html>
