@@ -397,8 +397,7 @@ button:hover { border-color: var(--cyan); color: var(--cyan); }
 .timer-track i { display: block; width: 71%; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #9b7337, var(--gold)); box-shadow: 0 0 9px rgba(226, 184, 95, .32); }
 
 .mission-log-panel,
-.updates-panel,
-.effects-panel { padding: 10px 12px; }
+.updates-panel { padding: 10px 12px; }
 .transmission-box { margin-top: 10px; padding: 10px; border: 1px solid #213640; border-radius: 4px; background: #071116; }
 .transmission-tag { display: inline-block; padding: 4px 9px; color: var(--gold); border: 1px solid #6c5730; border-radius: 3px; font-family: var(--font-data); font-size: 9px; }
 .receiving { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; color: var(--red); font-family: var(--font-data); font-size: 10px; }
@@ -415,13 +414,3 @@ button:hover { border-color: var(--cyan); color: var(--cyan); }
 
 .utility-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; padding: 8px; }
 .utility-grid button { min-height: 38px; font-size: 10px; }
-
-.effects-list { display: grid; gap: 6px; margin-top: 9px; }
-.effect-row { --effect: var(--red); display: grid; grid-template-columns: 32px 1fr auto; align-items: center; gap: 8px; min-height: 46px; padding: 6px 9px; border: 1px solid color-mix(in srgb, var(--effect) 24%, #172832); border-radius: 4px; background: color-mix(in srgb, var(--effect) 6%, #071116); }
-.effect-row.gold { --effect: var(--gold); }
-.effect-row.purple { --effect: var(--purple); }
-.effect-icon { color: var(--effect); font-size: 23px; text-align: center; }
-.effect-copy strong { display: block; color: var(--effect); font-family: var(--font-data); font-size: 11px; text-transform: uppercase; }
-.effect-copy small { color: var(--muted); font-size: 9px; }
-.effect-time { color: var(--effect); font-family: var(--font-data); font-size: 8px; text-transform: uppercase; }
-.view-effects { display: block; width: 100%; margin-top: 8px; color: var(--cyan); border: 0; background: transparent; font-family: var(--font-data); font-size: 10px; text-transform: uppercase; }

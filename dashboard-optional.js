@@ -94,12 +94,23 @@ function simulatorAwareAbilityPlan(participant, info = currentQuestionInfo()) {
   const addCandidate = (action, label, reason, priority) => candidates.push({ action, label, reason, priority });
   const classId = String(player.classId || "").toLowerCase();
   const classCooldown = classAbilityCooldownState(player);
-  const statuses = Array.isArray(target.status) ? target.status : [];
-  const needsHealing = targetRatio <= 0.62 || statuses.some((status) => ["Bleeding", "Shocked", "Concussed"].includes(status));
+  const needsHealing = targetRatio <= 0.62;
+  const incapacitatedTarget = state.players.find((entry) => entry.incapacitated) || null;
+
+  if (classId === "medic" && combatRoom && incapacitatedTarget && medicReviveCooldownState(player).ready) {
+    addCandidate(`CLASS:medic-revive:${incapacitatedTarget.name}`, "Medic revive", `${incapacitatedTarget.name} is incapacitated`, 150);
+  }
+  const levelSix = levelSixAbilityDefinition(classId);
+  if (levelSix && !levelSix.passive && classId !== "medic" && levelSixAbilityCooldownState(player).ready) {
+    const shouldUse = classId === "scout"
+      ? hintNeeded
+      : combatRoom && (classId === "soldier" ? state.simulatorAutoAnswerAccuracy < 80 : classId === "enforcer" ? threat >= 6 : classId === "tactician" ? (needsHealing || threat >= 5) : false);
+    if (shouldUse) addCandidate(`ULTIMATE:${classId}`, levelSix.label, "level 6 combat window", 125);
+  }
 
   if (classCooldown.ready) {
     if (classId === "medic" && needsHealing && target) {
-      addCandidate(`CLASS:medic:${target.name}`, "Medic heal", `${target.name} is at ${Math.round(targetRatio * 100)}% HP or has a harmful status`, 100 + (1 - targetRatio) * 20);
+      addCandidate(`CLASS:medic:${target.name}`, "Medic heal", `${target.name} is at ${Math.round(targetRatio * 100)}% HP`, 100 + (1 - targetRatio) * 20);
     } else if (classId === "scout" && hintNeeded) {
       addCandidate("CLASS:scout", "Scout hint", "answer confidence is low for this prompt", 60);
     } else if (classId === "enforcer" && combatRoom && (threat >= 4 || targetRatio <= 0.7 || (player.enforcerReserve > 0 && player.hp < player.maxHp))) {

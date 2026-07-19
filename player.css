@@ -6,6 +6,21 @@
   initial-value: 90;
 }
 
+body.mission-log-streaming .encounter::before {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 5;
+  height: 2px;
+  content: "";
+  pointer-events: none;
+  opacity: 0.82;
+  background: linear-gradient(90deg, transparent, rgba(var(--atmo-primary), 0.96), rgba(var(--atmo-secondary), 0.8), transparent);
+  box-shadow: 0 0 14px rgba(var(--atmo-primary), 0.5);
+  animation: missionLogAcquisition 2.8s ease-in-out infinite;
+}
+
 .player-signal-field,
 .player-impact-overlay {
   position: fixed;
@@ -398,22 +413,6 @@ body {
   background: radial-gradient(circle at 50% 0%, rgba(188, 81, 72, 0.34), transparent 42%), linear-gradient(145deg, #180807 0%, #0a0808 62%, #1d0b0a 100%);
 }
 
-.player-body.player-status-burned {
-  background: radial-gradient(circle at 50% 8%, rgba(221, 123, 68, 0.22), transparent 38%), linear-gradient(145deg, #120b07 0%, #0d1215 58%, #17100b 100%);
-}
-
-.player-body.player-status-bleeding {
-  background: radial-gradient(circle at 50% 8%, rgba(198, 56, 70, 0.2), transparent 38%), linear-gradient(145deg, #12070a 0%, #0d1215 58%, #190b0e 100%);
-}
-
-.player-body.player-status-shocked {
-  background: radial-gradient(circle at 50% 8%, rgba(91, 184, 214, 0.2), transparent 38%), linear-gradient(145deg, #071116 0%, #0d1215 58%, #09171c 100%);
-}
-
-.player-body.player-status-concussed {
-  background: radial-gradient(circle at 50% 8%, rgba(183, 122, 219, 0.2), transparent 38%), linear-gradient(145deg, #100818 0%, #0d1215 58%, #160e1d 100%);
-}
-
 .player-body.player-damage-shake .player-shell {
   animation: playerScreenShake 0.68s cubic-bezier(0.36, 0.07, 0.19, 0.97);
 }
@@ -569,26 +568,6 @@ body {
   border-color: rgba(200, 90, 74, 0.86);
   background: rgba(76, 28, 25, 0.96);
   box-shadow: inset 0 0 0 1px rgba(255, 211, 205, 0.14), 0 0 18px rgba(200, 90, 74, 0.28);
-}
-
-.player-vitals.has-burned:not(.downed):not(.low) {
-  border-color: rgba(221, 123, 68, 0.72);
-  animation: burnedPulse 1.5s ease-in-out infinite;
-}
-
-.player-vitals.has-bleeding:not(.downed):not(.low) {
-  border-color: rgba(198, 56, 70, 0.72);
-  animation: bleedingPulse 1.5s ease-in-out infinite;
-}
-
-.player-vitals.has-shocked:not(.downed):not(.low) {
-  border-color: rgba(91, 184, 214, 0.72);
-  animation: shockedPulse 1.35s ease-in-out infinite;
-}
-
-.player-vitals.has-concussed:not(.downed):not(.low) {
-  border-color: rgba(183, 122, 219, 0.72);
-  animation: concussedPulse 1.65s ease-in-out infinite;
 }
 
 .player-vitals.damage-flash {
@@ -1275,7 +1254,21 @@ body.mission-active .status-card {
   transition: border-color 0.7s ease, box-shadow 0.7s ease, background-color 0.7s ease;
 }
 
-body.mission-active .status-card:not(.incapacitated):not(.low-health):not(.has-burned):not(.has-bleeding):not(.has-shocked):not(.has-concussed) {
+body.mission-active .mission-log-heading,
+body.mission-active .status-update-panel,
+body.mission-active .encounter,
+body.mission-active .mission-progress,
+body.mission-active .last-answer-panel,
+body.mission-active .inventory-actions,
+body.mission-active .mission-utility-shell {
+  border-color: rgba(var(--atmo-primary), 0.3);
+  background:
+  linear-gradient(100deg, rgba(var(--atmo-primary), 0.075), transparent 42%),
+  linear-gradient(180deg, var(--surface-panel-top), var(--surface-panel-bottom));
+  box-shadow: inset 0 1px rgba(var(--atmo-secondary), 0.07), 0 8px 22px rgba(0, 0, 0, 0.22);
+}
+
+body.mission-active .status-card:not(.incapacitated):not(.low-health) {
   border-color: rgba(var(--atmo-primary), 0.38);
   border-left: 3px solid var(--player-color, var(--accent-2));
   background:
@@ -1308,6 +1301,15 @@ body.dashboard-booting.dashboard-stage-right-tools .play-panel > .mission-utilit
   transform: translateY(0) scale(1);
   transition-delay: 0s;
   animation: dashboardElementOnline 0.82s cubic-bezier(0.16, 0.76, 0.24, 1) both;
+}
+
+body.dashboard-booting .encounter .placeholder-transmission {
+  visibility: hidden;
+  opacity: 0;
+}
+
+body.dashboard-online .encounter .placeholder-transmission {
+  animation: dashboardTransmissionOnline 0.72s 0.2s ease-out both;
 }
 
 body.mission-active .eyebrow {
@@ -1448,6 +1450,46 @@ body.mission-active .briefing:not(.briefing-collapsed) {
   max-height: none;
 }
 
+body.mission-active .encounter {
+  position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  align-content: start;
+  overflow-y: hidden;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  font-size: 0.88rem;
+  animation: missionLogFadeIn 0.52s ease-out both;
+}
+
+body.mission-active .encounter::-webkit-scrollbar {
+  display: none;
+}
+
+body.mission-active .encounter::after {
+  display: none;
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 18px;
+  background: linear-gradient(180deg, rgba(17, 22, 26, 0), rgba(17, 22, 26, 0.96));
+  content: "";
+  opacity: 0.72;
+  pointer-events: none;
+}
+
+body.mission-active .encounter h3 {
+  margin-bottom: 5px;
+  font-size: 0.96rem;
+  line-height: 1.1;
+}
+
+body.mission-active .encounter p {
+  margin: 5px 0;
+  line-height: 1.34;
+}
+
 .node-dot.current {
   background: var(--accent);
 }
@@ -1573,26 +1615,6 @@ body.mission-active .status-card.ems-protected:not(.incapacitated) {
   animation: lowHealthPulse 1.25s ease-in-out infinite;
 }
 
-.status-card.has-burned:not(.incapacitated):not(.low-health) {
-  border-color: rgba(221, 123, 68, 0.72);
-  animation: burnedPulse 1.5s ease-in-out infinite;
-}
-
-.status-card.has-bleeding:not(.incapacitated):not(.low-health) {
-  border-color: rgba(198, 56, 70, 0.72);
-  animation: bleedingPulse 1.5s ease-in-out infinite;
-}
-
-.status-card.has-shocked:not(.incapacitated):not(.low-health) {
-  border-color: rgba(91, 184, 214, 0.72);
-  animation: shockedPulse 1.35s ease-in-out infinite;
-}
-
-.status-card.has-concussed:not(.incapacitated):not(.low-health) {
-  border-color: rgba(183, 122, 219, 0.72);
-  animation: concussedPulse 1.65s ease-in-out infinite;
-}
-
 .status-card.action-turn-order:not(.incapacitated) {
   border-color: color-mix(in srgb, var(--player-color) 58%, rgba(255, 204, 87, 0.34));
   box-shadow:
@@ -1604,6 +1626,16 @@ body.mission-active .status-card.ems-protected:not(.incapacitated) {
   box-shadow:
   0 0 0 1px rgba(255, 204, 87, 0.72),
   0 0 22px color-mix(in srgb, var(--player-color) 46%, rgba(255, 204, 87, 0.32));
+}
+
+.encounter h3 {
+  margin: 0 0 10px;
+  font-size: 1.02rem;
+}
+
+.encounter p {
+  margin: 8px 0;
+  line-height: 1.48;
 }
 
 .choices {
@@ -1754,6 +1786,10 @@ body.mission-active .signal-bars {
     grid-template-columns: minmax(250px, 0.52fr) minmax(560px, 1.42fr) minmax(360px, 0.78fr);
     grid-template-areas: "mission-map mission-map mission-log";
     gap: 8px;
+  }
+
+  body.mission-active .encounter {
+    min-height: 0;
   }
 }
 
@@ -2245,6 +2281,18 @@ body.mission-active .signal-bars {
   gap: 6px;
   min-width: 0;
 }
+
+.player-revive-action {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid rgba(99, 227, 139, 0.34);
+  border-radius: 6px;
+  background: rgba(9, 38, 25, 0.58);
+}
+
+.player-revive-action > strong { color: #8ff0ad; }
+.player-revive-action > small { color: rgba(220, 245, 229, 0.72); }
 
 .tactician-protocol-button {
   display: grid;
@@ -3238,15 +3286,7 @@ body.mission-active .signal-bars {
   }
 
   .player-vitals.low:not(.damage-flash),
-  .player-vitals.has-burned:not(.damage-flash),
-  .player-vitals.has-bleeding:not(.damage-flash),
-  .player-vitals.has-shocked:not(.damage-flash),
-  .player-vitals.has-concussed:not(.damage-flash),
-  .status-card.low-health:not(.hit-pulse):not(.heal-pulse),
-  .status-card.has-burned:not(.hit-pulse):not(.heal-pulse),
-  .status-card.has-bleeding:not(.hit-pulse):not(.heal-pulse),
-  .status-card.has-shocked:not(.hit-pulse):not(.heal-pulse),
-  .status-card.has-concussed:not(.hit-pulse):not(.heal-pulse) {
+  .status-card.low-health:not(.hit-pulse):not(.heal-pulse) {
     animation: none;
   }
 }
@@ -3285,6 +3325,14 @@ body:not(.mission-active) .map-failure-short {
     gap: 8px;
   }
 
+  body.mission-active .play-panel > .encounter {
+    grid-column: 3;
+    grid-row: 2;
+    min-height: 0;
+    overflow: auto;
+    margin: 0;
+  }
+
   body.mission-active .play-panel > .briefing {
     display: none;
   }
@@ -3318,6 +3366,36 @@ body.console-visual-test .eyebrow {
   font-family: Consolas, "Courier New", monospace;
   letter-spacing: 0.16em;
   text-transform: uppercase;
+}
+
+body.mission-active .map-main > .panel-header,
+body.mission-active .map-wrap,
+body.mission-active .initiative-timeline,
+body.mission-active .mission-progress,
+body.mission-active .status-card,
+body.mission-active .inventory-actions,
+body.mission-active .player-session-panel,
+body.mission-active .play-panel > .mission-log-heading,
+body.mission-active .play-panel > .encounter,
+body.mission-active .play-panel > .status-update-panel,
+body.mission-active .play-panel > .mission-utility-shell,
+body.console-visual-test .map-main > .panel-header,
+body.console-visual-test .map-wrap,
+body.console-visual-test .initiative-timeline,
+body.console-visual-test .mission-progress,
+body.console-visual-test .status-card,
+body.console-visual-test .inventory-actions,
+body.console-visual-test .player-session-panel,
+body.console-visual-test .play-panel > .mission-log-heading,
+body.console-visual-test .play-panel > .encounter,
+body.console-visual-test .play-panel > .status-update-panel,
+body.console-visual-test .play-panel > .mission-utility-shell {
+  border-radius: 4px;
+  border-color: rgba(53, 199, 216, 0.27);
+  background:
+  linear-gradient(135deg, rgba(16, 83, 99, 0.09), transparent 38%),
+  linear-gradient(180deg, rgba(8, 18, 24, 0.98), rgba(3, 8, 12, 0.98));
+  box-shadow: inset 0 1px rgba(188, 238, 242, 0.055), inset 0 0 28px rgba(20, 126, 148, 0.035), 0 10px 24px rgba(0, 0, 0, 0.3);
 }
 
 .player-body,
@@ -3385,22 +3463,6 @@ body.console-visual-test .eyebrow {
   background:
   radial-gradient(circle at 50% 4%, rgba(188, 81, 72, .28), transparent 42%),
   radial-gradient(circle at 50% 24%, #100506 0, #030202 58%, #000 100%);
-}
-
-.player-body:not(.player-boss-active).player-status-burned {
-  background: radial-gradient(circle at 50% 8%, rgba(221, 123, 68, .16), transparent 38%), var(--atmo-deep);
-}
-
-.player-body:not(.player-boss-active).player-status-bleeding {
-  background: radial-gradient(circle at 50% 8%, rgba(198, 56, 70, .16), transparent 38%), var(--atmo-deep);
-}
-
-.player-body:not(.player-boss-active).player-status-shocked {
-  background: radial-gradient(circle at 50% 8%, rgba(91, 184, 214, .16), transparent 38%), var(--atmo-deep);
-}
-
-.player-body:not(.player-boss-active).player-status-concussed {
-  background: radial-gradient(circle at 50% 8%, rgba(183, 122, 219, .16), transparent 38%), var(--atmo-deep);
 }
 
 .player-body.player-boss-active[data-boss-visual="blood-red"] {
@@ -3654,6 +3716,12 @@ body.console-visual-test .eyebrow {
   transition: background-color 1.35s ease, border-color 1.35s ease, box-shadow 1.35s ease, color .45s ease;
 }
 
+@keyframes missionLogAcquisition {
+  0%, 100% { transform: translateX(-78%); opacity: 0; }
+  42%, 58% { opacity: 0.85; }
+  100% { transform: translateX(78%); }
+}
+
 @keyframes playerSignalScan {
   0% { transform: translateY(-8%); }
   50% { transform: translateY(8%); }
@@ -3717,62 +3785,10 @@ body.console-visual-test .eyebrow {
   background: rgba(24, 32, 38, 0.96);
   box-shadow: var(--shadow);
   }
-  
+
   50% {
   background: rgba(76, 28, 25, 0.9);
   box-shadow: 0 0 22px rgba(200, 90, 74, 0.48);
-  }
-}
-
-@keyframes burnedPulse {
-  0%,
-  100% {
-  background: rgba(24, 32, 38, 0.96);
-  box-shadow: var(--shadow);
-  }
-  
-  50% {
-  background: rgba(76, 44, 24, 0.9);
-  box-shadow: 0 0 20px rgba(221, 123, 68, 0.42);
-  }
-}
-
-@keyframes bleedingPulse {
-  0%,
-  100% {
-  background: rgba(24, 32, 38, 0.96);
-  box-shadow: var(--shadow);
-  }
-  
-  50% {
-  background: rgba(74, 25, 32, 0.9);
-  box-shadow: 0 0 20px rgba(198, 56, 70, 0.42);
-  }
-}
-
-@keyframes shockedPulse {
-  0%,
-  100% {
-  background: rgba(24, 32, 38, 0.96);
-  box-shadow: var(--shadow);
-  }
-  
-  50% {
-  background: rgba(24, 54, 66, 0.9);
-  box-shadow: 0 0 20px rgba(91, 184, 214, 0.42);
-  }
-}
-
-@keyframes concussedPulse {
-  0%,
-  100% {
-  background: rgba(24, 32, 38, 0.96);
-  box-shadow: var(--shadow);
-  }
-  
-  50% {
-  background: rgba(55, 35, 70, 0.9);
-  box-shadow: 0 0 20px rgba(183, 122, 219, 0.42);
   }
 }
 
@@ -3783,11 +3799,11 @@ body.console-visual-test .eyebrow {
   box-shadow: 0 0 0 0 rgba(200, 90, 74, 0.9), 0 0 22px rgba(200, 90, 74, 0.7);
   transform: translateX(0) scale(1);
   }
-  
+
   12% {
   transform: translateX(-7px) scale(1.02);
   }
-  
+
   24% {
   transform: translateX(7px) scale(1.02);
   }
@@ -3890,6 +3906,37 @@ body.console-visual-test .eyebrow {
   clip-path: inset(0);
   filter: blur(0) brightness(1);
   transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes dashboardTransmissionOnline {
+  0% {
+  opacity: 0;
+  filter: blur(4px) brightness(1.8);
+  transform: translateY(8px);
+  }
+
+  55% {
+  opacity: 1;
+  filter: blur(0) brightness(1.24);
+  }
+
+  100% {
+  opacity: 1;
+  filter: brightness(1);
+  transform: translateY(0);
+  }
+}
+
+@keyframes missionLogFadeIn {
+  from {
+  opacity: 0;
+  transform: translateY(8px);
+  }
+
+  to {
+  opacity: 1;
+  transform: translateY(0);
   }
 }
 

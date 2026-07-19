@@ -8,7 +8,6 @@
   }
 })(typeof globalThis !== "undefined" ? globalThis : this, function buildStudyAdventureShared() {
   const simulatorNamePool = [
-    "A",
     "Bo",
     "Lux",
     "Iris",

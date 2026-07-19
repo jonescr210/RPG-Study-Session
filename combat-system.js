@@ -17,27 +17,27 @@
   const classes = {
     soldier: {
       id: "soldier", label: "Soldier", gear: "Heavy Rifle", color: "#ff4d4d",
-      summary: "+2 combat damage, plus up to +5 from a correct-answer streak."
+      summary: "+2 combat damage, plus up to +3 from a correct-answer streak. At level 6, Determined Aim guarantees an attack regardless of answer outcome."
     },
     medic: {
       id: "medic", label: "Medic", gear: "Surgical Kit", color: "#63e38b",
-      summary: "Heal 4–8 HP from streak strength; recharges after 2 questions."
+      summary: "Heal 3–6 HP from streak strength; recharges after 2 questions. At level 6, Rebirth revives an operator at 75% HP with a full brace for the enemy phase in exchange for the Medic's attack."
     },
     scout: {
       id: "scout", label: "Scout", gear: "Spectrum Analyzer", color: "#f5d76e",
-      summary: "Reveal a question hint every 5 questions; gains a speed bonus when unused."
+      summary: "Reveal a question hint every 5 questions; gains a speed bonus when unused. At level 6, Intel Sniper reveals the correct answer to all operators."
     },
     enforcer: {
       id: "enforcer", label: "Enforcer", gear: "Ballistic Shield", color: "#62b8ff",
-      summary: "R&R reduces incoming damage and stores prevented damage; arm the shield to block one enemy phase and convert the reserve into healing. At level 3, RRR adds fatal redirection."
+      summary: "R&R reduces incoming damage and stores prevented damage; arm the shield to block one enemy phase and convert the reserve into healing. At level 6, Stand Tough draws single-target attacks, holds at 1 HP, and recovers 80% of damage taken."
     },
     engineer: {
       id: "engineer", label: "Engineer", gear: "Arc Toolkit", color: "#66e8e1",
-      summary: "Improves obstacle work and can disrupt an enemy activation every 3 questions."
+      summary: "Improves obstacle work and can disrupt an enemy activation every 3 questions. At level 6, Kick Start Your Heart passively revives an incapacitated operator at 25% HP with a bubble."
     },
     tactician: {
       id: "tactician", label: "Tactician", gear: "Adaptive Module", color: "#c794ff",
-      summary: "Choose Assault for coordinated damage, Guard for a team barrier, or Support to stabilize an injured operator."
+      summary: "Choose Assault for coordinated damage, Guard for a team barrier, or Support to stabilize an injured operator. At level 6, Inspire the Masses grants damage, healing, and Guard together."
     }
   };
 
@@ -77,7 +77,7 @@
     ["blood-price", "Blood Price", "epic", "weapon", { damage: 5 }, { incomingDamage: 1 }, "Damage +5; incoming damage +1."],
     ["volatile-cell", "Volatile Cell", "rare", "weapon", { damage: 3 }, { selfDamageOnMiss: 2 }, "Damage +3; failed attacks hurt the user."],
     ["overclocked-visor", "Overclocked Visor", "rare", "utility", { hintPower: 2, speed: 2 }, { answerTimer: 0.12 }, "Better hints and speed; shorter answer window."],
-    ["glass-bulwark", "Glass Bulwark", "epic", "utility", { damageReduction: 4 }, { speed: -2 }, "Damage reduction +4; slower response speed."],
+    ["glass-bulwark", "Glass Bulwark", "epic", "utility", {}, { speed: -2 }, "Activate Guard Matrix to reduce the next incoming hit by 4; slower response speed.", { id: "guard-matrix", label: "Guard Matrix", description: "Reduce the next incoming hit by 4.", effect: "guard", cooldown: 3 }],
     ["adrenal-syringe", "Adrenal Syringe", "rare", "utility", { healing: 4 }, { incomingDamage: 1 }, "Healing +4; incoming damage +1."],
     ["jammer-core", "Jammer Core", "epic", "utility", { disruption: 2 }, { damage: -1 }, "Disruption +2; damage -1."],
     ["reckless-scope", "Reckless Scope", "rare", "weapon", { damage: 4 }, { damageReduction: -2 }, "Damage +4; damage reduction -2."],
@@ -86,13 +86,23 @@
     ["redline-module", "Redline Module", "legendary", "weapon", { damage: 9 }, { maxHp: -3 }, "Damage +9; maximum HP -3."],
     ["unstable-aegis", "Unstable Aegis", "epic", "utility", { damageReduction: 6 }, { selfDamageOnMiss: 2 }, "Damage reduction +6; failed answers cause backlash."],
     ["last-stand-beacon", "Last Stand Beacon", "legendary", "utility", { maxHp: 4, damageReduction: 2 }, { incomingDamage: 1 }, "Max HP +4 and protection; incoming damage +1."]
-  ].map(([id, name, rarity, slot, bonuses, risks, summary]) => ({ id, name, rarity, slot, bonuses, risks, risk: true, summary }));
+  ].map(([id, name, rarity, slot, bonuses, risks, summary, ability]) => ({
+    id,
+    name,
+    rarity,
+    slot,
+    bonuses,
+    risks,
+    risk: true,
+    summary,
+    ...(ability ? { ability } : {})
+  }));
   const items = Object.freeze([...standardItems, ...riskItems]);
 
   const enemyTiers = {
-    light: { id: "light", label: "Light", hp: [8, 12], damage: [1, 3], aoeDamage: [1, 1] },
-    medium: { id: "medium", label: "Medium", hp: [14, 20], damage: [3, 5], aoeDamage: [2, 3] },
-    heavy: { id: "heavy", label: "Heavy", hp: [24, 34], damage: [5, 8], aoeDamage: [2, 4] }
+    light: { id: "light", label: "Light", hp: [8, 12], damage: [1, 5] },
+    medium: { id: "medium", label: "Medium", hp: [14, 20], damage: [3, 7] },
+    heavy: { id: "heavy", label: "Heavy", hp: [24, 34], damage: [5, 10] }
   };
 
   function clamp(value, min, max) {
@@ -125,7 +135,10 @@
       enforcerReserve: classId === "enforcer" ? clamp(player.enforcerReserve, 0, Math.floor(maxHp * 0.5)) : 0,
       equippedItem: player.equippedItem || null,
       items: Array.isArray(player.items) ? player.items.slice(0, 2) : [],
-      classCooldowns: { ...(player.classCooldowns || {}) }
+      classCooldowns: { ...(player.classCooldowns || {}) },
+      // Reserved for the replacement condition system. Legacy player
+      // statuses are deliberately discarded whenever roster data is loaded.
+      status: []
     };
   }
 
@@ -174,7 +187,7 @@
 
   function classCombatDamage(player) {
     if (player?.classId !== "soldier") return 0;
-    return 2 + Math.min(5, Math.max(0, Number(player.answerStreak) || 0));
+    return 2 + Math.min(3, Math.max(0, Number(player.answerStreak) || 0));
   }
 
   function xpForCorrectAnswer({ fast = false, difficulty = "medium", streak = 0 } = {}) {

@@ -908,7 +908,6 @@ body.mission-active .map-question-fill {
   body.mission-active .play-panel > .encounter { grid-column: 1; grid-row: 1; }
   body.mission-active .play-panel > .status-update-panel { grid-column: 1; grid-row: 2; }
   body.mission-active .play-panel > .mission-utility-shell { grid-column: 1; grid-row: 3; }
-  body.mission-active .play-panel > .mission-effects-panel { display: none; }
 }
 
 body.mission-active .map-main > .panel-header.compact {
@@ -1235,8 +1234,7 @@ body.mission-active .typewriter,
 body.mission-active .mission-continuation {
   overflow-wrap: anywhere;
 }
-body.mission-active .mission-receiver-strip,
-body.mission-active .mission-effects-panel {
+body.mission-active .mission-receiver-strip {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -1267,12 +1265,6 @@ body.mission-active .mission-utility-overlay {
   pointer-events: auto;
 }
 body.mission-active .mission-utility-panel { position: static; width: auto; max-height: 560px; }
-body.mission-active .mission-effects-panel { padding: 10px 12px; }
-body.mission-active .mission-effects-list { display: grid; gap: 6px; margin-top: 8px; }
-body.mission-active .mission-effect-row { display: grid; grid-template-columns: 32px 1fr; align-items: center; min-height: 46px; padding: 6px 9px; border: 1px solid color-mix(in srgb,var(--effect-color) 24%,#172832); border-radius: 4px; background: color-mix(in srgb,var(--effect-color) 6%,#071116); }
-body.mission-active .mission-effect-row > span { color: var(--effect-color); font-size: 22px; text-align: center; }
-body.mission-active .mission-effect-row strong { display: block; color: var(--effect-color); font: 700 11px Consolas, monospace; text-transform: uppercase; }
-body.mission-active .mission-effect-row small { color: #7f9198; font-size: 9px; }
 
 /* Mission strip is mounted directly into the real topbar. */
 .live-mission-strip-mount { display: none; }
@@ -1667,6 +1659,45 @@ body.mission-active .status-card.roster-card > .ready-mark.answer-neutral {
   visibility: hidden;
 }
 
+/* Incapacitated operators remain in the left roster for targeting and mission
+   context, but their cards visually drop out of the active squad. */
+body.mission-active .status-card.roster-card.incapacitated,
+body.mission-active.boss-theme-active .status-card.roster-card.incapacitated {
+  --role: #626a70;
+  border-color: #343b40;
+  border-left-color: #737c82;
+  background: linear-gradient(180deg, #101417, #080b0d);
+  box-shadow: inset 0 0 18px rgba(0, 0, 0, .88);
+  filter: grayscale(1) saturate(0) brightness(.58);
+  opacity: .76;
+}
+
+/* Level-six abilities get a distinct roster signal. This marker is separate
+   from the normal armed-ability class so ordinary class actions stay on their
+   existing gold treatment. */
+body.mission-active .status-card.roster-card.status-card-level-six-armed {
+  z-index: 6;
+  animation: roster-level-six-rainbow-pulse 2.35s linear infinite;
+  will-change: border-color, box-shadow;
+}
+
+@keyframes roster-level-six-rainbow-pulse {
+  0%, 100% { border-color: #ff557e; box-shadow: 0 0 5px rgba(255, 85, 126, .55), inset 0 0 13px rgba(255, 85, 126, .12); }
+  17% { border-color: #ff9d4d; box-shadow: 0 0 13px rgba(255, 157, 77, .82), inset 0 0 17px rgba(255, 157, 77, .18); }
+  34% { border-color: #f4e85c; box-shadow: 0 0 7px rgba(244, 232, 92, .62), inset 0 0 14px rgba(244, 232, 92, .14); }
+  51% { border-color: #54e69a; box-shadow: 0 0 14px rgba(84, 230, 154, .84), inset 0 0 18px rgba(84, 230, 154, .19); }
+  68% { border-color: #55cfff; box-shadow: 0 0 7px rgba(85, 207, 255, .62), inset 0 0 14px rgba(85, 207, 255, .14); }
+  85% { border-color: #bc78ff; box-shadow: 0 0 14px rgba(188, 120, 255, .84), inset 0 0 18px rgba(188, 120, 255, .19); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.mission-active .status-card.roster-card.status-card-level-six-armed {
+    border-color: #70dcff;
+    box-shadow: 0 0 0 1px #ff638c, 0 0 10px #70dcff, inset 0 0 13px rgba(185, 112, 255, .18);
+    animation: none;
+  }
+}
+
 body.mission-active .live-mission-strip .map-last-answer {
   align-items: center;
   justify-items: stretch;
@@ -1965,8 +1996,7 @@ body.mission-active .live-roster-heading strong,
 body.mission-active .sim-tool-panel > p,
 body.mission-active .sim-tool-panel .aware-copy p,
 body.mission-active .sim-tool-panel .auto-answer small,
-body.mission-active .mission-receiver-strip,
-body.mission-active .mission-effect-row small {
+body.mission-active .mission-receiver-strip {
   color: var(--console-muted);
 }
 

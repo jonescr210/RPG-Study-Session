@@ -1932,7 +1932,7 @@ body.mission-active .mission-utility-shell {
   box-shadow: inset 0 1px rgba(var(--atmo-secondary), 0.07), 0 8px 22px rgba(0, 0, 0, 0.22);
 }
 
-body.mission-active .status-card:not(.incapacitated):not(.low-health):not(.has-burned):not(.has-bleeding):not(.has-shocked):not(.has-concussed) {
+body.mission-active .status-card:not(.incapacitated):not(.low-health) {
   border-color: rgba(var(--atmo-primary), 0.38);
   border-left: 3px solid var(--player-color, var(--accent-2));
   background:
@@ -4577,25 +4577,9 @@ body.mission-active .status-card-heading {
 }
 
 .status-vitals .status-code-low,
-.status-vitals .status-code-down,
-.status-vitals .status-code-bleeding {
+.status-vitals .status-code-down {
   color: #ff8175;
   border-color: rgba(255, 129, 117, 0.4);
-}
-
-.status-vitals .status-code-burned {
-  color: #f3ad72;
-  border-color: rgba(243, 173, 114, 0.38);
-}
-
-.status-vitals .status-code-shocked {
-  color: #8fd3ff;
-  border-color: rgba(143, 211, 255, 0.38);
-}
-
-.status-vitals .status-code-concussed {
-  color: #c7a6ff;
-  border-color: rgba(199, 166, 255, 0.38);
 }
 
 .status-vitals .status-bonus {
@@ -5568,32 +5552,8 @@ body.reset-confirm-open {
   animation: lowHealthPulse 1.25s ease-in-out infinite;
 }
 
-.status-card.has-burned:not(.incapacitated):not(.low-health) {
-  border-color: rgba(221, 123, 68, 0.72);
-  animation: burnedPulse 1.5s ease-in-out infinite;
-}
-
-.status-card.has-bleeding:not(.incapacitated):not(.low-health) {
-  border-color: rgba(198, 56, 70, 0.72);
-  animation: bleedingPulse 1.5s ease-in-out infinite;
-}
-
-.status-card.has-shocked:not(.incapacitated):not(.low-health) {
-  border-color: rgba(91, 184, 214, 0.72);
-  animation: shockedPulse 1.35s ease-in-out infinite;
-}
-
-.status-card.has-concussed:not(.incapacitated):not(.low-health) {
-  border-color: rgba(183, 122, 219, 0.72);
-  animation: concussedPulse 1.65s ease-in-out infinite;
-}
-
 .status-card.hit-pulse {
   animation: hitPulse 1.45s ease-out;
-}
-
-.status-card.status-effect-pulse {
-  animation: statusPulse 1.35s ease-out;
 }
 
 .status-card.heal-pulse {
@@ -5692,58 +5652,6 @@ body.reset-confirm-open {
   }
 }
 
-@keyframes burnedPulse {
-  0%,
-  100% {
-  background: rgba(24, 32, 38, 0.96);
-  box-shadow: var(--shadow);
-  }
-  
-  50% {
-  background: rgba(76, 44, 24, 0.9);
-  box-shadow: 0 0 20px rgba(221, 123, 68, 0.42);
-  }
-}
-
-@keyframes bleedingPulse {
-  0%,
-  100% {
-  background: rgba(24, 32, 38, 0.96);
-  box-shadow: var(--shadow);
-  }
-  
-  50% {
-  background: rgba(74, 25, 32, 0.9);
-  box-shadow: 0 0 20px rgba(198, 56, 70, 0.42);
-  }
-}
-
-@keyframes shockedPulse {
-  0%,
-  100% {
-  background: rgba(24, 32, 38, 0.96);
-  box-shadow: var(--shadow);
-  }
-  
-  50% {
-  background: rgba(24, 54, 66, 0.9);
-  box-shadow: 0 0 20px rgba(91, 184, 214, 0.42);
-  }
-}
-
-@keyframes concussedPulse {
-  0%,
-  100% {
-  background: rgba(24, 32, 38, 0.96);
-  box-shadow: var(--shadow);
-  }
-  
-  50% {
-  background: rgba(55, 35, 70, 0.9);
-  box-shadow: 0 0 20px rgba(183, 122, 219, 0.42);
-  }
-}
-
 @keyframes hitPulse {
   0% {
   background: rgba(92, 37, 32, 0.98);
@@ -5769,18 +5677,6 @@ body.reset-confirm-open {
   100% {
   background: rgba(24, 32, 38, 0.96);
   box-shadow: var(--shadow);
-  }
-}
-
-@keyframes statusPulse {
-  0% {
-  background: rgba(82, 68, 32, 0.98);
-  border-color: rgba(240, 206, 122, 0.95);
-  box-shadow: 0 0 0 0 rgba(240, 206, 122, 0.72), 0 0 20px rgba(240, 206, 122, 0.5);
-  }
-  
-  70% {
-  box-shadow: 0 0 0 12px rgba(240, 206, 122, 0);
   }
 }
 
@@ -9561,15 +9457,7 @@ body.mission-active .answer-result-badge {
 
 @media (max-width: 700px) {
   .player-vitals.low:not(.damage-flash),
-  .player-vitals.has-burned:not(.damage-flash),
-  .player-vitals.has-bleeding:not(.damage-flash),
-  .player-vitals.has-shocked:not(.damage-flash),
-  .player-vitals.has-concussed:not(.damage-flash),
-  .status-card.low-health:not(.hit-pulse):not(.heal-pulse),
-  .status-card.has-burned:not(.hit-pulse):not(.heal-pulse),
-  .status-card.has-bleeding:not(.hit-pulse):not(.heal-pulse),
-  .status-card.has-shocked:not(.hit-pulse):not(.heal-pulse),
-  .status-card.has-concussed:not(.hit-pulse):not(.heal-pulse) {
+  .status-card.low-health:not(.hit-pulse):not(.heal-pulse) {
     animation: none;
   }
 }
