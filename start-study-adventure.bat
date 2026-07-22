@@ -4,6 +4,7 @@ cd /d "%~dp0"
 
 set "PORT=4174"
 set "TEACHER_URL=http://localhost:%PORT%/index.html"
+for /f "usebackq delims=" %%K in (`powershell -NoProfile -Command "[Environment]::GetEnvironmentVariable('ELEVENLABS_API_KEY','User')"`) do set "ELEVENLABS_API_KEY=%%K"
 set "NODE_EXE=%USERPROFILE%\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe"
 if not exist "logs" mkdir "logs"
 if not exist "%NODE_EXE%" set "NODE_EXE=node"

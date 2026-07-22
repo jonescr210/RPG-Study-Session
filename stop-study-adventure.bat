@@ -2,9 +2,6 @@
 setlocal
 set "PORT=4174"
 
-set "PIPER_MODEL=%~dp0tts\voices\voice-name.onnx"
-set "PIPER_CONFIG=%~dp0tts\voices\voice-name.onnx.json"
-
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%PORT% .*LISTENING"') do (
   echo Stopping Study Adventure server on port %PORT%...
   taskkill /PID %%P /F >nul 2>nul

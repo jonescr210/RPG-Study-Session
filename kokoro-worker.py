@@ -1,3 +1,10 @@
+"""Persistent local Kokoro TTS worker used by server.js.
+
+The worker loads sherpa-onnx and the voice model once, then accepts newline-
+delimited JSON jobs over stdin and returns JSON completion records over stdout.
+Keeping the model resident avoids paying model startup cost for every utterance.
+"""
+
 import json
 import os
 import sys

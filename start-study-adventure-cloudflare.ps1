@@ -3,6 +3,10 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $root
 
+if (-not $env:ELEVENLABS_API_KEY) {
+  $env:ELEVENLABS_API_KEY = [Environment]::GetEnvironmentVariable("ELEVENLABS_API_KEY", "User")
+}
+
 $port = if ($env:PORT) { [int]$env:PORT } else { 4174 }
 $localUrl = "http://localhost:$port/index.html"
 $serviceUrl = "http://127.0.0.1:$port"

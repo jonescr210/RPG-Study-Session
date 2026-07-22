@@ -1,3 +1,11 @@
+/*
+ * QUESTION DATA MODULE
+ * ====================
+ * Supplies demo study content and shared question helpers through a dual
+ * browser/CommonJS wrapper. Imported user content is parsed in app.js because
+ * that pipeline also reports preflight errors, expands distractors, combines
+ * saved sets, and maps normalized questions into mission rooms.
+ */
 (function exposeStudyAdventureQuestions(root, factory) {
   const questions = factory();
   if (typeof module !== "undefined" && module.exports) {

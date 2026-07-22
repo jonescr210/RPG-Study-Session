@@ -1,7 +1,32 @@
+/*
+ * TEACHER DASHBOARD / GAME ORCHESTRATOR
+ * =====================================
+ * This is the browser entry point for the full game. It owns the authoritative
+ * mission state, converts imported study questions into a room route, publishes
+ * prompts to player devices, resolves answers and combat, and coordinates the
+ * map, mission log, audio, animations, rewards, and ending screens.
+ *
+ * Suggested reading path:
+ * - state: the live mission data model shared by the dashboard subsystems.
+ * - startMission(): validates setup and creates a new session.
+ * - parseQuestions(): converts pasted/generated text into normalized questions.
+ * - buildNodes(): turns those questions into challenge, combat, aid, readiness,
+ *   and boss rooms.
+ * - publishPlayerSession() / pollPlayerAnswers(): dashboard-to-phone sync.
+ * - renderChallenge(): chooses the current room/question presentation.
+ * - applyCombatEncounter(): authoritative combat round calculation.
+ * - renderCombatStage() / presentCombatResolution(): combat visuals only.
+ * - advanceChatRoom() / advanceChatProgress(): mission state transitions.
+ * - renderEnding(): final report and mission cleanup.
+ *
+ * Design rule: calculate outcomes first, store them in state, and then animate
+ * those recorded outcomes. Presentation timers must never decide gameplay.
+ */
 const sharedData = window.StudyAdventureShared || {};
 const dmPrompts = window.StudyAdventurePrompts || {};
 const actionRooms = window.StudyAdventureActionRooms || {};
 const combatSystem = window.StudyAdventureCombat || {};
+const ITEM_CAPACITY = Math.max(1, Math.floor(Number(combatSystem.ITEM_CAPACITY) || 1));
 const singleDeviceClassAssignments = new Map();
 const ttsModule = window.StudyAdventureTts || {};
 const DEFAULT_NETWORK_TIMEOUT_MS = 8_000;
@@ -15,11 +40,34 @@ const ROOM_TRANSITION_MAIN_THREAD_GAP_MS = 350;
 // Temporary isolation switch: prevents music, SFX, and narration audio from
 // fetching, buffering, decoding, or playing while room-transition hangs are tested.
 const DISABLE_AUDIO_LOADING_FOR_TRANSITION_DIAGNOSTICS = false;
-// Keep boss combat responsive while the optional multi-phase narration plan is disabled.
+// Preload a coherent tactical plan for each boss so its phases adapt without
+// changing enemy identity, arena, or canonical combat outcomes.
 const ENABLE_BOSS_PHASE_PLAN_GENERATION = false;
-// Room-to-room narration already has deterministic fallbacks. Keeping this
-// off prevents local model latency from blocking route and combat transitions.
+// Narration is intentionally reset. Gameplay-data generation remains available,
+// but presentation uses neutral stage labels until the new narration system exists.
 const ENABLE_TRANSITION_NARRATION_GENERATION = false;
+const NARRATION_ENABLED = false;
+const NARRATION_DEFAULTS = Object.freeze({
+  gameIntro: "Game Intro",
+  preQuestion: "Pre-Question",
+  afterQuestion: "After Question",
+  preCombat: "Pre-Combat",
+  afterCombat: "After Combat",
+  bossPreCombat: "Boss-PreCombat",
+  bossPreRound: "Boss-PreRound",
+  bossAfterRound: "Boss-AfterRound",
+  roomTransition: "Room Transition",
+  aidRoomEntryTransition: "Room Transition - Aid Room Entry",
+  aidRoomExitTransition: "Room Transition - Aid Room Exit",
+  readyQuestion: "Ready Question",
+  readyAfter: "Ready After",
+  bossEntryTransition: "Boss Entry Transition",
+  bossEnd: "Boss End",
+  missionEnd: "Mission End",
+  missionResult: "Final Mission Result",
+  actionResolution: "Action Resolution",
+  systemUpdate: "System Update"
+});
 const PLAYER_HEARTBEAT_STALE_MS = 15_000;
 const PLAYER_PROMPT_PUBLICATION_RETRY_MS = 1_500;
 const PLAYER_PROMPT_PUBLICATION_MAX_RETRIES = 5;
@@ -63,7 +111,7 @@ const playerSessionApi = {
   ...(window.StudyAdventurePlayerSession || {})
 };
 
-const DASHBOARD_OPTIONAL_SRC = "dashboard-optional.js?v=performance-1";
+const DASHBOARD_OPTIONAL_SRC = "dashboard-optional.js?v=playthrough-fixes-1";
 let dashboardOptionalPromise = null;
 
 function loadDashboardOptional() {
@@ -118,37 +166,102 @@ function renderDebugConsole() {
 
 const AUDIO_EFFECT_SELECTIONS_STORAGE_KEY = "studyAdventureAudioEffectSelections";
 const ITEM_CODEX_STORAGE_KEY = "studyAdventureItemCodex";
+const QUESTION_DISTRACTOR_CACHE_STORAGE_KEY = "studyAdventureQuestionDistractorCacheV1";
+const BOSS_POOL_STORAGE_KEY = "studyAdventureBossVisualPoolV1";
 const FINAL_SUBMISSION_HOLD_MS = 800;
+const PLAYER_SYNC_ACTIVE_POLL_MS = 800;
+const PLAYER_SYNC_IDLE_POLL_MS = 1_500;
+const PLAYER_SYNC_LOBBY_POLL_MS = 1_200;
+const DM_FEED_POLL_MS = 1_000;
 const LOCKED_OPERATOR_FOLLOWUP_MS = 10_000;
 const EMERGENCY_SIM_TARGET_REMAINING_MS = 4_500;
 const DEPLOYMENT_ROSTER_REVEAL_DELAY_MS = 1450;
 const DEPLOYMENT_ROSTER_STAGGER_MS = 160;
+
+/*
+ * BOSS SYSTEM CODE TOUR
+ * ---------------------
+ * 1. BOSS_VISUAL_PROFILES connects an eye asset to a behaviorId. Gameplay
+ *    checks the behaviorId, rather than the image filename, so art can change
+ *    without rewriting combat rules.
+ * 2. The named constants below are the balance knobs for scripted phases.
+ * 3. bossUses*Behavior() resolves the current room's profile into a readable
+ *    feature check used by combat, prompts, and presentation code.
+ * 4. applyCombatEncounter() is the authoritative round resolver. Search for
+ *    "yellowMidBossPhase" to see threshold scheduling, then "yellowSniperScope"
+ *    to see target selection, damage, bracing, and the action data sent to UI.
+ * 5. presentCombatResolution() consumes that action data. Search for
+ *    "yellowTargetTelegraph" for Sniper Scope and "yellowC4AppliedAfterRound"
+ *    for the persistent planted-charge presentation.
+ * 6. crossedBossPhasePrompt() detects immediate attack phases after player
+ *    damage. C4 uses its pending flag instead because it plants at round end.
+ *
+ * Yellow encounter state is stored directly on the encounter object:
+ * - yellowSniperTargetName: target selected after the intro, before question 1.
+ * - yellowSniperScopeAnnounced: prevents the opening phase prompt from repeating.
+ * - yellowSniperScopeResolved: prevents the 100% opener from repeating.
+ * - yellowC4BombPending: schedules the plant at the end of the current round.
+ * - yellowC4BombArmed / yellowC4TargetName: persist the carrier into next round.
+ * - yellowC4BombResolved: returns later rounds to the normal attack pattern.
+ * - yellowFinalOpforTriggered: records the 75% mirror deployment; live mirrors
+ *   are ordinary encounter enemies marked with yellowOpforMirror.
+ * - yellowOpforRetaliationSniperTargetNames: one queued Sniper Scope shot for
+ *   each OPFOR mirror destroyed by the squad, resolved before the next player
+ *   attack phase with the opening scope's targeting and damage rules.
+ * - yellowFinalRainPending / yellowFinalRainResolved: telegraph and resolve one
+ *   30% alternating barrage; survivors receive a newly targeted volley each round.
+ */
 const BOSS_VISUAL_PROFILES = Object.freeze({
   "blood-red": Object.freeze({
     id: "blood-red",
-    phase: "mid",
+    behaviorId: "red-assault",
+    namingCues: Object.freeze(["beastly", "angry"]),
     imageSrc: "assets/boss-eyes-red-black.png",
     introSrc: "assets/boss-eyes-intro-july17.mp4?v=1"
   }),
   "spectral-green": Object.freeze({
     id: "spectral-green",
-    phase: "final",
+    behaviorId: "green-possession",
+    namingCues: Object.freeze(["ghostly", "possession"]),
     imageSrc: "assets/boss-eyes-final-green.png?v=1",
     introSrc: "assets/boss-eyes-final-intro-60fps.mp4?v=1"
   }),
   "signal-yellow": Object.freeze({
     id: "signal-yellow",
-    phase: "mid",
+    behaviorId: "yellow-ballistics",
+    namingCues: Object.freeze(["human", "super-soldier", "heretic"]),
     imageSrc: "assets/boss-eyes-signal-yellow.png?v=1",
     introSrc: "assets/boss-eyes-signal-yellow-intro-60fps.mp4?v=1"
   }),
   "arc-blue": Object.freeze({
     id: "arc-blue",
-    phase: "final",
+    behaviorId: "blue-pending",
+    namingCues: Object.freeze(["alien", "xenomorphic", "horror"]),
     imageSrc: "assets/boss-eyes-arc-blue.png?v=1",
     introSrc: "assets/boss-eyes-arc-blue-intro-60fps.mp4?v=1"
   })
 });
+const GREEN_MID_POSSESSION_PHASE_NAME = "Wraithbound Discord";
+const GREEN_FINAL_INFECTION_PHASE_NAME = "Dazed and Confused";
+const GREEN_POSSESSION_CONFUSION_NAME = "Spectral Delirium";
+const GREEN_FINAL_SUMMON_PHASE_NAME = "Summon Specters";
+const GREEN_FINAL_MIND_ERASER_PHASE_NAME = "Mind Thrasher";
+// Yellow mid-boss tuning is centralized here so names and balance values do
+// not become duplicated across the combat resolver and the animation layer.
+const YELLOW_MID_SNIPER_PHASE_NAME = "Sniper Scope";
+const YELLOW_MID_C4_PHASE_NAME = "C4 Bomb";
+const YELLOW_MID_SNIPER_DAMAGE = 20;
+const YELLOW_MID_C4_DAMAGE = 15;
+const YELLOW_MID_C4_BRACE_MITIGATION = 0.9;
+const YELLOW_MID_C4_FOLLOWUP_FRACTION = 0.25;
+const YELLOW_FINAL_DOUBLE_KILL_PHASE_NAME = "Double Kill";
+const YELLOW_FINAL_OPFOR_PHASE_NAME = "OPFOR Initiate";
+const YELLOW_FINAL_RAIN_PHASE_NAME = "Rain of Terror";
+const YELLOW_FINAL_DOUBLE_KILL_TARGETS = 2;
+const YELLOW_FINAL_RAIN_SNIPER_SHOTS = 3;
+const YELLOW_FINAL_RAIN_C4_BOMBS = 2;
+const YELLOW_FINAL_RAIN_AOE_FRACTION = 0.2;
+const YELLOW_FINAL_NORMAL_DAMAGE = Object.freeze([7, 15]);
 const DEFAULT_BOSS_VISUAL_BY_PHASE = Object.freeze({
   mid: "blood-red",
   final: "spectral-green"
@@ -187,12 +300,35 @@ function defaultBossVisualId(phase = "mid") {
   return DEFAULT_BOSS_VISUAL_BY_PHASE[phase === "final" ? "final" : "mid"];
 }
 
-function selectBossVisualId(phase = "mid", missionType = state.missionType) {
-  const phaseKey = phase === "final" ? "final" : "mid";
-  const missionKey = normalize(missionType);
-  const missionVisuals = BOSS_VISUAL_BY_MISSION_TYPE[missionKey]
-    || BOSS_VISUAL_BY_MISSION_TYPE["decayed bunker"];
-  return missionVisuals[phaseKey] || defaultBossVisualId(phaseKey);
+function normalizeBossVisualPoolIds(ids) {
+  const validIds = [...new Set((Array.isArray(ids) ? ids : [])
+    .map(String)
+    .filter((id) => BOSS_VISUAL_PROFILES[id]))];
+  return validIds.length ? validIds : Object.keys(BOSS_VISUAL_PROFILES);
+}
+
+function readStoredBossVisualPoolIds() {
+  try {
+    return normalizeBossVisualPoolIds(JSON.parse(window.localStorage.getItem(BOSS_POOL_STORAGE_KEY) || "[]"));
+  } catch {
+    return Object.keys(BOSS_VISUAL_PROFILES);
+  }
+}
+
+function selectedBossVisualPoolIds() {
+  const selectedIds = [...document.querySelectorAll("[data-boss-pool-id]:checked")]
+    .map((input) => input.dataset.bossPoolId);
+  return normalizeBossVisualPoolIds(selectedIds);
+}
+
+function selectBossVisualId(phase = "mid", availableIds = null) {
+  const candidates = Array.isArray(availableIds) ? availableIds : Object.keys(BOSS_VISUAL_PROFILES);
+  if (!candidates.length) return defaultBossVisualId(phase);
+  const randomValue = globalThis.crypto?.getRandomValues
+    ? globalThis.crypto.getRandomValues(new Uint32Array(1))[0] / 0x1_0000_0000
+    : Math.random();
+  const index = Math.floor(randomValue * candidates.length);
+  return candidates.splice ? candidates.splice(index, 1)[0] : candidates[index] || defaultBossVisualId(phase);
 }
 
 function bossVisualProfileForNode(node) {
@@ -200,12 +336,494 @@ function bossVisualProfileForNode(node) {
   return BOSS_VISUAL_PROFILES[requestedId] || BOSS_VISUAL_PROFILES[defaultBossVisualId(node?.bossPhase)];
 }
 
-function bossVisualProfilesForMission(missionType = state.missionType) {
-  const missionVisuals = BOSS_VISUAL_BY_MISSION_TYPE[normalize(missionType)]
-    || BOSS_VISUAL_BY_MISSION_TYPE["decayed bunker"];
-  return [...new Set([missionVisuals.mid, missionVisuals.final])]
-    .map((id) => BOSS_VISUAL_PROFILES[id])
+function bossUsesRedAssaultBehavior(node = state.nodes[state.currentNode]) {
+  return bossVisualProfileForNode(node)?.behaviorId === "red-assault";
+}
+
+function bossUsesGreenPossessionBehavior(node = state.nodes[state.currentNode]) {
+  return bossVisualProfileForNode(node)?.behaviorId === "green-possession";
+}
+
+/** Returns true when a room uses the yellow ballistic boss rules. */
+function bossUsesYellowBallisticsBehavior(node = state.nodes[state.currentNode]) {
+  return bossVisualProfileForNode(node)?.behaviorId === "yellow-ballistics";
+}
+
+function yellowSniperScopeOpeningPrompt(node = state.nodes[state.currentNode]) {
+  const phaseName = node?.bossPhase === "final" ? YELLOW_FINAL_DOUBLE_KILL_PHASE_NAME : YELLOW_MID_SNIPER_PHASE_NAME;
+  return `BossPhase 100% — ${phaseName}`;
+}
+
+function shuffledYellowTargets(count, availablePlayers = null) {
+  const candidates = shuffle(availablePlayers || enemyTargetablePlayers());
+  if (!candidates.length) return [];
+  return Array.from({ length: Math.max(1, Number(count) || 1) }, (_, index) => candidates[index % candidates.length]);
+}
+
+/** Scales the final boss opener down for small squads without changing later volleys. */
+function yellowOpeningSniperTargetCount(node = state.nodes[state.currentNode]) {
+  return node?.bossPhase === "final" && state.players.length > 3
+    ? YELLOW_FINAL_DOUBLE_KILL_TARGETS
+    : 1;
+}
+
+/**
+ * Reserves unique Rain of Terror targets from one shuffled survivor list in
+ * Sniper/C4/Sniper/C4/Sniper order. A small party consumes the sequence from
+ * the front and stops when no unassigned operator remains.
+ */
+function allocateYellowFinalRainTargets() {
+  const candidates = shuffle(enemyTargetablePlayers());
+  const attackPattern = [];
+  let sniperSlots = YELLOW_FINAL_RAIN_SNIPER_SHOTS;
+  let c4Slots = YELLOW_FINAL_RAIN_C4_BOMBS;
+  let nextKind = "sniper";
+  while (sniperSlots > 0 || c4Slots > 0) {
+    if (nextKind === "sniper" && sniperSlots > 0) {
+      attackPattern.push("sniper");
+      sniperSlots -= 1;
+    } else if (nextKind === "c4" && c4Slots > 0) {
+      attackPattern.push("c4");
+      c4Slots -= 1;
+    } else if (sniperSlots > 0) {
+      attackPattern.push("sniper");
+      sniperSlots -= 1;
+    } else {
+      attackPattern.push("c4");
+      c4Slots -= 1;
+    }
+    nextKind = nextKind === "sniper" ? "c4" : "sniper";
+  }
+  const targetSequence = candidates.slice(0, attackPattern.length)
+    .map((player, index) => ({ kind: attackPattern[index], player }));
+  const sniperTargets = targetSequence.filter((entry) => entry.kind === "sniper").map((entry) => entry.player);
+  const c4Targets = targetSequence.filter((entry) => entry.kind === "c4").map((entry) => entry.player);
+  return { sniperTargets, c4Targets, targetSequence };
+}
+
+function yellowFinalRainSequenceForEncounter(encounter) {
+  if (Array.isArray(encounter?.yellowFinalRainTargetSequence)) {
+    const assignedNames = new Set();
+    return encounter.yellowFinalRainTargetSequence.filter((entry) => {
+      const key = normalize(entry?.targetName);
+      if (!key || assignedNames.has(key) || !["sniper", "c4"].includes(entry.kind)) return false;
+      assignedNames.add(key);
+      return true;
+    });
+  }
+  const sniperNames = encounter?.yellowFinalRainSniperTargetNames || [];
+  const c4Names = encounter?.yellowFinalRainC4TargetNames || [];
+  const sequence = [];
+  let sniperIndex = 0;
+  let c4Index = 0;
+  let nextKind = "sniper";
+  while (sniperIndex < sniperNames.length || c4Index < c4Names.length) {
+    if (nextKind === "sniper" && sniperIndex < sniperNames.length) {
+      sequence.push({ kind: "sniper", targetName: sniperNames[sniperIndex] });
+      sniperIndex += 1;
+    } else if (nextKind === "c4" && c4Index < c4Names.length) {
+      sequence.push({ kind: "c4", targetName: c4Names[c4Index] });
+      c4Index += 1;
+    } else if (sniperIndex < sniperNames.length) {
+      sequence.push({ kind: "sniper", targetName: sniperNames[sniperIndex] });
+      sniperIndex += 1;
+    } else {
+      sequence.push({ kind: "c4", targetName: c4Names[c4Index] });
+      c4Index += 1;
+    }
+    nextKind = nextKind === "sniper" ? "c4" : "sniper";
+  }
+  const assignedNames = new Set();
+  return sequence.filter((entry) => {
+    const key = normalize(entry.targetName);
+    if (!key || assignedNames.has(key)) return false;
+    assignedNames.add(key);
+    return true;
+  });
+}
+
+function ensureYellowSniperScopeTargets(encounter, node = state.nodes[state.currentNode]) {
+  if (!encounter
+    || encounter.yellowSniperScopeResolved
+    || !["mid", "final"].includes(node?.bossPhase)
+    || !bossUsesYellowBallisticsBehavior(node)) return [];
+  const candidates = enemyTargetablePlayers();
+  if (!candidates.length) return [];
+  const count = yellowOpeningSniperTargetCount(node);
+  const storedNames = Array.isArray(encounter.yellowSniperTargetNames)
+    ? encounter.yellowSniperTargetNames
+    : [encounter.yellowSniperTargetName].filter(Boolean);
+  const storedTargets = storedNames
+    .map((name) => candidates.find((player) => sameName(player.name, name)))
     .filter(Boolean);
+  const targets = storedTargets.length === count ? storedTargets : shuffledYellowTargets(count, candidates);
+  encounter.yellowSniperTargetNames = targets.map((target) => target.name);
+  encounter.yellowSniperTargetName = targets[0]?.name || "";
+  return targets;
+}
+
+/**
+ * Selects and persists the opening Sniper Scope target before question input.
+ * Reusing the stored name at resolution guarantees the reticle and damage refer
+ * to the same operator instead of consuming a second random roll after answers.
+ */
+function ensureYellowSniperScopeTarget(encounter, node = state.nodes[state.currentNode]) {
+  return ensureYellowSniperScopeTargets(encounter, node)[0] || null;
+}
+
+/** Keeps the shared yellow target badge in sync with its independent markers. */
+function syncYellowBossTargetMarker(card) {
+  if (!card) return;
+  const labels = [];
+  if (card.classList.contains("sniper-designated")) labels.push("SNIPER LOCK");
+  if (card.classList.contains("c4-designated")) labels.push("C4 ARMED");
+  card.classList.toggle("yellow-boss-targeted", labels.length > 0);
+  if (labels.length) card.dataset.yellowTarget = labels.join(" + ");
+  else delete card.dataset.yellowTarget;
+}
+
+/** Consumes only the designation whose scripted hit has actually resolved. */
+function consumeYellowBossTargetMarker(card, kind) {
+  if (!card) return;
+  if (kind === "sniper") card.classList.remove("sniper-scoped", "sniper-designated");
+  if (kind === "c4") card.classList.remove("c4-armed", "c4-designated");
+  syncYellowBossTargetMarker(card);
+}
+
+function showYellowSniperScopeTargets(encounter, targets = [], label = "SNIPER LOCK", phaseNameOverride = "") {
+  if (!encounter || !targets.length || !els.combatPartyFormation) return;
+  for (const card of els.combatPartyFormation.querySelectorAll(".combat-party-unit.sniper-designated")) {
+    consumeYellowBossTargetMarker(card, "sniper");
+  }
+  const targetCounts = new Map();
+  for (const target of targets) {
+    const key = normalize(target?.name);
+    if (key) targetCounts.set(key, (targetCounts.get(key) || 0) + 1);
+  }
+  for (const [targetKey, count] of targetCounts) {
+    const target = targets.find((candidate) => normalize(candidate?.name) === targetKey);
+    const card = els.combatPartyFormation.querySelector(`[data-player-name="${CSS.escape(normalize(target.name))}"]`);
+    if (card) {
+      card.classList.add("yellow-boss-targeted", "sniper-scoped", "sniper-designated");
+      syncYellowBossTargetMarker(card);
+      if (label !== "SNIPER LOCK" || count > 1) card.dataset.yellowTarget = `${label}${count > 1 ? ` ×${count}` : ""}`;
+    }
+  }
+  if (els.combatActionBanner) {
+    const phaseName = phaseNameOverride || (state.nodes[state.currentNode]?.bossPhase === "final" ? YELLOW_FINAL_DOUBLE_KILL_PHASE_NAME : YELLOW_MID_SNIPER_PHASE_NAME);
+    const targetSummary = [...targetCounts].map(([targetKey, count]) => {
+      const target = targets.find((candidate) => normalize(candidate?.name) === targetKey);
+      return `${target?.name || "Operator"}${count > 1 ? ` ×${count}` : ""}`;
+    });
+    els.combatActionBanner.textContent = `${phaseName.toUpperCase()} — ${targetSummary.join(" + ")} TARGETED`;
+  }
+}
+
+function showYellowSniperScopeTarget(encounter, target) {
+  showYellowSniperScopeTargets(encounter, target ? [target] : []);
+}
+
+/** Activates the 100% phase after the intro and exposes whether it was new. */
+function activateYellowSniperScopeOpening(encounter, node = state.nodes[state.currentNode]) {
+  const targets = ensureYellowSniperScopeTargets(encounter, node);
+  if (!targets.length) return null;
+  const newlyActivated = !encounter.yellowSniperScopeAnnounced;
+  encounter.yellowSniperScopeAnnounced = true;
+  showYellowSniperScopeTargets(encounter, targets);
+  return { target: targets[0], targets, newlyActivated };
+}
+
+/** Selects the C4 carrier after all attacks in the threshold-crossing round. */
+function armYellowC4Bomb(encounter, node = state.nodes[state.currentNode]) {
+  if (!encounter
+    || encounter.cleared
+    || encounter.yellowC4BombResolved
+    || encounter.yellowC4BombArmed
+    || !encounter.yellowC4BombPending
+    || node?.bossPhase !== "mid"
+    || !bossUsesYellowBallisticsBehavior(node)) return null;
+  const candidates = enemyTargetablePlayers();
+  const target = candidates[Math.floor(state.rng() * candidates.length)] || null;
+  if (!target) return null;
+  encounter.yellowC4TargetName = target.name;
+  encounter.yellowC4BombArmed = true;
+  encounter.yellowC4BombPending = false;
+  encounter.yellowC4ArmedRound = encounter.round;
+  return target;
+}
+
+function showYellowC4Target(encounter, target) {
+  if (!encounter || !target || !els.combatPartyFormation) return;
+  const card = els.combatPartyFormation.querySelector(`[data-player-name="${CSS.escape(normalize(target.name))}"]`);
+  if (card) {
+    card.classList.add("yellow-boss-targeted", "c4-armed", "c4-designated");
+    syncYellowBossTargetMarker(card);
+  }
+  if (els.combatActionBanner) els.combatActionBanner.textContent = `${YELLOW_MID_C4_PHASE_NAME.toUpperCase()} — ATTACHED TO ${target.name}`;
+}
+
+function yellowFinalOpforMirrors(encounter) {
+  return (encounter?.enemies || []).filter((enemy) => enemy.yellowOpforMirror && !enemy.defeated);
+}
+
+/** Queues one next-round Sniper Scope lock for every OPFOR mirror destroyed. */
+function armYellowOpforRetaliationScopes(encounter, defeatedMirrors = [], facts = []) {
+  const node = state.nodes[state.currentNode];
+  if (!encounter
+    || encounter.cleared
+    || node?.bossPhase !== "final"
+    || !bossUsesYellowBallisticsBehavior(node)) return [];
+  const fallen = defeatedMirrors.filter((enemy) => enemy?.yellowOpforMirror);
+  const candidates = enemyTargetablePlayers();
+  if (!fallen.length || !candidates.length) return [];
+  const pendingNames = Array.isArray(encounter.yellowOpforRetaliationSniperTargetNames)
+    ? encounter.yellowOpforRetaliationSniperTargetNames
+    : [];
+  const newlyScoped = [];
+  for (const mirror of fallen) {
+    const reserved = new Set(pendingNames.map(normalize));
+    const available = candidates.filter((player) => !reserved.has(normalize(player.name)));
+    const pool = available.length ? available : candidates;
+    const target = pool[Math.floor(state.rng() * pool.length)] || null;
+    if (!target) continue;
+    pendingNames.push(target.name);
+    newlyScoped.push(target.name);
+    facts.push(`${mirror.label} falls; ${bossEnemyForEncounter(encounter)?.label || "The boss"} retaliates by acquiring a Sniper Scope lock on ${target.name}`);
+  }
+  encounter.yellowOpforRetaliationSniperTargetNames = pendingNames;
+  return newlyScoped;
+}
+
+function yellowOpforAbilityPhaseActive(enemy, encounter) {
+  if (!enemy?.yellowOpforMirror || enemy.defeated) return false;
+  if (enemy.opforAbilityActive) return true;
+  const currentRound = Math.max(1, Number(encounter?.round) || 1);
+  if (!Number(enemy.opforAbilityArmedRound)
+    && Number(enemy.hp) <= Math.max(1, Number(enemy.maxHp) || 1) * 0.5) {
+    // Migrates an older saved encounter that already has a damaged OPFOR but
+    // predates the explicit threshold flag.
+    enemy.opforAbilityArmedRound = currentRound;
+  }
+  if (!Number(enemy.opforAbilityArmedRound) || currentRound < Number(enemy.opforAbilityArmedRound)) return false;
+  enemy.opforAbilityActive = true;
+  enemy.opforAbilityActivatedRound = currentRound;
+  return true;
+}
+
+function armYellowOpforAbility(enemy, encounter, hpBefore) {
+  if (!enemy?.yellowOpforMirror || enemy.defeated || enemy.opforAbilityActive || Number(enemy.opforAbilityArmedRound)) return false;
+  const halfHealth = Math.max(1, Number(enemy.maxHp) || 1) * 0.5;
+  if (Number(hpBefore) > halfHealth && Number(enemy.hp) <= halfHealth) {
+    enemy.opforAbilityArmedRound = Math.max(1, Number(encounter?.round) || 1) + 1;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Resolves the persistent class phase an OPFOR gains on the round after it
+ * crosses 50% health. All support effects remain isolated to the hostile team.
+ */
+function resolveYellowOpforAbility(enemy, encounter, question, facts, options = {}) {
+  if (!yellowOpforAbilityPhaseActive(enemy, encounter)) return null;
+  const classId = String(enemy.mirrorClassId || "").toLowerCase();
+  const event = {
+    sourceId: enemy.id,
+    source: enemy.label,
+    classId,
+    targetId: enemy.id,
+    target: enemy.label,
+    amount: 0,
+    opforPhaseAbility: true
+  };
+
+  if (classId === "soldier") {
+    event.kind = "damage";
+    event.label = "Split Fire";
+    event.target = "two operators";
+  } else if (classId === "medic") {
+    const mirrors = yellowFinalOpforMirrors(encounter);
+    event.kind = "heal";
+    event.label = "Auto-Med Array";
+    event.target = "OPFOR team";
+    event.amount = 5;
+    event.heals = mirrors.map((target) => {
+      const before = target.hp;
+      target.hp = Math.min(target.maxHp, target.hp + 5);
+      return { targetId: target.id, target: target.label, hpBefore: before, hpAfter: target.hp, amount: target.hp - before };
+    });
+  } else if (classId === "scout") {
+    event.kind = "initiative";
+    event.label = "Initiative Override";
+    event.target = "first position";
+  } else if (classId === "enforcer") {
+    event.kind = "aoe";
+    event.label = "Twin Barrage";
+    event.target = "operator line";
+    event.amount = "3-7";
+  } else if (classId === "engineer") {
+    const mirrors = yellowFinalOpforMirrors(encounter);
+    mirrors.forEach((target) => { target.opforBubbleReady = true; });
+    event.kind = "bubble";
+    event.label = "Bubble Network";
+    event.target = "OPFOR team";
+    event.bubbleTargets = mirrors.map((target) => ({ targetId: target.id, target: target.label }));
+  } else if (classId === "tactician") {
+    const eligiblePlayers = [...new Map((options.eligiblePlayers || enemyTargetablePlayers())
+      .filter((player) => player && !player.incapacitated && !player._greenPossessed)
+      .map((player) => [normalize(player.name), player])).values()];
+    const targets = shuffle(eligiblePlayers).slice(0, Math.min(2, eligiblePlayers.length));
+    event.kind = "stun";
+    event.label = "Tactical Lockdown";
+    event.target = targets.map((player) => player.name).join(" + ") || "operator line";
+    event.stunTargets = targets.map((player) => player.name);
+  } else {
+    return null;
+  }
+
+  syncEncounterGroupHp(encounter);
+  facts.push(`${enemy.label} activates ${event.label}${event.target ? ` against ${event.target}` : ""}`);
+  return event;
+}
+
+function pendingCombatDisruptorNames() {
+  const names = [];
+  for (const use of state.pendingClassAbilityUses || []) {
+    if (String(use.classId || "").toLowerCase() === "engineer" && use.sourceName) names.push(use.sourceName);
+  }
+  for (const use of state.pendingAbilityUses || []) {
+    if (itemAbilityDefinition(itemForPlayer(use.itemId))?.effect === "disrupt" && use.sourceName) names.push(use.sourceName);
+  }
+  return [...new Set(names.map((name) => String(name)).filter(Boolean))];
+}
+
+/**
+ * Creates hostile mirrors for half the active squad, rounded up, at 75%.
+ * Shuffling the eligible operators before slicing makes every spawned OPFOR
+ * class a random class that is actually represented in the current party.
+ */
+function summonYellowFinalOpfor(encounter, node = state.nodes[state.currentNode], facts = []) {
+  if (!encounter
+    || encounter.yellowFinalOpforTriggered
+    || node?.bossPhase !== "final"
+    || !bossUsesYellowBallisticsBehavior(node)) return [];
+  const activeTargets = enemyTargetablePlayers();
+  const spawnCount = Math.max(1, Math.ceil(activeTargets.length / 2));
+  const mirroredPlayers = shuffle(activeTargets).slice(0, spawnCount);
+  const mirrors = mirroredPlayers.map((player, index) => {
+    const classDefinition = combatSystem.classDefinition?.(player.classId) || {};
+    const maxHp = 20;
+    return {
+      id: `yellow-opfor-${encounter.round}-${index + 1}-${normalize(player.name).replace(/[^a-z0-9]+/g, "-")}`,
+      tier: "medium",
+      label: `OPFOR ${classDefinition.label || "Operator"}`,
+      hp: maxHp,
+      maxHp,
+      defeated: false,
+      summoned: true,
+      yellowOpforMirror: true,
+      mirrorClassId: player.classId || "",
+      mirrorLevel: Math.max(1, Number(player.level) || 1),
+      mirrorTargetName: player.name,
+      mirrorColor: classDefinition.color || "#ffd85a",
+      opforAbilityActive: false,
+      opforAbilityArmedRound: 0,
+      activations: 1
+    };
+  });
+  encounter.yellowFinalOpforTriggered = true;
+  encounter.enemies.push(...mirrors);
+  syncEncounterGroupHp(encounter);
+  facts.push(`${YELLOW_FINAL_OPFOR_PHASE_NAME} randomly copies ${mirrors.length} class${mirrors.length === 1 ? "" : "es"} from the active party; each 20-HP mirror simulates 50% answer correctness, attacks its copied class, and arms a persistent class phase one round after crossing 50% health`);
+  return mirrors;
+}
+
+/** Arms one final-phase yellow barrage for the next round without target overlap. */
+function armYellowFinalRainVolley(encounter, node = state.nodes[state.currentNode], facts = []) {
+  if (!encounter
+    || encounter.cleared
+    || encounter.yellowFinalRainPending
+    || node?.bossPhase !== "final"
+    || !bossUsesYellowBallisticsBehavior(node)) return null;
+  const { sniperTargets, c4Targets, targetSequence } = allocateYellowFinalRainTargets();
+  if (!sniperTargets.length) return null;
+  encounter.yellowFinalRainTriggered = true;
+  encounter.yellowFinalRainPending = true;
+  encounter.yellowFinalRainResolved = false;
+  encounter.yellowFinalRainVolleyNumber = Math.max(0, Number(encounter.yellowFinalRainVolleyNumber) || 0) + 1;
+  encounter.yellowFinalRainSniperTargetNames = sniperTargets.map((player) => player.name);
+  encounter.yellowFinalRainC4TargetNames = c4Targets.map((player) => player.name);
+  encounter.yellowFinalRainTargetSequence = targetSequence.map((entry) => ({ kind: entry.kind, targetName: entry.player.name }));
+  facts.push(`${YELLOW_FINAL_RAIN_PHASE_NAME} volley ${encounter.yellowFinalRainVolleyNumber} assigns ${targetSequence.length} unique targets in alternating Sniper/C4 order, beginning with Sniper Scope`);
+  return { sniperTargets, c4Targets, targetSequence, volleyNumber: encounter.yellowFinalRainVolleyNumber };
+}
+
+/** Starts Rain of Terror once; subsequent rounds re-arm through the volley helper. */
+function prepareYellowFinalRainOfTerror(encounter, node = state.nodes[state.currentNode], facts = []) {
+  if (encounter?.yellowFinalRainTriggered) return null;
+  return armYellowFinalRainVolley(encounter, node, facts);
+}
+
+function showYellowFinalRainTargets(encounter) {
+  if (!encounter || !els.combatPartyFormation) return;
+  const sniperCounts = new Map();
+  const c4Counts = new Map();
+  for (const entry of yellowFinalRainSequenceForEncounter(encounter)) {
+    const key = normalize(entry.targetName);
+    const counts = entry.kind === "c4" ? c4Counts : sniperCounts;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  const cards = els.combatPartyFormation.querySelectorAll(".combat-party-unit");
+  for (const card of cards) {
+    card.classList.remove("sniper-scoped", "sniper-designated", "c4-armed", "c4-designated");
+    syncYellowBossTargetMarker(card);
+  }
+  for (const card of cards) {
+    const key = card.dataset.playerName || "";
+    const sniperCount = sniperCounts.get(key) || 0;
+    const c4Count = c4Counts.get(key) || 0;
+    if (!sniperCount && !c4Count) continue;
+    const labels = [sniperCount ? `SNIPER${sniperCount > 1 ? ` ×${sniperCount}` : ""}` : "", c4Count ? `C4${c4Count > 1 ? ` ×${c4Count}` : ""}` : ""].filter(Boolean);
+    card.classList.add("yellow-boss-targeted");
+    if (sniperCount) card.classList.add("sniper-scoped", "sniper-designated");
+    if (c4Count) card.classList.add("c4-armed", "c4-designated");
+    syncYellowBossTargetMarker(card);
+    card.dataset.yellowTarget = labels.join(" + ");
+  }
+  if (els.combatActionBanner) {
+    els.combatActionBanner.textContent = `${YELLOW_FINAL_RAIN_PHASE_NAME.toUpperCase()} — ${sniperCounts.size} SNIPER LOCK${sniperCounts.size === 1 ? "" : "S"} + ${c4Counts.size} C4 CHARGE${c4Counts.size === 1 ? "" : "S"}`;
+  }
+}
+
+function bossNamingCueForNode(node = state.nodes[state.currentNode]) {
+  const profile = bossVisualProfileForNode(node);
+  const cues = profile?.namingCues || [];
+  if (!cues.length) return "";
+  return [
+    `Private boss naming cues: ${cues.join(", ")}.`,
+    "Treat these only as loose creative direction for appearance, behavior, and a concise original designation.",
+    "Do not use the cue words themselves as the boss name or title, do not combine them into a literal label, and do not mention eye color."
+  ].join(" ");
+}
+
+function bossNamingCuesForMission(missionType = state.missionType, nodes = state.nodes) {
+  const visuals = BOSS_VISUAL_BY_MISSION_TYPE[normalize(missionType)] || BOSS_VISUAL_BY_MISSION_TYPE["decayed bunker"];
+  const selectedBossByPhase = Object.fromEntries((nodes || [])
+    .filter((node) => node?.type === "boss" && ["mid", "final"].includes(node.bossPhase) && BOSS_VISUAL_PROFILES[node.bossVisualId])
+    .map((node) => [node.bossPhase, node.bossVisualId]));
+  return {
+    mid: bossNamingCueForNode({ bossPhase: "mid", bossVisualId: selectedBossByPhase.mid || visuals.mid }),
+    final: bossNamingCueForNode({ bossPhase: "final", bossVisualId: selectedBossByPhase.final || visuals.final })
+  };
+}
+
+function bossVisualProfilesForMission(missionType = state.missionType, nodes = state.nodes) {
+  const selectedIds = [...new Set((nodes || [])
+    .filter((node) => node?.type === "boss" && node.bossVisualId)
+    .map((node) => node.bossVisualId))];
+  if (selectedIds.length) return selectedIds.map((id) => BOSS_VISUAL_PROFILES[id]).filter(Boolean);
+  const fallback = BOSS_VISUAL_BY_MISSION_TYPE[normalize(missionType)] || BOSS_VISUAL_BY_MISSION_TYPE["decayed bunker"];
+  return [...new Set(Object.values(fallback))].map((id) => BOSS_VISUAL_PROFILES[id]).filter(Boolean);
 }
 
 function scheduleBossVisualPreload(missionType = state.missionType) {
@@ -219,7 +837,10 @@ function scheduleBossVisualPreload(missionType = state.missionType) {
     if (!bossVisualPreloadCache.has(profile.introSrc)) {
       const video = document.createElement("video");
       video.muted = true;
-      video.preload = "auto";
+      // Fetch only container metadata during mission setup. The selected intro
+      // is a local asset and can buffer when its readiness room approaches;
+      // eagerly decoding several 60-fps videos here causes a large launch spike.
+      video.preload = "metadata";
       video.src = profile.introSrc;
       video.load();
       bossVisualPreloadCache.set(profile.introSrc, video);
@@ -243,6 +864,10 @@ function readStoredAudioEffectSelections() {
 
 function readStoredItemCodex() {
   try {
+    if (!combatSystem.items?.length) {
+      window.localStorage.removeItem(ITEM_CODEX_STORAGE_KEY);
+      return {};
+    }
     const parsed = JSON.parse(window.localStorage.getItem(ITEM_CODEX_STORAGE_KEY) || "{}");
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
   } catch {
@@ -250,10 +875,14 @@ function readStoredItemCodex() {
   }
 }
 
+// Single source of truth for the teacher client. Persistent mission data,
+// transient animation gates, network revisions, audio settings, and cached UI
+// values live here so render functions can remain deterministic views of state.
 const state = {
   started: false,
   resolved: false,
   questions: [],
+  questionReserve: [],
   players: [],
   inventory: { medkits: 2, ems: 0 },
   itemCodex: readStoredItemCodex(),
@@ -284,10 +913,13 @@ const state = {
   routeMarkerAnimationFrame: 0,
   routeMarkerSettleTimer: null,
   bossAreaNames: { mid: "", final: "" },
+  bossIdentities: { mid: null, final: null },
   bossPhasePlans: {},
   bossPhasePlanRequests: {},
   bossTestMode: false,
   bossTestPhase: "final",
+  bossTestVisualId: "blood-red",
+  bossVisualPoolIds: readStoredBossVisualPoolIds(),
   bossTestPromptStarted: false,
   combatTestMode: false,
   actionDrivenMode: false,
@@ -309,6 +941,7 @@ const state = {
   combatNextNodeTimer: null,
   combatNextNodeWaitStartedAt: 0,
   combatMountBlocked: false,
+  bossPreCombatMountHoldNode: null,
   combatResolutionGate: null,
   roomTransitionTrace: null,
   roomTransitionTraceCounter: 0,
@@ -325,8 +958,11 @@ const state = {
   secondWindUsed: false,
   secondWindPlayerName: "",
   secondWindPendingPlayerName: "",
+  secondChanceEnabled: false,
   challengeHistory: [],
   missionAccuracyResults: {},
+  questionRemediationStats: {},
+  questionRemediationSequence: 0,
   typeTimers: [],
   typeTimerResolvers: new Map(),
   typewriterGeneration: 0,
@@ -475,6 +1111,7 @@ const state = {
   openingWaitStartedAt: 0,
   openingWaitTimer: null,
   mapQuestionOverlayHideTimer: null,
+  teacherAnswerShuffleTimer: null,
   mapQuestionOverlayKey: "",
   mapQuestionAlertActive: false,
   questionSurfaceVisible: false,
@@ -513,6 +1150,10 @@ const state = {
   ttsKokoroVoiceName: "",
   ttsKokoroVoices: [],
   ttsKokoroError: "",
+  ttsElevenLabsAvailable: false,
+  ttsElevenLabsVoices: [],
+  ttsElevenLabsError: "",
+  ttsElevenLabsCondensedCombat: false,
   ttsAudio: null,
   ttsAudioUrl: "",
   ttsVoiceURI: "",
@@ -530,6 +1171,7 @@ const TIMEOUT_ANSWER = "player failed to submit";
 const TWO_BOSS_MIN_QUESTIONS = 18;
 const SAVED_SET_LONG_MISSION_DEFAULT = 30;
 const COMBAT_QUESTION_POOL_SIZE = 5;
+const NORMAL_COMBAT_QUESTION_COUNT = 4;
 const MID_BOSS_QUESTIONS = COMBAT_QUESTION_POOL_SIZE;
 const FINAL_BOSS_QUESTIONS = COMBAT_QUESTION_POOL_SIZE;
 const ENABLE_ROUTE_MARKER_TRANSITION = true;
@@ -539,16 +1181,16 @@ const ROUTE_TRAVEL_MS = 2200;
 // Boss-readiness approaches move at half speed so the audio and visual handoff
 // have room to build before the squad reaches the critical-contact marker.
 const BOSS_READY_ROUTE_TRAVEL_MS = ROUTE_TRAVEL_MS * 2;
+const BOSS_PHASE_PROMPT_DELAY_MS = 3_000;
 const ENEMY_VISUAL_POOLS = Object.freeze({
-  bunker: Object.freeze([
-    ...Array.from({ length: 5 }, (_, index) => `enemy_assets/ghosts/shadow-enemy-${index + 1}.png`),
-    ...Array.from({ length: 5 }, (_, index) => `enemy_assets/soldiers/enemy-soldier-${index + 1}.png`)
-  ]),
-  spaceStation: Object.freeze([
-    ...Array.from({ length: 5 }, (_, index) => `enemy_assets/monster/alien-enemy-${index + 1}.png`),
-    ...Array.from({ length: 5 }, (_, index) => `enemy_assets/soldiers/enemy-soldier-${index + 1}.png`),
-    ...Array.from({ length: 5 }, (_, index) => `enemy_assets/ghosts/shadow-enemy-${index + 1}.png`)
-  ])
+  light: Object.freeze(Array.from({ length: 5 }, (_, index) => `enemy_assets/soldiers/enemy-soldier-${index + 1}.png`)),
+  medium: Object.freeze(Array.from({ length: 5 }, (_, index) => `enemy_assets/ghosts/shadow-enemy-${index + 1}.png`)),
+  heavy: Object.freeze(Array.from({ length: 5 }, (_, index) => `enemy_assets/monster/alien-enemy-${index + 1}.png`))
+});
+const ENEMY_NARRATION_NAMES = Object.freeze({
+  light: Object.freeze(["Hostile Soldier", "Raider", "Trooper", "Rifleman", "Combatant", "Sentry"]),
+  medium: Object.freeze(["Ghost", "Specter", "Wraith", "Phantom", "Shade", "Revenant"]),
+  heavy: Object.freeze(["Monster", "Brute", "Abomination", "Beast", "Monstrosity", "Horror"])
 });
 const COMBAT_FORMATION_READY_MS = 4300;
 const COMBAT_ENTRY_COMPLETE_MS = 4550;
@@ -661,6 +1303,10 @@ const els = {
   bossTestMode: document.getElementById("bossTestMode"),
   bossTestPhase: document.getElementById("bossTestPhase"),
   bossTestPhaseField: document.getElementById("bossTestPhaseField"),
+  bossTestVisual: document.getElementById("bossTestVisual"),
+  bossTestVisualField: document.getElementById("bossTestVisualField"),
+  bossPoolField: document.getElementById("bossPoolField"),
+  bossPoolNote: document.getElementById("bossPoolNote"),
   combatTestMode: document.getElementById("combatTestMode"),
   actionDrivenMode: document.getElementById("actionDrivenMode"),
   playerCountNote: document.getElementById("playerCountNote"),
@@ -684,6 +1330,7 @@ const els = {
   emergencyTimerEnabled: document.getElementById("emergencyTimerEnabled"),
   fastModeEnabled: document.getElementById("fastModeEnabled"),
   secondWindEnabled: document.getElementById("secondWindEnabled"),
+  secondChanceEnabled: document.getElementById("secondChanceEnabled"),
   emergencyTimerDuration: document.getElementById("emergencyTimerDuration"),
   emergencyTimerDurationGroup: document.getElementById("emergencyTimerDurationGroup"),
   teacherTextSize: document.getElementById("teacherTextSize"),
@@ -755,12 +1402,16 @@ const els = {
   ttsReplayBtn: document.getElementById("ttsReplayBtn"),
   ttsProvider: document.getElementById("ttsProvider"),
   ttsVoiceSelect: document.getElementById("ttsVoiceSelect"),
+  ttsVoicePreviewBtn: document.getElementById("ttsVoicePreviewBtn"),
   setupTtsProvider: document.getElementById("setupTtsProvider"),
   setupTtsVoiceSelect: document.getElementById("setupTtsVoiceSelect"),
+  setupTtsVoicePreviewBtn: document.getElementById("setupTtsVoicePreviewBtn"),
   ttsRate: document.getElementById("ttsRate"),
   ttsTextDelay: document.getElementById("ttsTextDelay"),
   ttsAutoLog: document.getElementById("ttsAutoLog"),
   ttsAutoQuestion: document.getElementById("ttsAutoQuestion"),
+  setupElevenLabsCondensedCombat: document.getElementById("setupElevenLabsCondensedCombat"),
+  ttsElevenLabsCondensedCombat: document.getElementById("ttsElevenLabsCondensedCombat"),
   backgroundMusicPanel: document.getElementById("backgroundMusicPanel"),
   backgroundMusicStatus: document.getElementById("backgroundMusicStatus"),
   backgroundMusicLoadBtn: document.getElementById("backgroundMusicLoadBtn"),
@@ -844,6 +1495,11 @@ const els = {
   debugConsoleLog: document.getElementById("debugConsoleLog")
 };
 
+const bossPoolInputs = [...document.querySelectorAll("[data-boss-pool-id]")];
+for (const input of bossPoolInputs) {
+  input.checked = state.bossVisualPoolIds.includes(input.dataset.bossPoolId);
+}
+
 let ttsManager = null;
 let resetConfirmationReturnFocus = null;
 
@@ -877,7 +1533,6 @@ els.questionSetsSelectAll?.addEventListener("change", () => {
 });
 
 els.startBtn.addEventListener("click", startMission);
-els.generateEnvironmentBtn?.addEventListener("click", generateCustomMissionEnvironment);
 els.cancelLobbyBtn.addEventListener("click", closeJoinLobby);
 els.launchFromLobbyBtn.addEventListener("click", launchMissionFromLobby);
 els.addSimPlayersBtn?.addEventListener("click", () => addSimulatedPlayers(3));
@@ -973,9 +1628,27 @@ els.questionSource.addEventListener("change", () => {
 els.bossTestMode?.addEventListener("change", () => {
   if (els.bossTestMode.checked && els.combatTestMode) els.combatTestMode.checked = false;
   if (els.bossTestPhaseField) els.bossTestPhaseField.hidden = !els.bossTestMode.checked;
+  if (els.bossTestVisualField) els.bossTestVisualField.hidden = !els.bossTestMode.checked;
   updateSetupSummary();
 });
 els.bossTestPhase?.addEventListener("change", updateSetupSummary);
+els.bossTestVisual?.addEventListener("change", updateSetupSummary);
+bossPoolInputs.forEach((input) => input.addEventListener("change", () => {
+  const selectedInputs = bossPoolInputs.filter((candidate) => candidate.checked);
+  if (!selectedInputs.length) {
+    input.checked = true;
+    if (els.bossPoolNote) {
+      els.bossPoolNote.textContent = "At least one boss must remain enabled.";
+      els.bossPoolNote.classList.add("input-warning");
+    }
+  } else if (els.bossPoolNote) {
+    els.bossPoolNote.textContent = "Enabled bosses are randomly assigned to mid and final encounters. At least one must remain enabled.";
+    els.bossPoolNote.classList.remove("input-warning");
+  }
+  state.bossVisualPoolIds = selectedBossVisualPoolIds();
+  window.localStorage.setItem(BOSS_POOL_STORAGE_KEY, JSON.stringify(state.bossVisualPoolIds));
+  updateSetupSummary();
+}));
 els.combatTestMode?.addEventListener("change", () => {
   if (els.combatTestMode.checked && els.actionDrivenMode) els.actionDrivenMode.checked = false;
   if (els.combatTestMode.checked && els.bossTestMode) els.bossTestMode.checked = false;
@@ -2209,7 +2882,7 @@ function suppressCompletedFinalBossVisual() {
   els.mapPanel?.classList.remove("boss-eyes-active", "boss-eyes-exiting", "boss-eyes-strike", "boss-final-visual", "boss-mid-visual", "boss-encounter");
   if (els.combatStage) {
     els.combatStage.hidden = true;
-    els.combatStage.classList.remove("entering", "resolving", "combat-cleared", "exiting", "boss-fight", "mid-boss-visual", "final-boss-visual", "boss-eyes-attacking", "boss-eyes-hit", "final-boss-defeated", "boss-intro-playing", "boss-intro-handoff", "boss-intro-complete");
+    els.combatStage.classList.remove("entering", "resolving", "combat-cleared", "exiting", "boss-fight", "mid-boss-visual", "final-boss-visual", "boss-eyes-attacking", "boss-eyes-hit", "final-boss-defeated", "boss-intro-playing", "boss-intro-handoff", "boss-intro-complete", "green-possession-active", "green-possession-returning");
     delete els.combatStage.dataset.nodeIndex;
   }
   clearBossDamageVisual();
@@ -2499,7 +3172,7 @@ function speakCurrentMissionLog() {
 }
 
 function maybeAutoReadMissionLog(entry) {
-  if (!state.ttsAutoLog || !ttsCanSpeak()) return noTtsRead();
+  if (!NARRATION_ENABLED || !state.ttsAutoLog || !ttsCanSpeak()) return noTtsRead();
   const text = missionLogSpeechText(entry) || currentMissionLogSpeechText();
   const key = `${state.currentQuestion}:${state.currentNode}:${text}`;
   if (!text || key === state.ttsLastLogKey) return noTtsRead();
@@ -2521,7 +3194,7 @@ function maybeAutoReadQuestion(options = {}) {
 function prefetchUpcomingTts(payload = {}) {
   if (!ttsCanSpeak()) return Promise.resolve([]);
   const items = [];
-  if (state.ttsAutoLog && payload.continuationStory) {
+  if (NARRATION_ENABLED && state.ttsAutoLog && payload.continuationStory) {
     items.push({ text: payload.continuationStory, purpose: "continuation" });
   }
   if (state.ttsAutoQuestion && payload.question) {
@@ -2565,6 +3238,7 @@ function currentQuestionSpeechText(info = currentQuestionInfo()) {
 function cleanSpeechText(text) {
   return String(text || "")
     .replace(/\breceiving\s+(?:transmission|comm(?:unication)?s?)\b[\s.:!\-]*/gi, "")
+    .replace(/\b(?:preparing narrator channel|waiting on local narrator response|no response for\s+\d+(?:\.\d+)?\s*(?:seconds?|minutes?))\b[\s.:!\-]*/gi, "")
     .replace(/\s+/g, " ")
     .replace(/! Alert !/gi, "Alert.")
     .replace(/! Query Incoming !/gi, "Query incoming.")
@@ -2650,6 +3324,7 @@ function startTestSessionFromUrl() {
   window.setTimeout(startMission, 0);
 }
 
+/** Validates preflight settings, initializes mission state, and opens the lobby. */
 function startMission() {
   try {
     const lengthValidation = missionLengthValidation();
@@ -2735,6 +3410,10 @@ function readMissionConfig() {
     : engine === "manual"
     ? makeChatQuestions(length)
     : selectMissionQuestions(questionPool, length);
+  const selectedQuestions = new Set(questions);
+  const questionReserve = actionDrivenMode || engine === "manual"
+    ? []
+    : shuffleForSession(questionPool.filter((question) => !selectedQuestions.has(question)));
 
   if (questions.length < 1) {
     setLaunchStatus(actionDrivenMode ? "Set at least one action room before launching." : "No study questions found. Click Load Demo Session or paste questions first.", true);
@@ -2747,6 +3426,7 @@ function readMissionConfig() {
     localDmMode,
     deviceMode: selectedDeviceMode(),
     questions,
+    questionReserve,
     localDmProvider: selectedLocalDmProvider(),
     ollamaModel: els.ollamaModel.value || defaultLocalDmModel(),
     missionType: els.missionType.value,
@@ -2755,6 +3435,7 @@ function readMissionConfig() {
     emergencyTimerEnabled: els.emergencyTimerEnabled.checked,
     emergencyTimerDuration: Number(els.emergencyTimerDuration.value) || 60,
     secondWindEnabled: Boolean(els.secondWindEnabled?.checked),
+    secondChanceEnabled: Boolean(els.secondChanceEnabled?.checked),
     audioDisabled: Boolean(els.disableAudio?.checked),
     sfxPreset: normalizeSfxPreset(els.sfxPreset?.value),
     youtubeMusicUrl: els.youtubeMusicUrl?.value.trim() || state.youtubeMusicUrl || "",
@@ -2764,6 +3445,8 @@ function readMissionConfig() {
     youtubeMusicRandomStart: Boolean(els.youtubeMusicRandomStart?.checked),
     bossTestMode: Boolean(els.bossTestMode?.checked),
     bossTestPhase: els.bossTestPhase?.value === "mid" ? "mid" : "final",
+    bossTestVisualId: BOSS_VISUAL_PROFILES[els.bossTestVisual?.value] ? els.bossTestVisual.value : "blood-red",
+    bossVisualPoolIds: selectedBossVisualPoolIds(),
     combatTestMode: Boolean(els.combatTestMode?.checked),
     actionDrivenMode
   };
@@ -2783,7 +3466,7 @@ function generateCustomMissionEnvironment() {
   const missionType = els.missionType.value || "Decayed Bunker";
   if (button) button.disabled = true;
   if (note) note.textContent = "Receiving generated mission environment...";
-  requestOllama(makeEnvironmentGeneratorPrompt(missionType), { temperature: 0.88, format: "json" })
+  requestOllama(makeEnvironmentGeneratorPrompt(missionType), { temperature: 0.88, format: "json", maxTokens: 480 })
     .then((text) => {
       const generated = parseGeneratedMissionEnvironment(text);
       if (!generated.environment || !generated.threatIdentity) throw new Error("Generated mission did not include an environment and threat.");
@@ -2810,9 +3493,12 @@ function generateCustomMissionEnvironment() {
 }
 
 function makeEnvironmentGeneratorPrompt(missionType) {
+  const bossNamingCues = bossNamingCuesForMission(missionType);
   return dmPrompts.makeEnvironmentGeneratorPrompt({
     missionType,
-    currentEnvironmentIdea: els.customTheme.value.trim()
+    currentEnvironmentIdea: els.customTheme.value.trim(),
+    midBossNamingCue: bossNamingCues.mid,
+    finalBossNamingCue: bossNamingCues.final
   });
 }
 
@@ -2892,6 +3578,9 @@ function positionMissionForBossTest(phase = state.bossTestPhase) {
   if (!targetGroup) return;
   const bossNodeIndex = state.nodes.findIndex((node) => node.type === "boss" && node.questionIndex === targetGroup.start);
   if (bossNodeIndex < 0) return;
+  state.nodes[bossNodeIndex].bossVisualId = BOSS_VISUAL_PROFILES[state.bossTestVisualId]
+    ? state.bossTestVisualId
+    : "blood-red";
   const preBossQuestion = Math.max(0, targetGroup.start - 1);
   const preBossNodeIndex = bossNodeIndex - 1;
   if (preBossNodeIndex >= 0 && state.nodes[preBossNodeIndex]?.type === "readiness") {
@@ -2929,7 +3618,7 @@ function positionMissionForBossTest(phase = state.bossTestPhase) {
     kind: "response",
     label: "Boss test start armed",
     detail: preBossNodeIndex >= 0 && state.nodes[preBossNodeIndex]?.type === "readiness"
-      ? `Starting at readiness room ${preBossNodeIndex + 1}; ${targetPhase} boss room ${bossNodeIndex + 1} will require a fresh intro mount`
+      ? `Starting at readiness room ${preBossNodeIndex + 1}; ${state.bossTestVisualId} ${targetPhase} boss room ${bossNodeIndex + 1} will require a fresh intro mount`
       : preBossNodeIndex >= 0 && targetGroup.start > 0
       ? `Starting in staging room ${preBossNodeIndex + 1}; ${targetPhase} boss room ${bossNodeIndex + 1} remains locked behind critical contact`
       : `No pre-boss question available; starting at the ${targetGroup.phase} boss readiness gate`
@@ -2937,30 +3626,25 @@ function positionMissionForBossTest(phase = state.bossTestPhase) {
 }
 
 function seedBossTestRoster(phase = "final") {
-  if (!state.bossTestMode || !combatSystem.levelForXp || !combatSystem.rollItemChoices) return;
+  if (!state.bossTestMode || !combatSystem.levelForXp) return;
   const final = phase === "final";
   state.players.forEach((player, index) => {
     // Mid-boss testing represents two completed combats; alternate level 2
     // and level 3 so the test exercises both sides of the expected range.
     const xp = final ? 150 : index % 2 ? 45 : 20;
     const levelInfo = combatSystem.levelForXp(xp);
-    const midBossReward = combatSystem.rollItemChoices({ rng: state.rng, count: 3, rarity: "epic" })[0];
-    const secondItem = combatSystem.rollItemChoices({ rng: state.rng, count: 3 })
-      .find((item) => item.id !== midBossReward?.id) || combatSystem.items?.find((item) => item.id !== midBossReward?.id);
-    const seededItems = final
-      ? [midBossReward, secondItem].filter(Boolean)
-      : [combatSystem.rollItemChoices({ rng: state.rng, count: 3 })[0] || midBossReward].filter(Boolean);
     player.xp = xp;
     player.level = levelInfo.level;
     player.maxHp = levelInfo.maxHp;
     player.hp = player.maxHp;
-    player.items = seededItems.map((item) => item.id).slice(0, 2);
-    player.itemNotice = final ? "Boss test loadout: mid-boss Epic reward simulated." : "Boss test loadout: two prior combats simulated.";
+    player.items = [];
+    player.equippedItem = null;
+    player.itemNotice = "";
     player.abilityNotice = final ? "Final boss test: max-level abilities online." : `Mid boss test: level ${player.level} combat readiness.`;
     refreshPlayerItemStats(player);
   });
-  // The final-boss scenario already includes the first-boss cache in each
-  // inventory, so its victory reward should be treated as the second cache.
+  // Preserve encounter progression semantics even though item rewards are
+  // disabled while the replacement catalog is being rebuilt.
   state.firstBossRewardGranted = final;
 }
 
@@ -2993,9 +3677,11 @@ function launchMission(players, config) {
           points: 0,
           xp: 0,
           answerStreak: 0,
+          totalAnswers: 0,
+          correctAnswers: 0,
           classId: config.playerClasses?.[normalize(name)] || combatSystem.CLASS_IDS?.[index % combatSystem.CLASS_IDS.length]
         })
-      : { name, hp: 10, maxHp: 10, status: [], incapacitated: false, points: 0, xp: 0, level: 1, answerStreak: 0 });
+      : { name, hp: 10, maxHp: 10, status: [], incapacitated: false, points: 0, xp: 0, level: 1, answerStreak: 0, totalAnswers: 0, correctAnswers: 0 });
     state.inventory = { medkits: 2, ems: 0 };
     state.itemCodex = readStoredItemCodex();
     state.pendingRewardChoice = null;
@@ -3014,32 +3700,43 @@ function launchMission(players, config) {
     state.environment = config.environment;
     state.title = makeTitle(state.missionType, state.environment);
     state.rng = mulberry32(seedFrom(`${state.title}|${cleanPlayers.join(",")}|${config.questions.length}`));
-    scheduleEnemyVisualPreload();
-    scheduleBossVisualPreload(state.missionType);
     state.threatProfile = createThreatProfile(state.missionType, state.environment);
     applySetupGeneratedMission(config.generatedMission);
     state.threat = state.threatProfile.identity || state.threatProfile.archetype || state.threatProfile.summary;
     state.currentQuestion = 0;
     state.currentNode = 0;
+    state.questionRemediationStats = {};
+    state.questionRemediationSequence = 0;
     state.actionDrivenMode = Boolean(config.actionDrivenMode);
     state.combatTestMode = Boolean(config.combatTestMode && !state.actionDrivenMode);
+    state.bossVisualPoolIds = normalizeBossVisualPoolIds(config.bossVisualPoolIds);
     const missionQuestions = state.combatTestMode && config.questions.length === 1
       ? [config.questions[0], { ...config.questions[0] }]
       : config.questions;
     state.challengeTypes = buildChallengePlan(missionQuestions.length);
     state.questions = state.actionDrivenMode ? missionQuestions : config.localDmMode || !config.chatMode ? prepareQuestions(missionQuestions, state.challengeTypes) : missionQuestions;
+    const reserveTypes = (config.questionReserve || []).map(() => ({ kind: "individual" }));
+    state.questionReserve = state.actionDrivenMode
+      ? []
+      : config.localDmMode || !config.chatMode
+        ? prepareQuestions(config.questionReserve || [], reserveTypes)
+        : [...(config.questionReserve || [])];
+    scheduleQuestionDistractorGeneration([...state.questions, ...state.questionReserve]);
     state.nodes = state.combatTestMode ? buildCombatTestNodes(state.questions.length) : buildNodes(state.questions.length);
+    scheduleBossVisualPreload(state.missionType);
     state.mapLayoutSeed = seedFrom(`${state.title}|${cleanPlayers.join(",")}|${config.questions.length}|${Date.now()}|${Math.random()}`);
     state.mapPositions = generateSprawledRoutePositions(state.nodes.length, state.mapLayoutSeed);
     state.mapRevealedNodes = new Set();
     state.mapRenderSignature = "";
     state.roomNames = {};
     state.bossAreaNames = generatedBossAreaFallbacks(state.missionType, state.environment, state.threat);
+    state.bossIdentities = fallbackBossIdentities(state.missionType);
     applyGeneratedBossAreas(config.generatedMission?.bossAreas);
     state.bossPhasePlans = {};
     state.bossPhasePlanRequests = {};
     state.bossTestMode = Boolean(config.bossTestMode && !state.combatTestMode);
     state.bossTestPhase = config.bossTestPhase === "mid" ? "mid" : "final";
+    state.bossTestVisualId = BOSS_VISUAL_PROFILES[config.bossTestVisualId] ? config.bossTestVisualId : "blood-red";
     seedBossTestRoster(state.bossTestPhase);
     state.bossTestPromptStarted = false;
     state.actionRooms = state.actionDrivenMode ? buildActionRooms(config.questions.length) : [];
@@ -3060,6 +3757,7 @@ function launchMission(players, config) {
     state.secondWindUsed = false;
     state.secondWindPlayerName = "";
     state.secondWindPendingPlayerName = "";
+    state.secondChanceEnabled = Boolean(config.secondChanceEnabled);
     state.challengeHistory = [];
     state.missionAccuracyResults = {};
     state.feedLastId = "";
@@ -3183,7 +3881,7 @@ function launchMission(players, config) {
       renderPlayerSessionPanel();
     }
     beginNextNode();
-    if (state.chatMode) startDmFeed();
+    if (state.chatMode && !state.localDmMode) startDmFeed();
   } catch (error) {
     console.error("Mission deployment failed", error);
     setLaunchStatus(`Deploy error: ${error.message || error}`, true);
@@ -3258,6 +3956,7 @@ function performMissionReset({ preserveTransition = false } = {}) {
   state.deviceMode = selectedDeviceMode();
   state.resolved = false;
   state.questions = [];
+  state.questionReserve = [];
   state.players = [];
   state.inventory = { medkits: 2, ems: 0 };
   state.itemCodex = readStoredItemCodex();
@@ -3281,6 +3980,8 @@ function performMissionReset({ preserveTransition = false } = {}) {
   state.threatProfile = null;
   state.currentQuestion = 0;
   state.currentNode = 0;
+  state.questionRemediationStats = {};
+  state.questionRemediationSequence = 0;
   state.nodes = [];
   state.roomNames = {};
   state.mapPositions = [];
@@ -3292,6 +3993,8 @@ function performMissionReset({ preserveTransition = false } = {}) {
   state.bossPhasePlanRequests = {};
   state.bossTestMode = false;
   state.bossTestPhase = "final";
+  state.bossTestVisualId = "blood-red";
+  state.bossVisualPoolIds = selectedBossVisualPoolIds();
   state.bossTestPromptStarted = false;
   state.combatTestMode = false;
   state.actionDrivenMode = false;
@@ -3316,6 +4019,7 @@ function performMissionReset({ preserveTransition = false } = {}) {
   state.secondWindUsed = false;
   state.secondWindPlayerName = "";
   state.secondWindPendingPlayerName = "";
+  state.secondChanceEnabled = false;
   state.feedLastId = "";
   state.roomCode = "";
   state.playerPromptId = "";
@@ -3437,7 +4141,7 @@ function performMissionReset({ preserveTransition = false } = {}) {
 
 function startDmFeed() {
   stopDmFeed();
-  state.feedPollTimer = window.setInterval(checkDmFeed, 500);
+  state.feedPollTimer = window.setInterval(checkDmFeed, DM_FEED_POLL_MS);
   checkDmFeed();
 }
 
@@ -3472,7 +4176,6 @@ function openJoinLobby(config) {
   els.joinLobby.hidden = false;
   els.startBtn.disabled = true;
   stopPlayerPolling();
-  state.playerPollTimer = window.setInterval(pollPlayerAnswers, 350);
   adoptOrCreateLobby(config);
 }
 
@@ -3583,7 +4286,7 @@ function restoreLobbyFromServer() {
       els.joinLobby.hidden = false;
       els.startBtn.disabled = true;
       stopPlayerPolling();
-      state.playerPollTimer = window.setInterval(pollPlayerAnswers, 350);
+      pollPlayerAnswers();
       renderJoinLobby();
     })
     .catch(() => {});
@@ -3594,7 +4297,6 @@ function startPlayerSession() {
   renderPlayerSessionPanel();
   publishPlayerSession({ status: "briefing", prompt: null, resetAnswers: true, resetQueuedActions: true });
   stopPlayerPolling();
-  state.playerPollTimer = window.setInterval(pollPlayerAnswers, 350);
   pollPlayerAnswers();
 }
 
@@ -3763,16 +4465,36 @@ function stopPlayerSession() {
 
 function stopPlayerPolling() {
   if (state.playerPollTimer) {
-    window.clearInterval(state.playerPollTimer);
+    window.clearTimeout(state.playerPollTimer);
     state.playerPollTimer = null;
   }
   state.playerSyncInFlight = false;
 }
 
+function playerSyncPollDelay() {
+  if (state.joinLobbyActive) return PLAYER_SYNC_LOBBY_POLL_MS;
+  const acceptingAnswers = Boolean(
+    state.started
+    && state.questionPresentationReady
+    && !state.answerPending
+    && !state.resolutionDelayPending
+    && !state.resolved
+  );
+  return acceptingAnswers ? PLAYER_SYNC_ACTIVE_POLL_MS : PLAYER_SYNC_IDLE_POLL_MS;
+}
+
+function schedulePlayerPolling(delay = playerSyncPollDelay()) {
+  if (state.playerPollTimer || document.hidden || !state.roomCode) return;
+  if (!state.joinLobbyActive && (!state.started || state.deviceMode !== "multi")) return;
+  state.playerPollTimer = window.setTimeout(() => {
+    state.playerPollTimer = null;
+    pollPlayerAnswers();
+  }, delay);
+}
+
 function ensurePlayerAnswerPolling() {
   if (!state.started || state.deviceMode !== "multi" || !state.roomCode || state.playerPollTimer) return;
-  state.playerPollTimer = window.setInterval(pollPlayerAnswers, 350);
-  window.setTimeout(pollPlayerAnswers, 0);
+  pollPlayerAnswers();
 }
 
 function publishPlayerSession(extra = {}) {
@@ -3882,6 +4604,8 @@ function sideActionBlocksPlayerAnswers() {
 }
 
 function playerStatePayload() {
+  const encounter = currentCombatEncounter();
+  const greenConfusionPhase = Number(encounter?.greenConfusionPhase) || 0;
   return state.players.map((player) => {
     const displayedHp = state.combatDisplayedHp[normalize(player.name)];
     const hp = Number.isFinite(displayedHp) ? displayedHp : player.hp;
@@ -3892,17 +4616,27 @@ function playerStatePayload() {
     // Compatibility placeholder for the replacement condition system.
     status: [],
     incapacitated: Boolean(player.incapacitated) || hp <= 0,
+    secondChanceActive: Boolean(state.secondChanceEnabled && (player.incapacitated || hp <= 0)),
+    secondChanceCorrectResponses: Math.max(0, Number(player.secondChanceCorrectResponses) || 0),
+    possessed: Boolean(player._greenPossessed),
+    possessionConfused: Boolean(player._spectralInfected && !player._greenPossessed && !player.incapacitated),
+    spectralInfected: Boolean(player._spectralInfected && greenConfusionPhase === 1),
+    spectralInfectionCorrectStreak: Math.max(0, Number(player.spectralInfectionCorrectStreak) || 0),
+    possessionCorrectStreak: Math.max(0, Number(player.greenPossessionCorrectStreak) || 0),
     points: Math.max(0, Math.round(Number(player.points) || 0)),
     xp: Math.max(0, Math.round(Number(player.xp) || 0)),
     level: Math.max(1, Math.round(Number(player.level) || 1)),
     answerStreak: Math.max(0, Math.round(Number(player.answerStreak) || 0)),
+    totalAnswers: Math.max(0, Math.round(Number(player.totalAnswers) || 0)),
+    correctAnswers: Math.max(0, Math.round(Number(player.correctAnswers) || 0)),
+    accuracyPercent: playerAnswerAccuracy(player).percent,
     enforcerReserve: player.classId === "enforcer" ? Math.max(0, Math.round(Number(player.enforcerReserve) || 0)) : 0,
     classId: player.classId || "",
     classLabel: combatSystem.classDefinition?.(player.classId)?.label || "Operator",
     classGear: player.classGear || combatSystem.classDefinition?.(player.classId)?.gear || "",
     classColor: player.classColor || combatSystem.classDefinition?.(player.classId)?.color || "",
-    items: Array.isArray(player.items) ? player.items.slice(0, 2) : [],
-    equippedItem: player.equippedItem || null,
+    items: playerItems(player).map((item) => item.id).slice(0, ITEM_CAPACITY),
+    equippedItem: null,
     classCooldowns: { ...(player.classCooldowns || {}) },
     abilityUsedThisTurn: abilityUsedThisTurn(player),
     itemNotice: player.itemNotice || "",
@@ -3970,6 +4704,7 @@ function buildPlayerPrompt() {
     return {
       id: promptId,
       questionIndex: state.currentQuestion,
+      questionCount: state.challengeHistory.length,
       nodeIndex: state.currentNode,
       title: state.title,
       areaName: recoveryAreaName(node),
@@ -3979,7 +4714,7 @@ function buildPlayerPrompt() {
       allowPlayerActions: false,
       accepting: state.questionPresentationReady && !state.answerPending && !state.resolutionDelayPending && !sideActionBlocksPlayerAnswers() && !state.resolved,
       mode: "multiple",
-      question: "Choose one recovery option.",
+      question: "All incapacitated operators recover to 75% max health. Choose one additional recovery option.",
       choices: [
         { key: "A", text: `Everyone active recovers ${hp} HP` },
         { key: "B", text: `Gain ${medkits} Medkits` },
@@ -3990,11 +4725,15 @@ function buildPlayerPrompt() {
   const info = currentQuestionInfo();
   if (!info.question) return null;
   const combatEncounter = isCombatNode(node) ? currentCombatEncounter() : null;
+  const infectionQuestion = state.players.some((player) => player._spectralInfected)
+    ? questionWithPossessionInfectionChoices(info.question)
+    : null;
   const promptId = `${state.currentQuestion}-${state.currentNode}-${info.question.mode}-${info.type.kind}${combatEncounter ? `-r${combatEncounter.round}` : ""}`;
   state.playerPromptId = promptId;
   return {
     id: promptId,
     questionIndex: state.currentQuestion,
+    questionCount: state.challengeHistory.length,
     nodeIndex: state.currentNode,
     title: state.title,
     areaName: info.areaName,
@@ -4026,7 +4765,9 @@ function buildPlayerPrompt() {
       ? info.question.choices
           .filter((choice) => !(state.narrowedChoices[state.currentQuestion] || []).includes(choice.key))
           .map((choice) => ({ key: choice.key, text: choice.text }))
-      : []
+      : [],
+    infectionChoices: infectionQuestion?.choices?.map((choice) => ({ key: choice.key, text: choice.text })) || [],
+    shuffleAnswersEveryMs: combatEncounter?.greenMindEraserActive ? 1000 : 0
   };
 }
 
@@ -4191,9 +4932,16 @@ function publishPlayerWaiting(status = "waiting") {
 }
 
 function pollPlayerAnswers() {
+  if (state.playerPollTimer) {
+    window.clearTimeout(state.playerPollTimer);
+    state.playerPollTimer = null;
+  }
   if (!state.roomCode) return;
   if (document.hidden) return;
-  if (state.playerSyncInFlight) return;
+  if (state.playerSyncInFlight) {
+    schedulePlayerPolling();
+    return;
+  }
   if (state.joinLobbyActive) {
     state.playerSyncInFlight = true;
     playerSessionApi.fetchSession()
@@ -4204,6 +4952,7 @@ function pollPlayerAnswers() {
       .catch(() => {})
       .finally(() => {
         state.playerSyncInFlight = false;
+        schedulePlayerPolling();
       });
     return;
   }
@@ -4261,6 +5010,7 @@ function pollPlayerAnswers() {
     })
     .finally(() => {
       state.playerSyncInFlight = false;
+      schedulePlayerPolling();
     });
 }
 
@@ -4507,9 +5257,7 @@ function prepareActionResolution(queue, index) {
   const eventNotes = queue.eventNotes || {};
   const actionOutcome = applySingleActionOutcome(queue.room, scoredEntry, index, queue.scored, eventNotes, queue.timeout);
   const playerEvents = changedPlayerEvents(before, eventNotes);
-  const fallback = singleActionResolutionFallback(queue.room, scoredEntry, actionOutcome, playerEvents, queue);
-  const prompt = makeLocalSingleActionResolutionPrompt(queue.room, scoredEntry, actionOutcome, playerEvents, queue);
-  logRoomDebug(`Action narration prompt: ${queue.info.areaName}`, prompt, { maxLength: 9000 });
+  const fallback = NARRATION_DEFAULTS.actionResolution;
   const prepared = {
     index,
     scoredEntry,
@@ -4517,11 +5265,9 @@ function prepareActionResolution(queue, index) {
     playerEvents,
     done: false,
     story: "",
-    promise: requestOllama(prompt, { temperature: 0.82 })
-      .then((text) => safeSingleActionNarration(text, playerEvents, fallback))
-      .catch(() => fallback)
+    promise: Promise.resolve(fallback)
       .then((story) => {
-        prepared.story = ensureActionInjuryNarration(story, playerEvents);
+        prepared.story = story;
         prepared.done = true;
         logRoomDebug(`Action narration: ${queue.info.areaName}`, {
           actionIndex: index + 1,
@@ -4613,9 +5359,8 @@ function prepareActionRoomFinalization(queue) {
     preloadActionRoomOpening(nextInfo);
   }
   const statusLog = actionResolutionStatusLog(resolution, []);
-  const fallback = actionRoomSummaryFallback(queue.room, resolution, nextInfo);
-  const transitionFallback = actionRoomContinuationStory(queue.room, nextInfo, resolution);
-  const prompt = makeLocalActionRoomSummaryPrompt(queue.room, resolution, queue.entries, nextInfo);
+  const fallback = NARRATION_DEFAULTS.afterQuestion;
+  const transitionFallback = resolution.progress ? NARRATION_DEFAULTS.roomTransition : "";
   const finalization = {
     resolution,
     nextInfo,
@@ -4624,26 +5369,7 @@ function prepareActionRoomFinalization(queue) {
     parsed: null,
     promise: null
   };
-  finalization.promise = requestOllama(prompt, { temperature: 0.78 })
-    .then((text) => {
-      const parsed = parseActionRoomSummaryResponse(text, fallback, transitionFallback, resolution.progress);
-      logRoomDebug(`Room outcome: ${queue.info.areaName}`, {
-        raw: text,
-        parsed,
-        resolution,
-        finalEntities: queue.room.entities || []
-      });
-      return parsed;
-    })
-    .catch(() => {
-      const parsed = { outcome: fallback, transition: transitionFallback };
-      logRoomDebug(`Room outcome fallback: ${queue.info.areaName}`, {
-        parsed,
-        resolution,
-        finalEntities: queue.room.entities || []
-      });
-      return parsed;
-    })
+  finalization.promise = Promise.resolve({ outcome: fallback, transition: transitionFallback })
     .then((parsed) => {
       finalization.parsed = parsed;
       finalization.done = true;
@@ -4766,7 +5492,7 @@ function requestActionJudgments(room, entries, info, timeout = false) {
   if (!entries.length) return Promise.resolve(fallback());
   const prompt = makeActionJudgmentPrompt(room, entries, info, timeout);
   logRoomDebug(`Action judgment prompt: ${info.areaName}`, prompt, { maxLength: 9000 });
-  return requestOllama(prompt, { temperature: 0.18 })
+  return requestOllama(prompt, { temperature: 0.18, maxTokens: 560 })
     .then((text) => {
       const parsed = parseActionJudgmentResponse(text, entries, room);
       logRoomDebug(`Action judgments: ${info.areaName}`, formatActionJudgmentDebug(text, parsed, room), { maxLength: 12000 });
@@ -5365,7 +6091,9 @@ function makeLocalSingleActionResolutionPrompt(room, scoredEntry, outcome, playe
     statusContext,
     sequenceContext: `${previous ? `${previous.playerName} acted before this.` : "this is the first action"}; ${next ? "another operator still needs to act" : "this is the last individual action before the room outcome is judged"}`,
     threat: state.threat,
-    threatProfile: compactThreatProfileOneLine()
+    threatProfile: compactThreatProfileOneLine(),
+    styleBible: narrationStyleBible(),
+    operatorDoctrine: classNarrationDoctrine(state.players.find((player) => sameName(player.name, scoredEntry.playerName))?.classId)
   });
 }
 
@@ -5408,17 +6136,7 @@ function compactThreatProfileOneLine() {
 }
 
 function singleActionResolutionFallback(room, scoredEntry, outcome, playerEvents, queue) {
-  const action = actionFallbackOpening(scoredEntry);
-  const modifier = scoredEntry.chainModifier > 0
-    ? "The previous operator's work gives the attempt a cleaner opening."
-    : scoredEntry.chainModifier < 0
-    ? "The previous action leaves the room unstable, turning the attempt dangerous."
-    : "";
-  const injury = playerEvents.length
-    ? ` ${playerEvents.map((event) => eventNarrativeInjurySentence(event)).join(" ")}`
-    : "";
-  const continuation = queue.index + 1 < queue.scored.length ? "The next operator has to move before the room can be judged." : "The last action lands, and the room's reaction is about to decide the route.";
-  return collapseActionDamageSentences(`${action} ${modifier} ${state.threat} keeps pressure on the chamber as the result takes shape.${injury} ${continuation}`, playerEvents);
+  return NARRATION_DEFAULTS.actionResolution;
 }
 
 function actionFallbackOpening(scoredEntry) {
@@ -5779,6 +6497,7 @@ function actionResolutionStatusLog(resolution, playerEvents) {
 function makeLocalActionRoomResolutionPrompt(room, resolution, entries, playerEvents, nextInfo) {
   return [
     `Write a player-facing action-room resolution in ${narrationSentenceRange("4-7", "2-4")} sentences.`,
+    narrationStyleBible(),
     "Use the submitted actions as real physical choices in the scene.",
     "Do not mention score numbers, threat pressure, hidden mechanics, categories, rolls, quiz, questions, or answer choices.",
     "Mandatory: if any affected player lost HP or gained a status, explicitly narrate why it happened, tied to that player and their action. Do not leave damage unexplained.",
@@ -5798,6 +6517,7 @@ function makeLocalActionRoomResolutionPrompt(room, resolution, entries, playerEv
     playerEvents.length ? `Injury facts to reflect without copying this wording: ${playerEvents.map((event) => `${event.name}: ${actionInjuryCueText(resolution.scored.find((entry) => sameName(entry.playerName, event.name)) || {}, findActionOutcomeForPlayer(event.name, resolution, room))}`).join("; ")}.` : "",
     playerEvents.length ? `Affected players: ${compactTeamStatusText(playerEvents)}.` : "Affected players: none.",
     `Threat: ${state.threat}; ${compactThreatProfileText()}.`,
+    `Operator roster:\n${narrationRosterText()}`,
     `Next area if progress occurs: ${nextInfo.areaName}.`
   ].filter(Boolean).join("\n");
 }
@@ -5825,6 +6545,7 @@ function makeLocalActionRoomSummaryPrompt(room, resolution, entries, nextInfo) {
   return [
     "FINAL OUTPUT ONLY. Return valid JSON only. No markdown.",
     "Write player-facing action-room resolution text.",
+    narrationStyleBible(),
     `Return this exact shape: {"outcome":"${narrationSentenceRange("1-5", "1-3")} sentences resolving the current room","transition":"${narrationSentenceRange("1-4", "1-2")} sentences moving from the current room toward the next area"}`,
     "The outcome resolves how the completed sequence of operator actions changes the current room.",
     "The transition describes the team physically leaving this room and approaching the next area. It must be model-written, specific, and not use generic route-marker phrasing.",
@@ -5864,16 +6585,11 @@ function parseActionRoomSummaryResponse(text, fallbackOutcome, fallbackTransitio
 }
 
 function actionRoomSummaryFallback(room, resolution, nextInfo) {
-  if (resolution.progress) {
-    return `The last action settles into place, and ${room.areaName} finally gives the squad a way through. ${state.threat} recoils through the failing systems but does not disappear. The route opens toward ${nextInfo.areaName}.`;
-  }
-  return `The last action fails to break the room's hold, and ${room.areaName} stays hostile around the squad. ${state.threat} keeps its grip on the route, forcing the operators to commit to another plan before they can move on.`;
+  return NARRATION_DEFAULTS.afterQuestion;
 }
 
 function actionRoomContinuationStory(room, nextInfo, resolution) {
-  if (!nextInfo.questionText) return "The squad clears the final obstruction and follows the last signal toward extraction.";
-  const tone = resolution.tier === "excellent" ? "with momentum" : resolution.tier === "partial" ? "under pressure" : "through the smoke";
-  return `The team leaves ${room.areaName} ${tone}, following the route markers toward ${nextInfo.areaName}. The next space is already reacting to their presence.`;
+  return NARRATION_DEFAULTS.roomTransition;
 }
 
 function clearLockedOperatorAnswerWindow() {
@@ -6083,7 +6799,7 @@ function requiredDeviceAnswerIds(info = currentQuestionInfo(), options = {}) {
   if (!options.live && state.playerPromptRequiredIds?.length) {
     return new Set(state.playerPromptRequiredIds.filter((id) => promptResponderIdAvailable(id)));
   }
-  const activeRoster = new Set(activePlayers().map((player) => normalize(player.name)));
+  const activeRoster = new Set(answerEligiblePlayers().map((player) => normalize(player.name)));
   const ids = state.playerParticipants
     .filter((player) => activeRoster.has(normalize(player.name)))
     .map((player) => String(player.id || ""))
@@ -6096,7 +6812,7 @@ function requiredDeviceAnswerNames(info = currentQuestionInfo(), options = {}) {
   if (!options.live && state.playerPromptRequiredNames?.length) {
     return new Set(state.playerPromptRequiredNames.filter((name) => promptResponderNameAvailable(name)));
   }
-  const activeRoster = new Set(activePlayers().map((player) => normalize(player.name)));
+  const activeRoster = new Set(answerEligiblePlayers().map((player) => normalize(player.name)));
   const connected = state.playerParticipants
     .map((player) => normalize(player.name))
     .filter((name) => activeRoster.has(name));
@@ -6154,14 +6870,14 @@ function deviceTeamAnswerEntries(answers, question) {
     : null;
   const roster = requiredNames
     ? state.players.filter((player) => requiredNames.has(normalize(player.name)))
-    : activePlayers();
+    : answerEligiblePlayers();
   return roster.map((player) => {
     const submitted = answers.find((answer) => sameName(answer.playerName, player.name));
     const answer = submitted?.answer || "";
     return {
       player,
       answer,
-      correct: answer ? isLocalAnswerCorrect(answer, question) : false,
+      correct: answer ? isLocalAnswerCorrect(answer, question, player) : false,
       submittedAt: submitted?.submittedAt || 0
     };
   });
@@ -6174,7 +6890,7 @@ function deviceAnswerEntries(answers, question) {
     return {
       player,
       answer: submitted.answer || "",
-      correct: submitted.answer ? isLocalAnswerCorrect(submitted.answer, question) : false,
+      correct: submitted.answer ? isLocalAnswerCorrect(submitted.answer, question, player) : false,
       submittedAt: submitted.submittedAt || 0
     };
   }).filter(Boolean);
@@ -6299,9 +7015,11 @@ function captureCombatXpBaseline() {
 }
 
 function deviceChallengeSucceeded(entries, type) {
-  if (type.kind === "individual" || type.kind === "locked" || type.locked) return entries.every((entry) => entry.correct);
-  const correctCount = entries.filter((entry) => entry.correct).length;
-  return correctCount >= Math.ceil(entries.length / 2);
+  const activeEntries = entries.filter((entry) => !entry.player?.incapacitated);
+  const scoringEntries = activeEntries.length ? activeEntries : entries;
+  if (type.kind === "individual" || type.kind === "locked" || type.locked) return scoringEntries.every((entry) => entry.correct);
+  const correctCount = scoringEntries.filter((entry) => entry.correct).length;
+  return correctCount >= Math.ceil(scoringEntries.length / 2);
 }
 
 function setDeviceAnswerResults(entries, question = currentQuestionInfo()?.question) {
@@ -6564,7 +7282,7 @@ function startMissionLogAutoScroll(options = {}) {
 }
 
 function simulatedAnswerParticipants(info) {
-  const activeNames = new Set(activePlayers().map((player) => normalize(player.name)));
+  const activeNames = new Set(answerEligiblePlayers().map((player) => normalize(player.name)));
   const connected = simulatedParticipants().filter((participant) => activeNames.has(normalize(participant.name)));
   if (info.type.kind === "emergency") return connected.slice(0, 1);
   return connected;
@@ -6578,10 +7296,17 @@ function simulatedParticipants() {
   });
 }
 
-function simulatedAnswerFor(question, correct) {
-  if (correct) return question.mode === "fill" ? question.answerText : question.answerKey;
-  if (question.mode === "fill") return "incorrect test answer";
-  const wrongChoice = question.choices.find((choice) => choice.key !== question.answerKey);
+function simulatedAnswerFor(question, correct, player = null) {
+  // Spectral Delirium grades against the stable eight-choice layout published
+  // for this operator, not the four-choice source question. Simulated players
+  // must answer that same visible layout or a requested "correct" roll can be
+  // marked wrong simply because the correct answer moved to E-H.
+  const displayedQuestion = player?._spectralInfected
+    ? questionWithPossessionInfectionChoices(question) || question
+    : question;
+  if (correct) return displayedQuestion.mode === "fill" ? displayedQuestion.answerText : displayedQuestion.answerKey;
+  if (displayedQuestion.mode === "fill") return "incorrect test answer";
+  const wrongChoice = displayedQuestion.choices.find((choice) => choice.key !== displayedQuestion.answerKey);
   return wrongChoice?.key || "Z";
 }
 
@@ -6869,7 +7594,7 @@ function gfMultiply(a, b) {
 }
 
 function checkDmFeed() {
-  if (!state.chatMode || !state.started) return;
+  if (!state.chatMode || state.localDmMode || !state.started) return;
   if (document.hidden) return;
   if (state.currentQuestion === 0 && !state.teamReady) return;
   fetchFeed()
@@ -7147,8 +7872,11 @@ function checkMissionSystems() {
       }
       return fetchWithTimeout(`/api/tts/status?provider=${encodeURIComponent(provider)}`, { cache: "no-store" })
         .then((response) => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)))
-        .then((body) => ({ label: "Voice System", state: body.available ? "ok" : "warn", detail: body.available ? `${provider === "kokoro" ? "Kokoro" : "Piper"} ready` : `${provider === "kokoro" ? "Kokoro" : "Piper"} unavailable` }))
-        .catch(() => ({ label: "Voice System", state: "warn", detail: `${provider === "kokoro" ? "Kokoro" : "Piper"} unavailable` }));
+        .then((body) => {
+          const label = provider === "kokoro" ? "Kokoro" : provider === "elevenlabs" ? "ElevenLabs" : "Piper";
+          return { label: "Voice System", state: body.available ? "ok" : "warn", detail: `${label} ${body.available ? "ready" : "unavailable"}` };
+        })
+        .catch(() => ({ label: "Voice System", state: "warn", detail: `${provider === "kokoro" ? "Kokoro" : provider === "elevenlabs" ? "ElevenLabs" : "Piper"} unavailable` }));
     })()
   ];
 
@@ -7601,7 +8329,9 @@ function updateSetupSummary() {
   const structure = missionStructureSummary(length);
   const bossTest = Boolean(els.bossTestMode?.checked);
   const bossTestPhase = els.bossTestPhase?.value === "mid" ? "mid" : "final";
+  const bossTestVisual = els.bossTestVisual?.options?.[els.bossTestVisual.selectedIndex]?.text?.split("—")[0]?.trim() || "Red eyes";
   if (els.bossTestPhaseField) els.bossTestPhaseField.hidden = !bossTest;
+  if (els.bossTestVisualField) els.bossTestVisualField.hidden = !bossTest;
   const combatTest = Boolean(els.combatTestMode?.checked);
   if (els.setupModeStatus) els.setupModeStatus.textContent = deviceMode === "single" ? "Single Device" : "Device Lobby";
   if (els.setupRouteStatus) els.setupRouteStatus.textContent = actionDrivenMode ? `${length} Action Rooms` : total ? `${length} ${combatTest ? "Combat Loop" : bossTest ? "Boss Test" : "Randomized"}` : "Awaiting Bank";
@@ -7631,7 +8361,7 @@ function updateSetupSummary() {
   els.questionCountNote.textContent = actionDrivenMode
     ? `Action-driven mission enabled. The route will use ${length} room${length === 1 ? "" : "s"} and resolve progress from player actions instead of study questions.`
     : combatTest && total
-    ? `${setPrefix}${total} question${total === 1 ? "" : "s"} parsed. Combat Test Loop will begin with one normal staging room, then create ${Math.ceil(Math.max(1, length - 1) / COMBAT_QUESTION_POOL_SIZE)} consecutive combat room${Math.ceil(Math.max(1, length - 1) / COMBAT_QUESTION_POOL_SIZE) === 1 ? "" : "s"} with up to ${COMBAT_QUESTION_POOL_SIZE} questions each.`
+    ? `${setPrefix}${total} question${total === 1 ? "" : "s"} parsed. Combat Test Loop will begin with one normal staging room, then create ${Math.ceil(Math.max(1, length - 1) / NORMAL_COMBAT_QUESTION_COUNT)} consecutive combat room${Math.ceil(Math.max(1, length - 1) / NORMAL_COMBAT_QUESTION_COUNT) === 1 ? "" : "s"} with up to ${NORMAL_COMBAT_QUESTION_COUNT} questions each.`
     : total
     ? `${setPrefix}${total} question${total === 1 ? "" : "s"} parsed. Mission will use ${length} question${length === 1 ? "" : "s"} across ${structure.challengeRooms} encounter room${structure.challengeRooms === 1 ? "" : "s"} plus ${structure.recoveryRooms} recovery room${structure.recoveryRooms === 1 ? "" : "s"}. Boss plan: ${structure.bossText}.${structure.warning ? ` ${structure.warning}` : ""}${rejected ? ` ${rejected} block${rejected === 1 ? "" : "s"} could not be parsed.` : ""}`
     : `${setPrefix}No questions parsed yet.`;
@@ -7644,7 +8374,7 @@ function updateSetupSummary() {
   els.preflightSummary.textContent = actionDrivenMode
     ? `${deviceMode === "single" ? `${roster.length || 0} players` : "Device join lobby"} - ${length} action rooms - ${engine}${state.fastMode ? " - Fast pacing" : ""}`
     : total
-    ? `${deviceMode === "single" ? `${roster.length || 0} players` : "Device join lobby"} - ${length} questions - ${combatTest ? "Combat test loop" : `${structure.challengeRooms} encounter rooms`} - ${engine}${bossTest && !combatTest ? ` - ${bossTestPhase === "mid" ? "Mid" : "Final"} boss test` : ""}${state.fastMode ? " - Fast pacing" : ""}`
+    ? `${deviceMode === "single" ? `${roster.length || 0} players` : "Device join lobby"} - ${length} questions - ${combatTest ? "Combat test loop" : `${structure.challengeRooms} encounter rooms`} - ${engine}${bossTest && !combatTest ? ` - ${bossTestVisual} ${bossTestPhase === "mid" ? "mid" : "final"} boss test` : ""}${state.fastMode ? " - Fast pacing" : ""}`
     : "Add study questions to begin.";
   if (!lengthValidation.valid) els.preflightSummary.textContent = "Mission length needs attention before launch.";
 }
@@ -7786,6 +8516,11 @@ function parsePlayers(text) {
     .slice(0, 12);
 }
 
+/**
+ * Parses the supported question formats into one normalized schema.
+ * Each accepted record has a prompt, mode, choices, and canonical answer;
+ * malformed records are returned separately so preflight can explain them.
+ */
 function parseQuestions(text) {
   return questionBank.parseQuestions(text);
 }
@@ -7842,14 +8577,172 @@ function prepareQuestions(questions, challengeTypes = []) {
   }));
 }
 
+function scheduleQuestionDistractorGeneration(questions = state.questions) {
+  const cachedDistractors = readQuestionDistractorCache();
+  const candidatePool = questions.flatMap((candidate) => [
+    candidate?.answerText,
+    ...(Array.isArray(candidate?.choices) ? candidate.choices.map((choice) => choice.text) : [])
+  ]).filter(Boolean);
+  const prepared = [];
+  questions.forEach((question) => {
+    const cached = cachedDistractors[questionDistractorCacheKey(question)];
+    if (Array.isArray(cached) && cached.length === 4) {
+      question.generatedDistractors = cached.slice();
+      question.expandedChoiceReady = true;
+      prepared.push(question);
+      return;
+    }
+    if (question?.mode !== "multiple"
+      || question.type === "true-false"
+      || !Array.isArray(question.choices)
+      || question.choices.length !== 4
+      || !question.answerText) return;
+    const excluded = new Set([question.answerText, ...question.choices.map((choice) => choice.text)].map(normalize));
+    const candidates = [];
+    for (const rawValue of candidatePool) {
+      const value = cleanQuestionMarkup(String(rawValue || "")).replace(/^[A-H][).:\-]\s*/i, "").trim();
+      const key = normalize(value);
+      if (!value || value.length > 140 || excluded.has(key)) continue;
+      excluded.add(key);
+      candidates.push(value);
+    }
+    const random = mulberry32(seedFrom(`${questionDistractorCacheKey(question)}|local-distractors-v1`));
+    for (let index = candidates.length - 1; index > 0; index -= 1) {
+      const swapIndex = Math.floor(random() * (index + 1));
+      [candidates[index], candidates[swapIndex]] = [candidates[swapIndex], candidates[index]];
+    }
+    const distractors = candidates.slice(0, 4);
+    while (distractors.length < 4) distractors.push(`Corrupted signal response ${distractors.length + 1}`);
+    question.generatedDistractors = distractors;
+    question.expandedChoiceReady = true;
+    prepared.push(question);
+  });
+  cacheGeneratedQuestionDistractors(prepared);
+  return Promise.resolve(prepared);
+}
+
+function questionDistractorCacheKey(question) {
+  if (!question) return "";
+  return String(seedFrom([
+    question.question,
+    question.answerText,
+    ...(question.choices || []).map((choice) => choice.text)
+  ].map((value) => normalize(value)).join("|")));
+}
+
+function readQuestionDistractorCache() {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(QUESTION_DISTRACTOR_CACHE_STORAGE_KEY) || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function cacheGeneratedQuestionDistractors(questions = []) {
+  if (!questions.length) return;
+  try {
+    const cache = readQuestionDistractorCache();
+    questions.forEach((question) => {
+      if (Array.isArray(question.generatedDistractors) && question.generatedDistractors.length === 4) {
+        cache[questionDistractorCacheKey(question)] = question.generatedDistractors.slice();
+      }
+    });
+    const recentEntries = Object.entries(cache).slice(-500);
+    window.localStorage.setItem(QUESTION_DISTRACTOR_CACHE_STORAGE_KEY, JSON.stringify(Object.fromEntries(recentEntries)));
+  } catch {
+    // Storage can be unavailable in locked-down classroom browsers; gameplay
+    // still uses the in-memory distractors prepared for the current mission.
+  }
+}
+
+function questionWithExpandedChoices(question, correctChoiceNumber = null) {
+  if (!question?.expandedChoiceReady || !Array.isArray(question.generatedDistractors) || question.generatedDistractors.length < 4) return null;
+  const correctText = question.answerText;
+  const incorrect = [
+    ...question.choices.filter((choice) => normalize(choice.text) !== normalize(correctText)).map((choice) => choice.text),
+    ...question.generatedDistractors
+  ];
+  const uniqueIncorrect = [...new Map(incorrect.map((text) => [normalize(text), text])).values()].slice(0, 7);
+  if (uniqueIncorrect.length < 7) return null;
+  const desiredIndex = Number.isInteger(correctChoiceNumber)
+    ? Math.max(0, Math.min(7, correctChoiceNumber - 1))
+    : Math.floor(state.rng() * 8);
+  const texts = uniqueIncorrect.slice();
+  texts.splice(desiredIndex, 0, correctText);
+  const choices = texts.map((text, index) => ({ key: String.fromCharCode(65 + index), text }));
+  return {
+    ...question,
+    choices,
+    answerKey: choices[desiredIndex].key,
+    answerText: correctText,
+    mode: "multiple",
+    expandedChoiceActive: true
+  };
+}
+
+function questionWithPossessionInfectionChoices(question) {
+  if (question?.mode !== "multiple"
+    || !Array.isArray(question.choices)
+    || question.choices.length !== 4) return null;
+  const excluded = new Set(question.choices.map((choice) => normalize(choice.text)));
+  const candidates = [
+    ...(Array.isArray(question.generatedDistractors) ? question.generatedDistractors : []),
+    ...state.questions.flatMap((candidate) => Array.isArray(candidate?.choices) ? candidate.choices.map((choice) => choice.text) : [])
+  ];
+  const extras = [];
+  for (const text of candidates) {
+    const key = normalize(text);
+    if (!text || excluded.has(key)) continue;
+    excluded.add(key);
+    extras.push(text);
+    if (extras.length === 4) break;
+  }
+  while (extras.length < 4) extras.push(`Corrupted signal response ${extras.length + 1}`);
+  const sourceTexts = [...question.choices.map((choice) => choice.text), ...extras];
+  const layoutSignature = sourceTexts.map(normalize).join("|");
+  if (question._infectionChoiceLayout?.signature === layoutSignature) {
+    return {
+      ...question,
+      choices: question._infectionChoiceLayout.choices.map((choice) => ({ ...choice })),
+      answerKey: question._infectionChoiceLayout.answerKey,
+      expandedChoiceActive: true
+    };
+  }
+  const shuffledTexts = shuffle(sourceTexts);
+  const choices = shuffledTexts.map((text, index) => ({ key: String.fromCharCode(65 + index), text }));
+  const answerKey = choices.find((choice) => normalize(choice.text) === normalize(question.answerText))?.key || question.answerKey;
+  Object.defineProperty(question, "_infectionChoiceLayout", {
+    configurable: true,
+    writable: true,
+    value: { signature: layoutSignature, choices: choices.map((choice) => ({ ...choice })), answerKey }
+  });
+  return {
+    ...question,
+    choices,
+    answerKey,
+    expandedChoiceActive: true
+  };
+}
+
 function isFillEligible(answer) {
   const words = answer.trim().split(/\s+/);
   return words.length <= 4 && answer.length <= 34 && !/[;:,.]/.test(answer);
 }
 
+/** Builds the ordered route and inserts special rooms around boss encounters. */
 function buildNodes(questionCount) {
   const nodes = [];
   if (state.actionDrivenMode) return buildActionNodes(questionCount);
+  const enabledBossVisualIds = normalizeBossVisualPoolIds(state.bossVisualPoolIds);
+  let bossVisualPool = shuffle(enabledBossVisualIds);
+  const takeBossVisualId = (phase) => {
+    // Preserve unique boss profiles when the enabled pool is large enough. If
+    // the run has more boss rooms than enabled profiles, reshuffle and reuse
+    // only that selected pool rather than silently restoring disabled bosses.
+    if (!bossVisualPool.length) bossVisualPool = shuffle(enabledBossVisualIds);
+    return selectBossVisualId(phase, bossVisualPool);
+  };
   const firstRecovery = Math.max(1, Math.floor(questionCount / 3));
   const secondRecovery = Math.max(firstRecovery + 1, Math.floor((questionCount * 2) / 3));
   const bossGroups = bossQuestionGroups(questionCount);
@@ -7873,7 +8766,7 @@ function buildNodes(questionCount) {
       nodes.push({
         type: "boss",
         bossPhase: bossGroup.phase,
-        bossVisualId: selectBossVisualId(bossGroup.phase),
+        bossVisualId: takeBossVisualId(bossGroup.phase),
         questionIndex: bossGroup.start,
         questionIndexes: bossGroup.questionIndexes,
         label: bossGroup.phase === "final" ? "Final" : "Boss"
@@ -7892,12 +8785,13 @@ function buildNodes(questionCount) {
     }
     if (!bossIndexes.has(i) && i === firstRecovery) nodes.push({ type: "recovery", tier: 1, label: "Aid" });
     if (!hasMidBoss && !postBossRecoveryInserted && !bossIndexes.has(i) && i === secondRecovery) nodes.push({ type: "recovery", tier: 2, label: "Hub" });
-    const combatRoom = normalRoomOrdinal % 3 === 1;
-    const desiredRounds = COMBAT_QUESTION_POOL_SIZE;
+    const combatSlot = normalRoomOrdinal % 3 === 1;
+    const desiredRounds = NORMAL_COMBAT_QUESTION_COUNT;
     const boundaryIndexes = [firstRecovery, !hasMidBoss ? secondRecovery : -1, ...bossGroups.map((group) => group.start)]
       .filter((index) => index > i);
     const nextBoundary = boundaryIndexes.length ? Math.min(...boundaryIndexes) : questionCount;
-    const roomEnd = combatRoom ? Math.min(nextBoundary, i + desiredRounds) : i + 1;
+    const combatRoom = combatSlot && nextBoundary - i >= desiredRounds;
+    const roomEnd = combatRoom ? i + desiredRounds : i + 1;
     const questionIndexes = range(i, Math.max(i, roomEnd - 1));
     nodes.push({
       type: combatRoom ? "combat" : "challenge",
@@ -7922,7 +8816,7 @@ function buildCombatTestNodes(questionCount) {
     questionIndexes: [0],
     label: "Staging"
   }];
-  const questionsPerRoom = COMBAT_QUESTION_POOL_SIZE;
+  const questionsPerRoom = NORMAL_COMBAT_QUESTION_COUNT;
   const combatStart = total > 1 ? 1 : 0;
   for (let index = combatStart; index < total; index += questionsPerRoom) {
     const questionIndexes = range(index, Math.min(total - 1, index + questionsPerRoom - 1));
@@ -7977,7 +8871,86 @@ function combatQuestionIndexes(node = state.nodes[state.currentNode]) {
   const indexes = Array.isArray(node.questionIndexes) && node.questionIndexes.length
     ? node.questionIndexes
     : [Number(node.questionIndex) || 0];
-  return indexes.slice(0, COMBAT_QUESTION_POOL_SIZE);
+  // Boss lists may grow from the unused source-bank reserve during a long
+  // encounter. Normal combat rooms remain capped at their four base prompts.
+  return node.type === "boss" ? indexes : indexes.slice(0, NORMAL_COMBAT_QUESTION_COUNT);
+}
+
+function appendFinalBossReserveQuestion(node) {
+  if (node?.type !== "boss" || node.bossPhase !== "final" || !state.questionReserve.length) return null;
+  const question = state.questionReserve.shift();
+  if (!question) return null;
+  const questionIndex = state.questions.length;
+  state.questions.push(question);
+  node.questionIndexes = [...combatQuestionIndexes(node), questionIndex];
+  const total = node.questionIndexes.length;
+  node.questionIndexes.forEach((index, stepIndex) => {
+    const existing = state.challengeTypes[index] || {};
+    state.challengeTypes[index] = {
+      ...existing,
+      label: `Final Confrontation - Individual Challenge ${stepIndex + 1}/${total}`,
+      kind: "individual",
+      locked: false,
+      damage: 3,
+      boss: true,
+      bossGroup: "final",
+      bossPhase: "final",
+      bossStep: stepIndex + 1,
+      bossTotal: total,
+      bossFinalStep: stepIndex === total - 1
+    };
+  });
+  logDebugEvent({
+    kind: "state",
+    label: "Final boss question reserve",
+    detail: `Added unused bank question ${questionIndex + 1}; ${state.questionReserve.length} remain before any final-boss repeat`
+  });
+  return questionIndex;
+}
+
+function recordQuestionRemediation(entries, questionIndex = state.currentQuestion) {
+  const index = Number(questionIndex);
+  if (!Number.isInteger(index) || index < 0 || index >= state.questions.length) return;
+  const responses = asArray(entries).filter((entry) => entry?.player && typeof entry.correct === "boolean");
+  if (!responses.length) return;
+  const correct = responses.filter((entry) => entry.correct).length;
+  const correctRate = correct / responses.length;
+  // A >90% follow-up demonstrates mastery and removes the question at once.
+  if (correctRate > 0.9) {
+    delete state.questionRemediationStats[index];
+    return;
+  }
+  const missed = responses.length - correct;
+  if (missed / responses.length < 0.25) return;
+  const previous = state.questionRemediationStats[index] || { attempts: 0, responses: 0, missed: 0, lastReviewed: 0 };
+  state.questionRemediationStats[index] = {
+    attempts: previous.attempts + 1,
+    responses: previous.responses + responses.length,
+    missed: previous.missed + missed,
+    lastCorrectRate: correctRate,
+    lastReviewed: previous.lastReviewed || 0
+  };
+}
+
+function selectCombatRemediationQuestion(currentIndex) {
+  const candidates = Object.entries(state.questionRemediationStats)
+    .map(([index, stats]) => ({ index: Number(index), stats }))
+    .filter((entry) => Number.isInteger(entry.index) && entry.index >= 0 && entry.index < state.questions.length);
+  if (!candidates.length) return null;
+  const alternatives = candidates.filter((entry) => entry.index !== currentIndex);
+  const eligible = alternatives.length ? alternatives : candidates;
+  eligible.sort((a, b) => {
+    const aMissRate = a.stats.responses ? a.stats.missed / a.stats.responses : 0;
+    const bMissRate = b.stats.responses ? b.stats.missed / b.stats.responses : 0;
+    return bMissRate - aMissRate
+      || b.stats.missed - a.stats.missed
+      || (a.stats.lastReviewed || 0) - (b.stats.lastReviewed || 0)
+      || a.index - b.index;
+  });
+  const selected = eligible[0];
+  state.questionRemediationSequence += 1;
+  selected.stats.lastReviewed = state.questionRemediationSequence;
+  return selected.index;
 }
 
 function combatTierPlan(node, nodeIndex = state.currentNode) {
@@ -8005,7 +8978,7 @@ function ensureCombatEncounter(nodeIndex = state.currentNode) {
   if (node.type === "boss") {
     const finalBoss = node.bossPhase === "final";
     const targetHp = Math.max(finalBoss ? 36 : 28, activePlayers().length * (finalBoss ? 26 : 20));
-    group.enemies[0].label = finalBoss ? state.threat || "Final Hostile" : `${state.threat || "Hostile"} Vanguard`;
+    group.enemies[0].label = bossIdentityForNode(node);
     group.enemies[0].hp = targetHp;
     group.enemies[0].maxHp = targetHp;
     group.enemies[0].boss = true;
@@ -8022,6 +8995,7 @@ function ensureCombatEncounter(nodeIndex = state.currentNode) {
     lastRound: null
   };
   state.combatEncounters[nodeIndex] = encounter;
+  activateGreenFinalInfection(encounter, node);
   return encounter;
 }
 
@@ -8032,7 +9006,11 @@ function currentCombatEncounter() {
 function preserveUnusedCombatQuestions(node, encounter) {
   if (!node || node.type !== "combat" || !encounter?.cleared) return;
   const indexes = combatQuestionIndexes(node);
-  const unused = indexes.filter((index) => index > state.currentQuestion);
+  // Once the initial four-question pass has completed, the current question
+  // may point backward into remediation. Those original indexes are not unused.
+  const unused = node.baseQuestionCycleCompleted
+    ? []
+    : indexes.filter((index) => index > state.currentQuestion);
   if (!unused.length) return;
   node.questionIndexes = indexes.filter((index) => index <= state.currentQuestion);
   const inserted = unused.map((questionIndex) => ({
@@ -8215,20 +9193,25 @@ function addEnforcerReserve(player, amount) {
   return added;
 }
 
-function applyCombatDamage(player, amount, source, notes, facts, encounter = null, allowRedirect = true) {
+function applyCombatDamage(player, amount, source, notes, facts, encounter = null, allowRedirect = true, minimumHp = 0) {
   if (!player || player.incapacitated) return 0;
   let incoming = Math.max(0, Math.round(Number(amount) || 0));
   if (incoming > 0 && player._itemAbilityGuard) {
+    const guardAmount = player._itemAbilityGuard === true
+      ? 4
+      : Math.max(1, Number(player._itemAbilityGuard) || 4);
     const beforeGuard = incoming;
-    incoming = Math.max(0, incoming - 4);
-    player._itemAbilityGuard = false;
+    incoming = Math.max(0, incoming - guardAmount);
+    delete player._itemAbilityGuard;
     addEnforcerReserve(player, beforeGuard - incoming);
-    facts.push(`${player.name}'s item guard matrix reduces the incoming hit`);
+    facts.push(`${player.name}'s activated item guard matrix reduces the incoming hit by ${Math.min(beforeGuard, guardAmount)}`);
     addEventNote(notes, player.name, `${player.name}'s protection module absorbs part of the attack.`);
   }
   incoming += Math.max(0, itemRisk(player, "incomingDamage"));
   const beforeFlatReduction = incoming;
-  incoming = Math.max(0, incoming - itemBonus(player, "damageReduction"));
+  // Activated defensive items must not also grant their protection on every
+  // hit. Passive armor still works for items that have no Guard ability.
+  incoming = Math.max(0, incoming - passiveItemDamageReduction(player));
   addEnforcerReserve(player, beforeFlatReduction - incoming);
   const passiveRate = enforcerReduction(player);
   if (passiveRate) {
@@ -8239,7 +9222,7 @@ function applyCombatDamage(player, amount, source, notes, facts, encounter = nul
   // Preserve the reason a hit dealt no damage so the combat presentation can
   // call it out as BLOCKED instead of showing a confusing "-0" result.
   if (Number(amount) > 0 && incoming === 0) player._combatBlocked = true;
-  if (incoming > 0 && player._engineerBubbleReady) {
+  if (incoming > 0 && player._engineerBubbleReady && !player._greenPossessed) {
     const bubbleKind = player._engineerBubbleKind === "arc" ? "arc" : "kick-start";
     delete player._engineerBubbleReady;
     delete player._engineerBubbleKind;
@@ -8268,7 +9251,7 @@ function applyCombatDamage(player, amount, source, notes, facts, encounter = nul
     return 0;
   }
   if (allowRedirect && incoming > 0 && player.classId !== "enforcer" && incoming >= player.hp) {
-    const redirector = activePlayers().find((candidate) => candidate.classId === "enforcer" && Number(candidate.level) >= 3 && !candidate.incapacitated && combatCooldownReady(candidate, "fatal-redirect", 3, encounter));
+    const redirector = activePlayers().find((candidate) => candidate.classId === "enforcer" && Number(candidate.level) >= 3 && !candidate.incapacitated && !candidate._greenPossessed && combatCooldownReady(candidate, "fatal-redirect", 3, encounter));
     if (redirector) {
       markCombatCooldown(redirector, "fatal-redirect", encounter);
       const redirectedAmount = Math.max(1, Math.ceil(incoming / 2));
@@ -8283,6 +9266,12 @@ function applyCombatDamage(player, amount, source, notes, facts, encounter = nul
     incoming = Math.max(0, player.hp - 1);
     facts.push(`${player.name}'s Stand Tough prevents the incoming attack from reducing them below 1 HP`);
   }
+  if (minimumHp > 0 && incoming > Math.max(0, player.hp - minimumHp)) {
+    incoming = Math.max(0, player.hp - minimumHp);
+    facts.push(source === "possession rescue"
+      ? `${player.name} cannot be killed by allied possession-suppression fire and remains at ${minimumHp} HP`
+      : `${player.name} survives Feral Rupture at ${minimumHp} HP`);
+  }
   const before = player.hp;
   applyDamage(player, incoming, source);
   const dealt = Math.max(0, before - player.hp);
@@ -8291,11 +9280,280 @@ function applyCombatDamage(player, amount, source, notes, facts, encounter = nul
   return dealt;
 }
 
+function enemyTargetablePlayers() {
+  return activePlayers().filter((player) => !player._greenPossessed);
+}
+
+/** Applies shared brace, protection, and damage rules to a scripted yellow hit. */
+function resolveYellowPreemptiveHits({ encounter, enemy, targets, entries, type, operator, notes, facts, yellowC4Carrier = null, sourceName = "combat", amountOverride = null }) {
+  const yellowC4Bomb = Boolean(yellowC4Carrier);
+  const yellowC4CarrierEntry = yellowC4Carrier ? combatBraceEntry(entries, type, operator, yellowC4Carrier) : null;
+  const yellowC4CarrierCorrect = Boolean(yellowC4Bomb && yellowC4CarrierEntry?.correct);
+  const amount = amountOverride !== null && amountOverride !== undefined && Number.isFinite(Number(amountOverride))
+    ? Math.max(1, Math.round(Number(amountOverride)))
+    : yellowC4Bomb ? YELLOW_MID_C4_DAMAGE : YELLOW_MID_SNIPER_DAMAGE;
+  const hits = targets.map((target) => {
+    const braceEntry = combatBraceEntry(entries, type, operator, target);
+    const rebirthBraced = Boolean(
+      (target._rebirthBracedReady || target._secondChanceBracedReady || target._possessionReleasedBracedReady)
+      && !target._standToughReady
+    );
+    const yellowC4CarrierHit = Boolean(yellowC4Bomb && yellowC4Carrier && sameName(target.name, yellowC4Carrier.name));
+    const yellowC4CarrierFailure = Boolean(yellowC4CarrierHit && !yellowC4CarrierCorrect);
+    const braced = yellowC4Bomb
+      ? yellowC4CarrierCorrect
+        ? true
+        : yellowC4CarrierHit
+          ? false
+          : Boolean((braceEntry?.correct || rebirthBraced) && !target._standToughReady)
+      : Boolean((braceEntry?.correct || rebirthBraced) && !target._standToughReady);
+    const braceMitigation = yellowC4Bomb
+      ? yellowC4CarrierCorrect
+        ? YELLOW_MID_C4_BRACE_MITIGATION
+        : rebirthBraced
+          ? REBIRTH_BRACE_MITIGATION
+          : braced
+            ? combatBraceMitigation(braceEntry, type)
+            : 0
+      : rebirthBraced
+        ? REBIRTH_BRACE_MITIGATION
+        : braced
+          ? combatBraceMitigation(braceEntry, type)
+          : 0;
+    const commandGuard = Math.max(0, Number(encounter.tacticianGuardAmount) || 0);
+    const mitigatedAmount = braced
+      ? Math.round(amount * (1 - braceMitigation))
+      : Math.max(0, amount - commandGuard);
+    let blocked = braced && mitigatedAmount <= 0;
+    const targetAmount = blocked ? 0 : Math.max(0, mitigatedAmount);
+    if (target.classId === "enforcer" && amount > targetAmount) addEnforcerReserve(target, amount - targetAmount);
+    if (braced) facts.push(`${target.name} braces, mitigating ${Math.round(braceMitigation * 100)}% of the incoming attack`);
+    else if (commandGuard) facts.push(`${target.name} is covered by Guard Protocol, reducing the incoming attack by ${commandGuard}`);
+    if (blocked) facts.push(`${target.name} braces and blocks the preemptive attack`);
+    const hpBefore = target.hp;
+
+    if (yellowC4CarrierFailure) {
+      const damage = Math.max(0, hpBefore - 1);
+      target.hp = 1;
+      target.incapacitated = false;
+      facts.push(`${target.name} answers incorrectly and ${sourceName} drops them directly to 1 HP`);
+      if (damage) addEventNote(notes, target.name, `${sourceName} detonates on ${target.name}, leaving them at 1 HP.`);
+      return {
+        target, braced: false, braceMitigation: 0, blocked: false, bubbleBlocked: false,
+        redirected: null, kickStarted: null, yellowC4CarrierFailure: true,
+        damage, hpBefore, hpAfter: target.hp, downed: false
+      };
+    }
+
+    const damage = applyCombatDamage(target, targetAmount, sourceName, notes, facts, encounter, true);
+    const combatBlocked = Boolean(target._combatBlocked);
+    const redirected = target._combatRedirect || null;
+    const bubbleBlocked = Boolean(target._combatBubble);
+    const kickStarted = target._combatKickStarted || null;
+    blocked = blocked || bubbleBlocked || combatBlocked;
+    delete target._combatBlocked;
+    delete target._combatRedirect;
+    delete target._combatBubble;
+    delete target._combatKickStarted;
+    return {
+      target, braced, braceMitigation, blocked, bubbleBlocked, redirected, kickStarted,
+      damage: kickStarted?.damageTaken || damage,
+      hpBefore,
+      hpAfter: target.hp,
+      downed: Boolean(kickStarted || hpBefore > 0 && target.incapacitated)
+    };
+  });
+
+  return { hits, yellowC4CarrierCorrect, amount };
+}
+
+/**
+ * Resolves yellow scripted attacks that occur before operator fire. The mid
+ * boss emits one Sniper Scope shot or one C4 blast; the final boss emits the
+ * Double Kill opener, one retaliation scope per fallen OPFOR mirror, and the
+ * five-part Rain of Terror barrage.
+ */
+function resolveYellowPreemptiveBossActions(encounter, entries, type, operator, notes, facts) {
+  const node = state.nodes[state.currentNode];
+  const enemy = bossEnemyForEncounter(encounter);
+  if (!encounter
+    || encounter.cleared
+    || state.selectedEMS
+    || !enemy
+    || enemy.defeated
+    || !["mid", "final"].includes(node?.bossPhase)
+    || !bossUsesYellowBallisticsBehavior(node)) return [];
+
+  const finalBoss = node.bossPhase === "final";
+  const openingPending = !encounter.yellowSniperScopeResolved;
+  const opforRetaliationPending = finalBoss
+    && Array.isArray(encounter.yellowOpforRetaliationSniperTargetNames)
+    && encounter.yellowOpforRetaliationSniperTargetNames.length > 0;
+  const midC4Pending = !finalBoss
+    && !openingPending
+    && !encounter.yellowC4BombResolved
+    && encounter.yellowC4BombArmed;
+  const rainPending = finalBoss && encounter.yellowFinalRainPending && !encounter.yellowFinalRainResolved;
+  if (!openingPending && !opforRetaliationPending && !midC4Pending && !rainPending) return [];
+
+  const tier = combatSystem.enemyTiers?.[enemy.tier] || combatSystem.enemyTiers?.light;
+  const yellowC4FollowupDamage = Math.max(1, Math.ceil(
+    Math.max(1, Number(tier.damage?.[1]) || 1) * YELLOW_MID_C4_FOLLOWUP_FRACTION
+  ));
+  const actions = [];
+  const makeSniperAction = (designatedTarget, abilityName, extra = {}) => {
+    const targetablePlayers = enemyTargetablePlayers();
+    if (!targetablePlayers.length) return;
+    // Scripted sniper rounds honor the lock acquired before the question.
+    // A general taunt must not collapse Double Kill's two locks onto one card.
+    const designatedActiveTarget = targetablePlayers.find((player) => sameName(player.name, designatedTarget?.name)) || null;
+    const sniperTargetDown = Boolean(designatedTarget?.name && !designatedActiveTarget);
+    const target = designatedActiveTarget || targetablePlayers[Math.floor(state.rng() * targetablePlayers.length)];
+    if (!target) return;
+    const fallbackDamageRange = finalBoss ? YELLOW_FINAL_NORMAL_DAMAGE : tier.damage;
+    const fallbackDamage = sniperTargetDown
+      ? combatSystem.rollRange?.(fallbackDamageRange, state.rng) || Math.max(1, Number(fallbackDamageRange?.[0]) || 1)
+      : null;
+    const resolved = resolveYellowPreemptiveHits({
+      encounter, enemy, targets: [target], entries, type, operator, notes, facts,
+      sourceName: sniperTargetDown ? "single-target fallback attack" : abilityName,
+      amountOverride: fallbackDamage
+    });
+    actions.push({
+      enemy,
+      preemptive: true,
+      aoe: false,
+      forcedBossAoe: false,
+      yellowSniperScope: !sniperTargetDown,
+      yellowSniperFallback: sniperTargetDown,
+      yellowSniperOriginalTargetName: sniperTargetDown ? designatedTarget?.name || "" : "",
+      yellowSniperAoe: false,
+      unstunnable: !sniperTargetDown,
+      yellowC4Bomb: false,
+      yellowC4Aoe: false,
+      yellowC4CarrierName: "",
+      yellowC4CarrierCorrect: false,
+      yellowC4FollowupDamage,
+      yellowAbilityName: abilityName,
+      amount: resolved.amount,
+      rolledAmount: resolved.amount,
+      targets: resolved.hits,
+      disruptionResisted: false,
+      bossDamagePhase: "",
+      ...extra
+    });
+    if (sniperTargetDown) {
+      facts.push(`${enemy.label}'s scoped target ${designatedTarget.name} is already down, so the scope is canceled and converted into one normal single-target attack against random active operator ${target.name}`);
+    }
+  };
+  const makeC4Action = (carrier, abilityName, extra = {}) => {
+    const targets = enemyTargetablePlayers();
+    if (!targets.length || !carrier) return;
+    const resolved = resolveYellowPreemptiveHits({
+      encounter, enemy, targets, entries, type, operator, notes, facts,
+      yellowC4Carrier: carrier,
+      sourceName: abilityName
+    });
+    actions.push({
+      enemy,
+      preemptive: true,
+      aoe: true,
+      forcedBossAoe: true,
+      yellowSniperScope: false,
+      yellowSniperAoe: false,
+      unstunnable: true,
+      yellowC4Bomb: true,
+      yellowC4Aoe: false,
+      yellowC4CarrierName: carrier.name,
+      yellowC4CarrierCorrect: resolved.yellowC4CarrierCorrect,
+      yellowC4FollowupDamage,
+      yellowAbilityName: abilityName,
+      amount: resolved.amount,
+      rolledAmount: resolved.amount,
+      targets: resolved.hits,
+      disruptionResisted: false,
+      bossDamagePhase: "",
+      ...extra
+    });
+  };
+
+  if (openingPending) {
+    const requiredTargetCount = yellowOpeningSniperTargetCount(node);
+    const storedOpeningNames = (encounter.yellowSniperTargetNames || [encounter.yellowSniperTargetName]).filter(Boolean);
+    const storedOpeningTargets = storedOpeningNames
+      .map((name) => state.players.find((player) => sameName(player.name, name)))
+      .filter(Boolean);
+    // Preserve the pre-question locks even when a designated operator has since
+    // gone down. makeSniperAction converts that invalid scope into a random
+    // ordinary single-target attack instead of silently acquiring a new scope.
+    const targets = storedOpeningTargets.length === requiredTargetCount
+      ? storedOpeningTargets
+      : ensureYellowSniperScopeTargets(encounter, node);
+    const abilityName = finalBoss ? YELLOW_FINAL_DOUBLE_KILL_PHASE_NAME : YELLOW_MID_SNIPER_PHASE_NAME;
+    targets.forEach((target, index) => makeSniperAction(target, abilityName, {
+      yellowFinalDoubleKill: finalBoss,
+      yellowScriptedActivation: index + 1
+    }));
+    encounter.yellowSniperScopeResolved = true;
+    facts.push(finalBoss
+      ? `${enemy.label} fires ${targets.length === 1 ? "one" : targets.length} un-stunnable ${YELLOW_FINAL_DOUBLE_KILL_PHASE_NAME} sniper ${targets.length === 1 ? "shot" : "shots"} before any operator attacks; its final activation remains an AOE in normal enemy order`
+      : `${enemy.label} fires the un-stunnable ${YELLOW_MID_SNIPER_PHASE_NAME} shot before any operator attacks; its follow-up AOE remains in normal enemy order`);
+    return actions;
+  }
+
+  if (opforRetaliationPending) {
+    const storedTargets = encounter.yellowOpforRetaliationSniperTargetNames
+      .map((name) => state.players.find((player) => sameName(player.name, name)))
+      .filter(Boolean);
+    storedTargets.forEach((target, index) => makeSniperAction(target, YELLOW_MID_SNIPER_PHASE_NAME, {
+      yellowOpforRetaliationShot: true,
+      yellowScriptedActivation: index + 1
+    }));
+    encounter.yellowOpforRetaliationSniperTargetNames = [];
+    facts.push(`${enemy.label} fires ${storedTargets.length} un-stunnable OPFOR retaliation Sniper Scope ${storedTargets.length === 1 ? "shot" : "shots"} before any operator attacks`);
+    return actions;
+  }
+
+  if (midC4Pending) {
+    const carrier = state.players.find((player) => sameName(player.name, encounter.yellowC4TargetName)) || null;
+    makeC4Action(carrier, YELLOW_MID_C4_PHASE_NAME);
+    encounter.yellowC4BombResolved = true;
+    encounter.yellowC4BombArmed = false;
+    facts.push(`${enemy.label} detonates the un-stunnable ${YELLOW_MID_C4_PHASE_NAME} before any operator attacks: ${YELLOW_MID_C4_DAMAGE} base squad damage, followed later by an AOE equal to 25% of maximum normal boss damage`);
+    return actions;
+  }
+
+  // Resolve the stored alternating sequence through one lookup table. Legacy
+  // saves without a sequence are rebuilt in the same order and de-duplicated.
+  const playerByName = new Map(state.players.map((player) => [normalize(player.name), player]));
+  const storedSequence = yellowFinalRainSequenceForEncounter(encounter);
+  const targetSequence = storedSequence.map((entry) => {
+    const key = normalize(entry?.targetName);
+    const player = key ? playerByName.get(key) : null;
+    return player && ["sniper", "c4"].includes(entry.kind) ? { kind: entry.kind, player } : null;
+  }).filter(Boolean);
+  const sniperTargets = targetSequence.filter((entry) => entry.kind === "sniper").map((entry) => entry.player);
+  const c4Targets = targetSequence.filter((entry) => entry.kind === "c4").map((entry) => entry.player);
+  targetSequence.forEach((entry, index) => {
+    const extra = {
+      yellowFinalRainVolley: true,
+      yellowScriptedActivation: index + 1
+    };
+    if (entry.kind === "sniper") makeSniperAction(entry.player, YELLOW_FINAL_RAIN_PHASE_NAME, { ...extra, yellowRainShot: true });
+    else makeC4Action(entry.player, YELLOW_FINAL_RAIN_PHASE_NAME, { ...extra, yellowRainC4: true });
+  });
+  encounter.yellowFinalRainPending = false;
+  encounter.yellowFinalRainResolved = true;
+  facts.push(`${enemy.label} unleashes ${YELLOW_FINAL_RAIN_PHASE_NAME} before operator fire in alternating Sniper/C4 order: ${sniperTargets.length} un-stunnable sniper shot${sniperTargets.length === 1 ? "" : "s"} and ${c4Targets.length} non-overlapping un-stunnable C4 detonation${c4Targets.length === 1 ? "" : "s"}`);
+  return actions;
+}
+
 function combatTargetsForActivation(entries, type, operator, priorityPool = null) {
-  const active = activePlayers();
+  const active = enemyTargetablePlayers();
   if (!active.length) return [];
   const resolveActive = (player) => active.find((candidate) => candidate && player && sameName(candidate.name, player.name)) || null;
-  if (type.locked && operator && !operator.incapacitated) return [resolveActive(operator) || operator];
+  const lockedTarget = type.locked && operator && !operator.incapacitated ? resolveActive(operator) : null;
+  if (lockedTarget) return [lockedTarget];
   if (type.kind === "team") return active;
   const priorityTargets = priorityPool instanceof Set
     ? active.filter((player) => priorityPool.has(normalize(player.name)))
@@ -8304,11 +9562,126 @@ function combatTargetsForActivation(entries, type, operator, priorityPool = null
   return [active[Math.floor(state.rng() * active.length)]];
 }
 
+function resolveYellowOpforMirrorAction(enemy, encounter, entries, type, operator, question, notes, facts, options = {}) {
+  const empowered = Boolean(options.empowered);
+  const simulatedCorrect = typeof options.simulatedCorrect === "boolean"
+    ? options.simulatedCorrect
+    : state.rng() < 0.5;
+  enemy.opforLastCorrect = simulatedCorrect;
+  const classId = String(enemy.mirrorClassId || "").toLowerCase();
+  const phaseActive = yellowOpforAbilityPhaseActive(enemy, encounter);
+  const activeTargets = enemyTargetablePlayers();
+  const counterpart = activeTargets.find((player) => sameName(player.name, enemy.mirrorTargetName))
+    || activeTargets.find((player) => player.classId === enemy.mirrorClassId)
+    || null;
+  const enforcerBarrage = Boolean(phaseActive && classId === "enforcer");
+  const soldierSplitFire = Boolean(phaseActive && classId === "soldier");
+  const targets = enforcerBarrage
+    ? activeTargets
+    : counterpart
+      ? [counterpart, ...(soldierSplitFire
+        ? shuffle(activeTargets.filter((player) => !sameName(player.name, counterpart.name))).slice(0, 1)
+        : [])]
+      : [];
+  const action = {
+    enemy,
+    yellowOpforMirror: true,
+    yellowOpforEmpowered: empowered,
+    opforAbilityFollowup: Boolean(options.followup),
+    opforAbilityEvent: options.abilityEvent || null,
+    opforAbilityPhaseActive: phaseActive,
+    opforSplitFire: soldierSplitFire,
+    opforEnforcerBarrage: enforcerBarrage,
+    opforBarrageIndex: Math.max(1, Number(options.barrageIndex) || 1),
+    opforInitiativeElapsed: Math.max(0, Number(options.simulatedElapsed) || 0),
+    opforSimulatedCorrect: simulatedCorrect,
+    aoe: enforcerBarrage,
+    forcedBossAoe: false,
+    targets: [],
+    amount: 0,
+    rolledAmount: 0,
+    disruptionResisted: false,
+    bossDamagePhase: YELLOW_FINAL_OPFOR_PHASE_NAME
+  };
+  if (!targets.length) {
+    action.opforNoAttack = true;
+    action.opforTargetUnavailable = true;
+    facts.push(`${enemy.label} cannot acquire its matching ${enemy.mirrorClassId || "operator"} target`);
+    return action;
+  }
+
+  const duration = Math.max(1_000, Number(state.questionDurationMs) || questionScoringDurationMs({ type }));
+  const simulatedElapsed = Number.isFinite(Number(options.simulatedElapsed))
+    ? Math.max(0, Math.min(duration, Number(options.simulatedElapsed)))
+    : duration * (0.2 + state.rng() * 0.6);
+  action.opforInitiativeElapsed = simulatedElapsed;
+  const mirrorPlayer = state.players.find((player) => sameName(player.name, enemy.mirrorTargetName)) || { classId: enemy.mirrorClassId };
+  let rolledAmount = enforcerBarrage
+    ? 3 + Math.floor(state.rng() * 5)
+    : combatSystem.answerDamage?.(simulatedElapsed, duration, questionDifficulty(question)) || 2;
+  if (!enforcerBarrage) {
+    rolledAmount += combatSystem.classCombatDamage?.(mirrorPlayer) || 0;
+    rolledAmount = Math.max(1, Math.round(rolledAmount * (simulatedCorrect ? 2 : 1)));
+    if (empowered) rolledAmount = Math.min(12, Math.max(1, Math.round(rolledAmount * 1.5)));
+  }
+  action.opforDamageMultiplier = enforcerBarrage ? 1 : simulatedCorrect ? 2 : 1;
+  action.amount = rolledAmount;
+  action.rolledAmount = rolledAmount;
+  action.targets = targets.map((target) => {
+    const braceEntry = combatBraceEntry(entries, type, operator, target);
+    const rebirthBraced = Boolean((target._rebirthBracedReady || target._secondChanceBracedReady || target._possessionReleasedBracedReady) && !target._standToughReady);
+    const braced = Boolean((braceEntry?.correct || rebirthBraced) && !target._standToughReady);
+    const braceMitigation = rebirthBraced
+      ? REBIRTH_BRACE_MITIGATION
+      : braced
+        ? combatBraceMitigation(braceEntry, type)
+        : 0;
+    const commandGuard = Math.max(0, Number(encounter.tacticianGuardAmount) || 0);
+    const mitigatedAmount = braced
+      ? Math.round(rolledAmount * (1 - braceMitigation))
+      : Math.max(0, rolledAmount - commandGuard);
+    let blocked = braced && mitigatedAmount <= 0;
+    const targetAmount = blocked ? 0 : Math.max(0, mitigatedAmount);
+    if (target.classId === "enforcer" && rolledAmount > targetAmount) addEnforcerReserve(target, rolledAmount - targetAmount);
+    const hpBefore = target.hp;
+    const damage = applyCombatDamage(target, targetAmount, YELLOW_FINAL_OPFOR_PHASE_NAME, notes, facts, encounter, true);
+    const combatBlocked = Boolean(target._combatBlocked);
+    const redirected = target._combatRedirect || null;
+    const bubbleBlocked = Boolean(target._combatBubble);
+    const kickStarted = target._combatKickStarted || null;
+    blocked = blocked || bubbleBlocked || combatBlocked;
+    delete target._combatBlocked;
+    delete target._combatRedirect;
+    delete target._combatBubble;
+    delete target._combatKickStarted;
+    return {
+      target, braced, braceMitigation, blocked, bubbleBlocked, redirected, kickStarted,
+      damage: kickStarted?.damageTaken || damage,
+      hpBefore,
+      hpAfter: target.hp,
+      downed: Boolean(kickStarted || hpBefore > 0 && target.incapacitated)
+    };
+  });
+  const attackDescription = enforcerBarrage
+    ? `fires Twin Barrage AOE ${action.opforBarrageIndex}/2 for ${rolledAmount} unmitigated damage against ${targets.map((target) => target.name).join(", ")}`
+    : `${empowered ? "is empowered by the boss and " : ""}simulates a ${simulatedCorrect ? "correct response for 2× damage" : "wrong response for normal damage"}, attacking ${targets.map((target) => target.name).join(" and ")} for ${rolledAmount} unmitigated damage${empowered ? " (boss empowerment adds 1.5×, capped at 12)" : ""}`;
+  facts.push(`${enemy.label} ${attackDescription}`);
+  return action;
+}
+
 function combatIntentText(type = null, operator = null) {
   if (!type) type = combatRoundChallengeType(state.currentQuestion);
   if (!operator && type.locked) operator = selectOperator(state.currentQuestion);
   const encounter = isCombatNode(state.nodes[state.currentNode]) ? currentCombatEncounter() : null;
-  const count = encounter?.enemies.filter((enemy) => !enemy.defeated).reduce((sum, enemy) => sum + Math.max(1, Number(enemy.activations) || 1), 0) || 0;
+  const count = encounter?.enemies.filter((enemy) => !enemy.defeated).reduce((sum, enemy) => {
+    const phaseIncoming = enemy.opforAbilityActive
+      || (Number(enemy.opforAbilityArmedRound) > 0
+        && Number(enemy.opforAbilityArmedRound) <= Math.max(1, Number(encounter.round) || 0) + 1);
+    const opforTwinBarrage = Boolean(enemy.yellowOpforMirror
+      && phaseIncoming
+      && String(enemy.mirrorClassId || "").toLowerCase() === "enforcer");
+    return sum + (opforTwinBarrage ? 2 : Math.max(1, Number(enemy.activations) || 1));
+  }, 0) || 0;
   if (type.locked && operator) return `${count} incoming activation${count === 1 ? "" : "s"} focused on ${operator.name}.`;
   if (type.kind === "team") return `${count} team-wide attack${count === 1 ? "" : "s"} at 35% force; correct responders automatically brace.`;
   if (type.kind === "emergency") return `${count} rapid activation${count === 1 ? "" : "s"}; incorrect responders are prioritized until hit once.`;
@@ -8320,7 +9693,7 @@ function applyPendingCombatAbilities(encounter, notes, facts, supportEvents = []
   const classPending = Array.isArray(state.pendingClassAbilityUses) ? state.pendingClassAbilityUses.splice(0) : [];
   classPending.forEach((use) => {
     const source = state.players.find((player) => sameName(player.name, use.sourceName));
-    if (!source || source.incapacitated) return;
+    if (!source || source.incapacitated || source._greenPossessed) return;
     const target = use.targetName
       ? state.players.find((player) => sameName(player.name, use.targetName) && (use.revive ? player.incapacitated : !player.incapacitated))
       : source;
@@ -8330,7 +9703,7 @@ function applyPendingCombatAbilities(encounter, notes, facts, supportEvents = []
     if (use.levelSix === "soldier") {
       source._determinedAimReady = true;
       facts.push(`${source.name}'s Determined Aim guarantees an attack regardless of answer outcome`);
-      supportEvents.push({ kind: "ultimate", source: source.name, target: source.name, amount: 0, label: "Determined Aim" });
+      supportEvents.push({ kind: "ultimate", source: source.name, target: "hostile line", amount: 0, label: "Determined Aim" });
     } else if (use.levelSix === "enforcer") {
       source._standToughReady = true;
       source._standToughDamageTaken = 0;
@@ -8338,6 +9711,7 @@ function applyPendingCombatAbilities(encounter, notes, facts, supportEvents = []
       supportEvents.push({ kind: "ultimate", source: source.name, target: source.name, amount: 0, label: "Stand Tough" });
     } else if (use.levelSix === "tactician") {
       source._inspireMassesReady = true;
+      supportEvents.push({ kind: "ultimate", source: source.name, target: "team", amount: 0, label: "Inspire the Masses" });
       encounter.tacticianGuardAmount = Math.max(3, Number(encounter.tacticianGuardAmount) || 0);
       activePlayers().filter((player) => player.hp < player.maxHp).forEach((player) => {
         const before = player.hp;
@@ -8356,6 +9730,7 @@ function applyPendingCombatAbilities(encounter, notes, facts, supportEvents = []
         source._classNoAttackReady = true;
         facts.push(`${source.name}'s Rebirth returns ${target.name} to the fight at 75% health in a full brace; ${source.name} forfeits this turn's attack`);
         addEventNote(notes, target.name, `${source.name} revives ${target.name} with ${revivedHp} HP and a full brace for the enemy phase.`);
+        if (use.levelSix === "medic") supportEvents.push({ kind: "ultimate", source: source.name, target: target.name, amount: 0, label: "Rebirth" });
         supportEvents.push({ kind: "revive", source: source.name, target: target.name, amount: revivedHp, hpAfter: revivedHp, maxHp: target.maxHp, braced: true, label: "Rebirth" });
         delete state.classAbilityTargets[normalize(source.name)];
         delete state.classAbilityTargetNotices[normalize(source.name)];
@@ -8384,8 +9759,9 @@ function applyPendingCombatAbilities(encounter, notes, facts, supportEvents = []
     } else if (classId === "scout") {
       activateScoutHintForPrompt(currentQuestionInfo(), source);
       if (state.classHints[state.currentQuestion]) {
-        facts.push(`${source.name}'s Spectrum Analyzer sharpens the active prompt`);
-        supportEvents.push({ kind: "hint", source: source.name, target: source.name, amount: 1, label: "Spectrum Analyzer" });
+        const scoutLabel = use.levelSix === "scout" ? "Intel Sniper" : "Spectrum Analyzer";
+        facts.push(`${source.name}'s ${scoutLabel} sharpens the active prompt`);
+        supportEvents.push({ kind: use.levelSix === "scout" ? "ultimate" : "hint", source: source.name, target: "team", amount: 1, label: scoutLabel });
       }
     } else if (classId === "enforcer") {
       source._classShieldReady = true;
@@ -8411,8 +9787,8 @@ function applyPendingCombatAbilities(encounter, notes, facts, supportEvents = []
       source._classDisruptionReady = true;
       disruptionCount += 1 + itemBonus(source, "disruption");
       facts.push(`${source.name}'s Arc Toolkit disrupts an enemy activation`);
-      supportEvents.push({ kind: "disrupt", source: source.name, target: source.name, amount: 1, label: "Arc Toolkit" });
-      if (Number(source.level) >= 3 && target) {
+      supportEvents.push({ kind: "disrupt", source: source.name, target: "an enemy activation", amount: 1, label: "Arc Toolkit" });
+      if (Number(source.level) >= 3 && target && !target._greenPossessed) {
         target._engineerBubbleReady = true;
         target._engineerBubbleKind = "arc";
         encounter.bubbleTargetName = "";
@@ -8424,7 +9800,7 @@ function applyPendingCombatAbilities(encounter, notes, facts, supportEvents = []
     } else if (classId === "soldier") {
       source._classDoubleAttackReady = true;
       facts.push(`${source.name}'s Heavy Rifle Overdrive primes a second attack`);
-      supportEvents.push({ kind: "damage", source: source.name, target: source.name, amount: 0, label: "Heavy Rifle Overdrive" });
+      supportEvents.push({ kind: "damage", source: source.name, target: "hostile line", amount: 0, label: "Heavy Rifle Overdrive" });
     } else if (classId === "tactician") {
       source._classCommandReady = true;
       source._classCommandProtocol = ["assault", "guard", "support"].includes(String(use.protocol || "").toLowerCase())
@@ -8433,7 +9809,7 @@ function applyPendingCombatAbilities(encounter, notes, facts, supportEvents = []
       markCombatCooldown(source, tacticianProtocolCooldown(source._classCommandProtocol).key, encounter);
       const protocolLabel = source._classCommandProtocol[0].toUpperCase() + source._classCommandProtocol.slice(1);
       facts.push(`${source.name} selects ${protocolLabel} Protocol`);
-      supportEvents.push({ kind: "protocol", source: source.name, target: source.name, amount: 0, label: `${protocolLabel} Protocol` });
+      supportEvents.push({ kind: "protocol", source: source.name, target: source._classCommandProtocol === "assault" ? "correct responders" : "team", amount: 0, label: `${protocolLabel} Protocol` });
     }
     delete state.classAbilityTargets[normalize(source.name)];
     delete state.classAbilityTargetNotices[normalize(source.name)];
@@ -8444,7 +9820,7 @@ function applyPendingCombatAbilities(encounter, notes, facts, supportEvents = []
     const source = state.players.find((player) => sameName(player.name, use.sourceName));
     const item = itemForPlayer(use.itemId);
     const ability = itemAbilityDefinition(item);
-    if (!source || source.incapacitated || !ability) return;
+    if (!source || source.incapacitated || source._greenPossessed || !ability) return;
     if (!encounter && !["heal", "hint"].includes(ability.effect)) return;
     const target = use.targetName
       ? state.players.find((player) => sameName(player.name, use.targetName) && !player.incapacitated)
@@ -8460,21 +9836,22 @@ function applyPendingCombatAbilities(encounter, notes, facts, supportEvents = []
     } else if (ability.effect === "damage") {
       source._itemAbilityDamageBonus = Math.max(0, Number(source._itemAbilityDamageBonus) || 0) + 4;
       facts.push(`${source.name}'s ${ability.label} arms a bonus combat strike`);
-      supportEvents.push({ kind: "damage", source: source.name, target: source.name, amount: 4, label: ability.label });
+      supportEvents.push({ kind: "damage", source: source.name, target: "hostile line", amount: 4, label: ability.label });
     } else if (ability.effect === "guard") {
-      source._itemAbilityGuard = true;
+      const guardAmount = Math.max(1, Number(ability.amount) || 4);
+      source._itemAbilityGuard = Math.max(guardAmount, Number(source._itemAbilityGuard) || 0);
       facts.push(`${source.name}'s ${ability.label} braces the next incoming hit`);
-      supportEvents.push({ kind: "guard", guardType: "next-hit-reduction", source: source.name, target: source.name, amount: 4, label: ability.label });
+      supportEvents.push({ kind: "guard", guardType: "next-hit-reduction", source: source.name, target: source.name, amount: guardAmount, label: ability.label });
     } else if (ability.effect === "disrupt") {
       disruptionCount += 1 + itemBonus(source, "disruption");
       facts.push(`${source.name}'s ${ability.label} primes an enemy disruption`);
-      supportEvents.push({ kind: "disrupt", source: source.name, target: source.name, amount: 1, label: ability.label });
+      supportEvents.push({ kind: "disrupt", source: source.name, target: "an enemy activation", amount: 1, label: ability.label });
     } else if (ability.effect === "hint") {
       const info = currentQuestionInfo();
       const answer = String(info.question?.answerText || "").trim();
       state.classHints[state.currentQuestion] = answer ? `${source.name}'s ${ability.label} reveals a clue beginning with “${answer.slice(0, 1).toUpperCase()}”.` : `${source.name}'s ${ability.label} highlights the active prompt.`;
       facts.push(`${source.name}'s ${ability.label} sharpens the active prompt`);
-      supportEvents.push({ kind: "hint", source: source.name, target: source.name, amount: 1, label: ability.label });
+      supportEvents.push({ kind: "hint", source: source.name, target: "team", amount: 1, label: ability.label });
     }
     source.abilityNotice = `${ability.label} resolved`;
   });
@@ -8490,30 +9867,142 @@ function bossDisruptionSucceeds(enemy) {
 }
 
 function finalBossDamageProfile(encounter) {
-  const remaining = encounter?.maxHp ? Math.max(0, encounter.hp / encounter.maxHp) : 1;
-  if (remaining <= 0.3) return { range: [10, 20], label: "ENRAGED", forceSecondAoe: true };
-  if (remaining <= 0.6) return { range: [8, 18], label: "ESCALATED", forceSecondAoe: true };
+  const boss = bossEnemyForEncounter(encounter);
+  const remaining = boss?.maxHp ? Math.max(0, boss.hp / boss.maxHp) : 1;
+  if (remaining <= 0.3) return { range: [10, 20], label: "Enraged", forceSecondAoe: true };
+  if (remaining <= 0.6) return { range: [8, 18], label: "Carnal Combo", forceSecondAoe: true };
   return { range: [7, 15], label: "HOSTILE", forceSecondAoe: false };
+}
+
+function bossEnemyForEncounter(encounter) {
+  return encounter?.enemies?.find((enemy) => enemy.boss) || null;
+}
+
+function syncEncounterGroupHp(encounter) {
+  if (!encounter) return;
+  encounter.hp = encounter.enemies.reduce((sum, enemy) => sum + Math.max(0, Number(enemy.hp) || 0), 0);
+  encounter.maxHp = encounter.enemies.reduce((sum, enemy) => sum + Math.max(0, Number(enemy.maxHp) || 0), 0);
+}
+
+function greenPossessionPhaseIsActive(encounter) {
+  if (!encounter?.greenPossessionTriggered) return false;
+  const possessedRemain = state.players.some((player) => player._greenPossessed && !player.incapacitated);
+  const node = state.nodes[encounter.nodeIndex ?? state.currentNode];
+  if (node?.bossPhase !== "final") return possessedRemain;
+  const summonedRemain = encounter.enemies.some((enemy) => enemy.summoned && !enemy.defeated);
+  return possessedRemain || summonedRemain;
+}
+
+function syncGreenPossessionPhase(encounter) {
+  if (!encounter) return false;
+  const wasActive = Boolean(encounter.greenPossessionActive);
+  encounter.greenPossessionActive = greenPossessionPhaseIsActive(encounter);
+  const node = state.nodes[encounter.nodeIndex ?? state.currentNode];
+  if (wasActive && !encounter.greenPossessionActive && node?.bossPhase === "final") {
+    encounter.greenConfusionPhase = 0;
+    state.players.forEach((player) => {
+      player._spectralInfected = false;
+      player.spectralInfectionCorrectStreak = 0;
+    });
+  }
+  return encounter.greenPossessionActive;
+}
+
+function applyFocusedEnemyDamage(encounter, enemy, amount) {
+  if (!encounter || !enemy || enemy.defeated) return { damage: 0, defeated: [], cleared: false };
+  const damage = Math.min(Math.max(0, Math.round(Number(amount) || 0)), Math.max(0, Number(enemy.hp) || 0));
+  enemy.hp = Math.max(0, enemy.hp - damage);
+  if (enemy.hp <= 0) enemy.defeated = true;
+  syncEncounterGroupHp(encounter);
+  return { damage, defeated: enemy.defeated ? [enemy] : [], cleared: encounter.hp <= 0 };
+}
+
+function applyYellowOpforDamage(encounter, enemy, amount) {
+  const incoming = Math.max(0, Math.round(Number(amount) || 0));
+  if (!encounter || !enemy?.yellowOpforMirror) return applyFocusedEnemyDamage(encounter, enemy, incoming);
+  if (enemy.opforBubbleReady) {
+    enemy.opforBubbleReady = false;
+    return { damage: 0, defeated: [], cleared: false, opforBubbleBlocked: true, incoming };
+  }
+  const hpBefore = Math.max(0, Number(enemy.hp) || 0);
+  const applied = applyFocusedEnemyDamage(encounter, enemy, incoming);
+  const opforAbilityArmed = armYellowOpforAbility(enemy, encounter, hpBefore);
+  return { ...applied, incoming, opforAbilityArmed };
 }
 
 function supportEventStatusLine(event) {
   if (!event) return "";
   const amount = Math.max(0, Number(event.amount) || 0);
   const target = event.target || event.source;
-  if (event.kind === "revive") return `${event.source}'s ${event.label} revives ${target} at ${amount} HP${event.braced ? " in a full brace for this enemy phase" : ""}; ${event.source} forfeits this turn's attack.`;
-  if (event.kind === "heal" || event.kind === "regen") return `${event.source}'s ${event.label} restores ${target} for ${amount} HP.`;
-  if (event.kind === "hint") return `${event.source} uses ${event.label}; a clue is added to the prompt.`;
-  if (event.kind === "barrier") return `${event.source}'s ${event.label} creates a team barrier; each unbraced incoming hit is reduced by ${amount} this enemy phase.`;
+  const recipient = target ? ` on ${target}` : "";
+  const hpResult = Number.isFinite(Number(event.hpAfter)) && Number.isFinite(Number(event.maxHp))
+    ? ` (${Math.max(0, Number(event.hpAfter))}/${Math.max(1, Number(event.maxHp))} HP)`
+    : "";
+  if (event.kind === "revive") return `${event.source} uses ${event.label}${recipient}, reviving them at ${amount} HP${hpResult}${event.braced ? " in a full brace for this enemy phase" : ""}; ${event.source} forfeits this turn's attack.`;
+  if (event.kind === "heal" || event.kind === "regen") return `${event.source} uses ${event.label}${recipient}, restoring ${amount} HP${hpResult}.`;
+  if (event.kind === "hint") return `${event.source} uses ${event.label}${recipient}; a clue is added to the prompt.`;
+  if (event.kind === "bubble") return `${event.source} uses ${event.label}${recipient}, applying a one-hit protection bubble.`;
+  if (event.kind === "barrier") return `${event.source} uses ${event.label}${recipient}; each unbraced incoming hit is reduced by ${amount} this enemy phase.`;
   if (event.kind === "guard") {
     const guardType = event.guardType || (amount > 0 ? "next-hit-reduction" : "full-block");
-    if (guardType === "next-hit-reduction") return `${event.source} arms ${event.label}; the next incoming hit against ${target} is reduced by ${amount}.`;
-    return `${event.source} arms ${event.label}; all incoming damage to ${target} is blocked this enemy phase.`;
+    if (guardType === "next-hit-reduction") return `${event.source} uses ${event.label}${recipient}; the next incoming hit is reduced by ${amount}.`;
+    return `${event.source} uses ${event.label}${recipient}; all incoming damage is blocked this enemy phase.`;
   }
-  return `${event.source} uses ${event.label}${target && target !== event.source ? ` on ${target}` : ""}.`;
+  return `${event.source} uses ${event.label}${recipient}.`;
 }
 
 function supportEventStatusLog(events = []) {
   return events.filter(Boolean).map(supportEventStatusLine).filter(Boolean).join(" ");
+}
+
+function opforAbilityStatusLine(event) {
+  if (!event) return "";
+  if (event.kind === "heal") return `${event.source}'s ${event.label} restores every active OPFOR by up to 5 HP.`;
+  if (event.kind === "initiative") return `${event.source}'s ${event.label} moves them to the front of initiative.`;
+  if (event.kind === "aoe") return `${event.source} activates ${event.label}: two area attacks dealing 3-7 damage each.`;
+  if (event.kind === "bubble") return `${event.source}'s ${event.label} applies a one-hit bubble to every active OPFOR.`;
+  if (event.kind === "stun") return `${event.source}'s ${event.label} stuns ${event.stunTargets?.join(" and ") || "the operator line"} before they can attack.`;
+  if (event.kind === "damage") return `${event.source} activates ${event.label} and attacks two operators per turn.`;
+  return `${event.source} uses ${event.label}.`;
+}
+
+function opforAttackTimelineStatus(action) {
+  if (action?.disrupted) return "STUNNED";
+  if (action?.opforNoAttack) return "NO ATTACK";
+  if (action?.opforEnforcerBarrage) return `AOE ${action.opforBarrageIndex || 1}/2`;
+  if (action?.opforSplitFire) return action.opforSimulatedCorrect ? "2× TWO TARGETS" : "TWO TARGETS";
+  return action?.opforSimulatedCorrect ? "2× ATTACK" : "NORMAL ATTACK";
+}
+
+function opforAttackBannerText(action) {
+  const targetNames = (action?.targets || []).map((hit) => hit.target.name).join(", ");
+  if (action?.opforEnforcerBarrage) {
+    return `${action.enemy.label} // TWIN BARRAGE ${action.opforBarrageIndex || 1}/2 // ${action.rolledAmount} AOE — ${targetNames}`;
+  }
+  return `${action.enemy.label} // ${action.opforSimulatedCorrect ? "CORRECT 2×" : "WRONG NORMAL"}${action.opforSplitFire ? " // SPLIT FIRE" : ""}${action.yellowOpforEmpowered ? " // EMPOWERED" : ""} — ${targetNames}`;
+}
+
+function enemyActionStatusLines(actions = []) {
+  return actions.flatMap((action) => {
+    if (action.disrupted) return [`${action.enemy.label}'s attack is disrupted.`];
+    if (action.opforNoAttack) {
+      return [`${action.enemy.label} cannot acquire its matching-class operator.`];
+    }
+    if (action.yellowSniperFallback) {
+      return action.targets.map((hit) => `${action.enemy.label}'s scoped target ${action.yellowSniperOriginalTargetName || "operator"} is already down; the scope converts into a normal single-target attack against ${hit.target.name} for ${hit.damage} damage${hit.braced ? ` after bracing (${Math.round(hit.braceMitigation * 100)}% mitigated)` : ""}.`);
+    }
+    return action.targets.map((hit) => hit.yellowC4CarrierFailure
+      ? `${action.yellowAbilityName || YELLOW_MID_C4_PHASE_NAME} detonates on ${hit.target.name}; their incorrect response forces them directly to 1 HP.`
+      : hit.kickStarted
+        ? `${hit.kickStarted.source}'s Kick Start Your Heart revives ${hit.target.name} at 25% HP with a protection bubble.`
+        : hit.redirected
+          ? `${hit.target.name}'s fatal damage is redirected to ${hit.redirected.target.name} by RRR at half strength.`
+          : hit.bubbleBlocked
+            ? `${hit.target.name}'s Engineer bubble absorbs ${action.enemy.label}'s attack.`
+            : hit.blocked
+              ? `${hit.target.name} braces and blocks ${action.enemy.label}'s attack.`
+              : `${action.enemy.label}${action.yellowOpforMirror ? action.opforEnforcerBarrage ? ` [OPFOR TWIN BARRAGE ${action.opforBarrageIndex}/2]` : ` [OPFOR ${action.opforSimulatedCorrect ? "CORRECT / 2×" : "WRONG / NORMAL"}${action.yellowOpforEmpowered ? " + EMPOWERED" : ""}${action.opforSplitFire ? " + SPLIT FIRE" : ""}]` : action.midBossHalfHealthAttack ? " [FERAL RUPTURE]" : action.yellowSniperScope ? ` [${String(action.yellowAbilityName || YELLOW_MID_SNIPER_PHASE_NAME).toUpperCase()}]` : action.yellowSniperAoe ? ` [${action.yellowFinalDoubleKillAoe ? "DOUBLE KILL" : "SNIPER SCOPE"} AOE]` : action.yellowC4Bomb ? ` [${String(action.yellowAbilityName || YELLOW_MID_C4_PHASE_NAME).toUpperCase()}]` : action.yellowC4Aoe ? " [C4 BOMB AOE]" : action.yellowFinalRainAoe ? " [RAIN OF TERROR AOE]" : action.bossDamagePhase === "Enraged" ? " [ENRAGED]" : ""}${action.disruptionResisted ? " resists disruption and" : ""} attacks ${hit.target.name} for ${hit.damage} damage${hit.braced ? ` after bracing (${Math.round(hit.braceMitigation * 100)}% mitigated)` : ""}.`);
+  });
 }
 
 function bankCombatXp(encounter, player, amount) {
@@ -8533,15 +10022,250 @@ function applyCombatVictoryXp(encounter) {
   encounter.pendingXp = {};
 }
 
+function resolveGreenPossessionResponses(encounter, entries, notes, facts) {
+  if (!encounter?.greenPossessionActive) return;
+  for (const player of state.players.filter((entry) => entry._greenPossessed && !entry.incapacitated)) {
+    const response = entries.find((entry) => entry.player && sameName(entry.player.name, player.name));
+    if (!response) continue;
+    player.greenPossessionCorrectStreak = response.correct
+      ? Math.max(0, Number(player.greenPossessionCorrectStreak) || 0) + 1
+      : 0;
+    if (player.greenPossessionCorrectStreak >= 2) {
+      releaseGreenPossessedPlayer(encounter, player, notes, facts, "two consecutive correct responses");
+    } else {
+      addEventNote(notes, player.name, `${player.name} remains possessed; escape progress ${player.greenPossessionCorrectStreak}/2 consecutive correct responses.`);
+    }
+  }
+  syncGreenPossessionPhase(encounter);
+  if (!encounter.greenPossessionActive) {
+    facts.push("All possession-phase hostiles are neutralized; the green boss returns to the battlefield");
+  } else if (!state.players.some((player) => player._greenPossessed && !player.incapacitated)) {
+    facts.push("All operators regain control, but the green boss remains absent until its summoned hostiles are defeated");
+  }
+}
+
+function releaseGreenPossessedPlayer(encounter, player, notes, facts, reason) {
+  if (!player?._greenPossessed) return false;
+  const releaseHp = greenPossessionReleaseHp(encounter, player);
+  player._greenPossessed = false;
+  player.greenPossessionCorrectStreak = 0;
+  player.hp = Math.max(player.hp, releaseHp);
+  player._possessionReleasedBracedReady = true;
+  addEventNote(notes, player.name, `${player.name} breaks free of possession after ${reason}.`);
+  facts.push(`${player.name} breaks free of the green boss's possession after ${reason}`);
+  syncGreenPossessionPhase(encounter);
+  return true;
+}
+
+function greenPossessionReleaseHp(encounter, player) {
+  const node = state.nodes[encounter?.nodeIndex ?? state.currentNode];
+  return node?.bossPhase === "mid"
+    ? Math.max(1, Math.ceil(Math.max(1, Number(player?.maxHp) || 1) * 0.25))
+    : 1;
+}
+
+function summonGreenBossEnemies(encounter, tiers = []) {
+  if (!encounter || !tiers.length || !combatSystem.createEnemyGroup) return [];
+  const summoned = combatSystem.createEnemyGroup(tiers, state.rng).enemies;
+  summoned.forEach((enemy, index) => {
+    enemy.id = `green-summon-${encounter.round}-${Date.now()}-${index}`;
+    enemy.summoned = true;
+  });
+  assignEnemyVisuals(summoned);
+  encounter.enemies.unshift(...summoned);
+  syncEncounterGroupHp(encounter);
+  return summoned;
+}
+
+function activateGreenBossPossession(encounter, node, notes, facts) {
+  if (!encounter || encounter.greenPossessionTriggered || !bossUsesGreenPossessionBehavior(node)) return null;
+  const boss = bossEnemyForEncounter(encounter);
+  const threshold = node?.bossPhase === "final" ? 0.6 : 0.5;
+  if (!boss?.maxHp || boss.hp / boss.maxHp > threshold) return null;
+  const candidates = activePlayers().filter((player) => !player._greenPossessed);
+  const divisor = node?.bossPhase === "final" ? 4 : 2;
+  const count = Math.max(1, node?.bossPhase === "final"
+    ? Math.ceil(candidates.length / divisor)
+    : Math.floor(candidates.length / divisor));
+  const selected = shuffle(candidates).slice(0, count);
+  if (!selected.length) return null;
+  encounter.greenPossessionTriggered = true;
+  encounter.greenPossessionActive = true;
+  for (const player of selected) {
+    player._greenPossessed = true;
+    player._spectralInfected = false;
+    player.spectralInfectionCorrectStreak = 0;
+    player.greenPossessionCorrectStreak = 0;
+    delete player._engineerBubbleReady;
+    delete player._engineerBubbleKind;
+    if (encounter.bubbleTargetName && sameName(encounter.bubbleTargetName, player.name)) encounter.bubbleTargetName = "";
+    addEventNote(notes, player.name, `${player.name} is possessed by ${node?.bossPhase === "final" ? GREEN_FINAL_SUMMON_PHASE_NAME : GREEN_MID_POSSESSION_PHASE_NAME} and turns against the squad.`);
+  }
+  const freeCount = Math.max(0, candidates.length - selected.length);
+  const tiers = node?.bossPhase === "final"
+    ? ["medium", "medium"]
+    : selected.length < freeCount
+      ? ["light"]
+      : [];
+  const summoned = summonGreenBossEnemies(encounter, tiers);
+  const phaseName = node?.bossPhase === "final" ? GREEN_FINAL_SUMMON_PHASE_NAME : GREEN_MID_POSSESSION_PHASE_NAME;
+  if (node?.bossPhase === "final") {
+    encounter.greenConfusionPhase = 2;
+    encounter.greenConfusionPhaseStartedRound = encounter.round + 1;
+    state.players.filter((player) => !player.incapacitated && !player._greenPossessed).forEach((player) => {
+      player._spectralInfected = true;
+      player.spectralInfectionCorrectStreak = 0;
+    });
+  }
+  facts.push(`${phaseName} begins: the green boss possesses ${selected.map((player) => player.name).join(", ")}${summoned.length ? `, summons ${summoned.length} ${node?.bossPhase === "final" ? "medium specters" : "light hostile"}` : ""}, and withdraws ${node?.bossPhase === "final" ? "until every possession-phase hostile is defeated" : "until every possessed operator earns two consecutive correct responses"}`);
+  return { selected, summoned, phaseName };
+}
+
+function activateGreenFinalInfection(encounter, node) {
+  if (!encounter || encounter.greenFinalInfectionTriggered || node?.bossPhase !== "final" || !bossUsesGreenPossessionBehavior(node)) return false;
+  encounter.greenFinalInfectionTriggered = true;
+  encounter.greenConfusionPhase = 1;
+  encounter.greenConfusionPhaseStartedRound = 1;
+  state.players.forEach((player) => {
+    player._spectralInfected = true;
+    player.spectralInfectionCorrectStreak = 0;
+  });
+  return true;
+}
+
+function prepareGreenConfusionForNextQuestion(encounter, facts = []) {
+  if (!encounter || encounter.cleared) return false;
+  const phase = Number(encounter?.greenConfusionPhase) || 0;
+  const phaseStart = Number(encounter?.greenConfusionPhaseStartedRound) || 0;
+  const nextRound = Math.max(1, (Number(encounter?.round) || 0) + 1);
+  if (!phase || !phaseStart || nextRound <= phaseStart || (nextRound - phaseStart) % 4 !== 0) return false;
+  let infected = 0;
+  state.players.filter((player) => !player.incapacitated && !player._greenPossessed).forEach((player) => {
+    player._spectralInfected = true;
+    player.spectralInfectionCorrectStreak = 0;
+    infected += 1;
+  });
+  if (infected) {
+    const infectionName = phase === 2 ? GREEN_POSSESSION_CONFUSION_NAME : GREEN_FINAL_INFECTION_PHASE_NAME;
+    facts.push(`${infectionName} reapplies to ${infected} operator${infected === 1 ? "" : "s"} after four questions in phase ${phase}`);
+  }
+  return infected > 0;
+}
+
+function resolveGreenInfectionResponses(encounter, entries, notes, facts) {
+  if (!encounter?.greenFinalInfectionTriggered) return;
+  const infectionName = Number(encounter.greenConfusionPhase) === 2
+    ? GREEN_POSSESSION_CONFUSION_NAME
+    : GREEN_FINAL_INFECTION_PHASE_NAME;
+  const requiredCorrect = Number(encounter.greenConfusionPhase) === 1 ? 1 : 2;
+  for (const player of state.players.filter((candidate) => candidate._spectralInfected && !candidate.incapacitated)) {
+    const response = entries.find((entry) => entry.player && sameName(entry.player.name, player.name));
+    if (!response) continue;
+    player.spectralInfectionCorrectStreak = response.correct
+      ? Math.max(0, Number(player.spectralInfectionCorrectStreak) || 0) + 1
+      : 0;
+    if (player.spectralInfectionCorrectStreak >= requiredCorrect) {
+      player._spectralInfected = false;
+      player.spectralInfectionCorrectStreak = 0;
+      addEventNote(notes, player.name, `${player.name} clears ${infectionName} after ${requiredCorrect === 1 ? "one correct response" : "two consecutive correct responses"}.`);
+      facts.push(`${player.name} clears ${infectionName}`);
+    } else {
+      addEventNote(notes, player.name, `${player.name} remains infected by ${infectionName}; clearance ${player.spectralInfectionCorrectStreak}/${requiredCorrect}.`);
+    }
+  }
+}
+
+function resolveGreenPossessedAttacks(encounter, entries, question, type, operator, notes, facts) {
+  if (!encounter?.greenPossessionActive) return [];
+  const normalTargets = () => activePlayers().filter((player) => !player._greenPossessed);
+  const actions = [];
+  for (const entry of entries.filter((candidate) => candidate.player?._greenPossessed && !candidate.player.incapacitated)) {
+    const candidates = normalTargets();
+    if (!candidates.length) break;
+    const target = candidates[Math.floor(state.rng() * candidates.length)];
+    // Possession forces an attack regardless of answer outcome. Calculate it
+    // through the normal operator damage path, while the original result still
+    // governs escape progress and whether that operator was braced.
+    const baseDamage = combatPlayerDamage({ ...entry, correct: true }, question, type);
+    const rolledAmount = Math.max(1, Math.round(baseDamage));
+    const braceEntry = combatBraceEntry(entries, type, operator, target);
+    const braced = Boolean(braceEntry?.correct);
+    const braceMitigation = braced ? combatBraceMitigation(braceEntry, type) : 0;
+    const amount = braced ? Math.max(0, Math.round(rolledAmount * (1 - braceMitigation))) : rolledAmount;
+    const hpBefore = target.hp;
+    const damage = applyCombatDamage(target, amount, "possession", notes, facts, encounter);
+    actions.push({
+      enemy: { id: `possessed-${normalize(entry.player.name)}`, label: entry.player.name, boss: false },
+      possessed: true,
+      possessedPlayer: entry.player,
+      possessedAnswerCorrect: Boolean(entry.correct),
+      aoe: false,
+      amount,
+      rolledAmount,
+      targets: [{ target, braced, braceMitigation, blocked: damage <= 0, damage, hpBefore, hpAfter: target.hp, downed: hpBefore > 0 && target.incapacitated }]
+    });
+    facts.push(`${entry.player.name} attacks ${target.name} while possessed for normal operator damage${entry.correct ? "" : " despite answering incorrectly"}`);
+  }
+  if (encounter.greenPossessionActive && !normalTargets().length) {
+    encounter.greenPossessionFailed = true;
+    facts.push("Every unpossessed operator is incapacitated while possession remains active; the encounter is lost");
+  }
+  return actions;
+}
+
+/**
+ * Resolves one complete combat round from immutable answer results.
+ * Armed player abilities and OPFOR class abilities resolve first. Yellow
+ * scripted priority attacks and enhanced OPFOR attacks then fire, followed by
+ * answer-speed initiative, threshold detection, and the ordinary enemy phase.
+ * The returned event object is the contract consumed later by combat
+ * presentation; timers never alter outcomes.
+ */
 function applyCombatEncounter(entries, type, operator, question) {
   const encounter = currentCombatEncounter();
   if (!encounter) return applyDeviceTeamEncounter(entries, type);
+  const roundNode = state.nodes[state.currentNode];
+  const yellowSniperScopePendingAtRoundStart = Boolean(
+    ["mid", "final"].includes(roundNode?.bossPhase)
+    && bossUsesYellowBallisticsBehavior(roundNode)
+    && !encounter.yellowSniperScopeResolved
+  );
+  const yellowSniperTargetNamesAtRoundStart = yellowSniperScopePendingAtRoundStart
+    ? (encounter.yellowSniperTargetNames || [encounter.yellowSniperTargetName]).filter(Boolean)
+    : [];
+  const yellowSniperTargetNameAtRoundStart = yellowSniperTargetNamesAtRoundStart[0] || "";
+  const yellowOpforRetaliationSniperTargetNamesAtRoundStart = roundNode?.bossPhase === "final"
+    && bossUsesYellowBallisticsBehavior(roundNode)
+    ? [...(encounter.yellowOpforRetaliationSniperTargetNames || [])]
+    : [];
+  const yellowOpforRetaliationSniperPendingAtRoundStart = yellowOpforRetaliationSniperTargetNamesAtRoundStart.length > 0;
+  // Resolution mutates the encounter before its animation plays. Preserve the
+  // armed charge from the beginning of the round so its marker remains visible
+  // through the player phase and disappears only when detonation is presented.
+  const yellowC4ArmedAtRoundStart = Boolean(encounter.yellowC4BombArmed && !encounter.yellowC4BombResolved);
+  const yellowC4TargetNameAtRoundStart = yellowC4ArmedAtRoundStart ? encounter.yellowC4TargetName || "" : "";
+  const yellowFinalRainPendingAtRoundStart = Boolean(encounter.yellowFinalRainPending && !encounter.yellowFinalRainResolved);
+  const yellowFinalRainSniperTargetsAtRoundStart = yellowFinalRainPendingAtRoundStart ? [...(encounter.yellowFinalRainSniperTargetNames || [])] : [];
+  const yellowFinalRainC4TargetsAtRoundStart = yellowFinalRainPendingAtRoundStart ? [...(encounter.yellowFinalRainC4TargetNames || [])] : [];
+  const roundStartBoss = bossEnemyForEncounter(encounter);
+  const roundStartBossHp = Math.max(0, Number(roundStartBoss?.hp ?? encounter.hp) || 0);
+  const roundStartBossMaxHp = Math.max(1, Number(roundStartBoss?.maxHp ?? encounter.maxHp) || 1);
   const roundStartPlayers = state.combatXpBaseline.length
     ? state.combatXpBaseline.map((player) => ({ ...player }))
     : state.players.map((player) => ({ name: player.name, xp: player.xp, level: player.level }));
   state.combatXpBaseline = [];
   encounter.round += 1;
-  const roundStartEnemies = encounter.enemies.map((enemy) => ({ id: enemy.id, hp: enemy.hp, maxHp: enemy.maxHp, defeated: enemy.defeated }));
+  const greenFinalInfectionOpening = Boolean(encounter.round === 1 && encounter.greenFinalInfectionTriggered);
+  const roundStartEnemies = encounter.enemies.map((enemy) => ({
+    id: enemy.id,
+    hp: enemy.hp,
+    maxHp: enemy.maxHp,
+    defeated: enemy.defeated,
+    opforLastCorrect: enemy.opforLastCorrect,
+    opforBubbleReady: Boolean(enemy.opforBubbleReady),
+    opforAbilityActive: Boolean(enemy.opforAbilityActive),
+    opforAbilityArmedRound: Math.max(0, Number(enemy.opforAbilityArmedRound) || 0)
+  }));
   const notes = {};
   const roundStartVitals = state.players.map((player) => ({
     name: player.name,
@@ -8549,16 +10273,35 @@ function applyCombatEncounter(entries, type, operator, question) {
     maxHp: Math.max(10, Number(player.maxHp) || 10),
     status: [],
     incapacitated: Boolean(player.incapacitated),
+    possessed: Boolean(player._greenPossessed),
+    spectralInfected: Boolean(player._spectralInfected),
+    confused: Boolean(player._spectralInfected && !player._greenPossessed),
     bubbleActive: Boolean(
-      player._engineerBubbleReady
-      || (encounter.bubbleTargetName && sameName(encounter.bubbleTargetName, player.name))
+      !player._greenPossessed
+      && (player._engineerBubbleReady
+      || (encounter.bubbleTargetName && sameName(encounter.bubbleTargetName, player.name)))
     )
   }));
   const facts = [];
+  if (greenFinalInfectionOpening) facts.push(`${GREEN_FINAL_INFECTION_PHASE_NAME} infects every active operator with an eight-choice answer field until each earns one correct response`);
   const combatSupportEvents = [];
   const postEnemySupportEvents = [];
+  const preemptiveEnemyActions = [];
+  let totalDamage = 0;
   clearCombatAbilityMarkers();
+  const greenPossessionActiveAtRoundStart = Boolean(encounter.greenPossessionActive);
+  resolveGreenInfectionResponses(encounter, entries, notes, facts);
+  const greenInfectionClearedByAnswers = roundStartVitals
+    .filter((snapshot) => snapshot.spectralInfected)
+    .filter((snapshot) => !state.players.find((player) => sameName(player.name, snapshot.name))?._spectralInfected)
+    .map((snapshot) => snapshot.name);
+  resolveGreenPossessionResponses(encounter, entries, notes, facts);
+  const greenPossessionReleasedByAnswers = roundStartVitals
+    .filter((snapshot) => snapshot.possessed)
+    .filter((snapshot) => !state.players.find((player) => sameName(player.name, snapshot.name))?._greenPossessed)
+    .map((snapshot) => snapshot.name);
   encounter.tacticianGuardAmount = 0;
+  const pendingOpforStunSourceNames = pendingCombatDisruptorNames();
   let disrupted = applyPendingCombatAbilities(encounter, notes, facts, combatSupportEvents);
   const attackEntries = [...entries];
   state.players.filter((player) => player._determinedAimReady && !player.incapacitated).forEach((player) => {
@@ -8566,7 +10309,8 @@ function applyCombatEncounter(entries, type, operator, question) {
       attackEntries.push({ player, correct: false, submittedAt: Date.now(), answer: "" });
     }
   });
-  const attacks = attackEntries.filter((entry) => (entry.correct || entry.player?._determinedAimReady) && entry.player && !entry.player.incapacitated && !entry.player._classNoAttackReady)
+  const possessionRescuePhase = Boolean(encounter.greenPossessionActive);
+  const attacks = attackEntries.filter((entry) => (entry.correct || entry.player?._determinedAimReady) && entry.player && !entry.player.incapacitated && !entry.player._greenPossessed && !entry.player._classNoAttackReady)
     .sort((a, b) => pointTimestamp(a.submittedAt) - pointTimestamp(b.submittedAt));
   const doubleAttackers = new Set(attacks
     .filter((entry) => entry.player._classDoubleAttackReady && entry.player.classId === "soldier" && Number(entry.player.level) >= 3 && Number(entry.player.answerStreak) >= 3)
@@ -8607,7 +10351,7 @@ function applyCombatEncounter(entries, type, operator, question) {
       if (empoweredSupport) facts.push(`${tactician.player.name}'s empowered Support Protocol restores the whole active squad`);
       for (const supportTarget of supportTargets) {
         const before = supportTarget.hp;
-        healPlayer(supportTarget, empoweredSupport ? 3 : 2);
+        healPlayer(supportTarget, 2);
         const healed = Math.max(0, supportTarget.hp - before);
         if (!healed) continue;
         if (!empoweredSupport) facts.push(`${tactician.player.name}'s Support Protocol stabilizes ${supportTarget.name}`);
@@ -8624,20 +10368,292 @@ function applyCombatEncounter(entries, type, operator, question) {
     facts.push(`${tactician.player.name}'s ${tacticianProtocol} protocol resolves without a coordination bonus`);
   }
   const attackQueue = attacks.flatMap((entry) => [entry, ...(doubleAttackers.has(normalize(entry.player.name)) ? [{ ...entry, empoweredFollowUp: true }] : [])]);
+  const opforStunnedPlayerNames = new Set();
+  const opforStunResolvedPlayerNames = new Set();
+  // Older saves may carry the Engineer's retired delayed-stun queue. The new
+  // Tactician phase applies its two stuns directly in the current initiative.
+  encounter.yellowOpforPlayerStuns = [];
+  const yellowPreemptiveActions = resolveYellowPreemptiveBossActions(encounter, entries, type, operator, notes, facts);
+  preemptiveEnemyActions.push(...yellowPreemptiveActions);
+  totalDamage += yellowPreemptiveActions.flatMap((action) => action.targets || [])
+    .reduce((sum, hit) => sum + hit.damage + (hit.redirected?.damage || 0), 0);
   const attackResults = [];
+  const enemyActions = [];
+  const opforAbilityEvents = [];
+  const opforImmediateActions = [];
+  const initiativeSequence = [];
+  const roundStartEnemyIds = new Set(roundStartEnemies.filter((enemy) => !enemy.defeated).map((enemy) => enemy.id));
+  const roundStartOpforMirrors = yellowFinalOpforMirrors(encounter)
+    .filter((enemy) => roundStartEnemyIds.has(enemy.id));
+  roundStartOpforMirrors.forEach((enemy) => yellowOpforAbilityPhaseActive(enemy, encounter));
+  const plannedOpforEnemyIds = new Set(roundStartOpforMirrors.map((enemy) => enemy.id));
+  const yellowSniperScopePending = preemptiveEnemyActions.some((action) => action.yellowSniperScope);
+  const lockedSuppressionAttempted = Boolean(type.locked && operator && entries.some((entry) => entry.player && sameName(entry.player.name, operator.name) && entry.correct));
+  if (lockedSuppressionAttempted && yellowSniperScopePending) facts.push(`${YELLOW_MID_SNIPER_PHASE_NAME} cannot be suppressed`);
+  if (roundStartOpforMirrors.length) {
+    // OPFOR uses individual initiative, so even a sweep or several queued
+    // disruption charges can remove only one mirror activation.
+    disrupted = Math.min(1, disrupted + (lockedSuppressionAttempted ? 1 : 0));
+    if (lockedSuppressionAttempted) facts.push(`${operator.name}'s sweep disruption locks onto one OPFOR mirror`);
+  }
+  const opforStunSourceNames = [
+    ...(lockedSuppressionAttempted && operator ? [operator.name] : []),
+    ...pendingOpforStunSourceNames
+  ];
+  const questionDuration = Math.max(1_000, Number(state.questionDurationMs) || questionScoringDurationMs({ type }));
+  const opforInitiativePlans = roundStartOpforMirrors.map((enemy, index) => {
+    const activeClass = enemy.opforAbilityActive ? String(enemy.mirrorClassId || "").toLowerCase() : "";
+    return {
+      enemy,
+      simulatedCorrect: state.rng() < 0.5,
+      // An activated Scout always leads initiative. An activated Tactician's
+      // lockdown follows immediately so its targets are stopped before acting.
+      simulatedElapsed: activeClass === "scout"
+        ? -2
+        : activeClass === "tactician"
+          ? -1
+          : questionDuration * (0.2 + state.rng() * 0.6),
+      index,
+      resolved: false
+    };
+  }).sort((a, b) => a.simulatedElapsed - b.simulatedElapsed || a.index - b.index);
+  const empoweredOpforMirror = roundStartOpforMirrors.length
+    ? roundStartOpforMirrors[Math.floor(state.rng() * roundStartOpforMirrors.length)] || null
+    : null;
+  if (empoweredOpforMirror) facts.push(`${bossEnemyForEncounter(encounter)?.label || "The boss"} empowers ${empoweredOpforMirror.label} for this turn`);
+  let opforStunTargetId = "";
+  const chooseOpforStunTarget = () => {
+    const candidates = opforInitiativePlans.filter((plan) => !plan.resolved && !plan.enemy.defeated);
+    if (!candidates.length) return "";
+    const preferred = opforStunSourceNames
+      .map((sourceName) => candidates.find((plan) => sameName(plan.enemy.mirrorTargetName, sourceName)))
+      .find(Boolean);
+    return (preferred || candidates[Math.floor(state.rng() * candidates.length)] || {}).enemy?.id || "";
+  };
+  if (disrupted > 0 && opforInitiativePlans.length) opforStunTargetId = chooseOpforStunTarget();
+  const resolveOpforAttackPlan = (plan, abilityEvent = null, immediate = false) => {
+    const enemy = plan.enemy;
+    const simulatedCorrect = plan.simulatedCorrect;
+    enemy.opforLastCorrect = simulatedCorrect;
+    const action = resolveYellowOpforMirrorAction(
+      enemy,
+      encounter,
+      entries,
+      type,
+      operator,
+      question,
+      notes,
+      facts,
+      {
+        empowered: enemy.id === empoweredOpforMirror?.id,
+        simulatedCorrect,
+        simulatedElapsed: plan.simulatedElapsed,
+        barrageIndex: 1,
+        // Immediate attacks are paired with their separately presented ability
+        // event, avoiding a duplicate ability animation on the attack itself.
+        abilityEvent: immediate ? null : abilityEvent
+      }
+    );
+    action.opforImmediateAbilityAttack = immediate;
+    action.opforAbilityLabel = immediate ? abilityEvent?.label || "" : "";
+    enemyActions.push(action);
+    totalDamage += action.targets.reduce((sum, hit) => sum + hit.damage + (hit.redirected?.damage || 0), 0);
+    const actions = [action];
+    if (!action.opforNoAttack
+      && enemy.opforAbilityActive
+      && String(enemy.mirrorClassId || "").toLowerCase() === "enforcer") {
+      const followup = resolveYellowOpforMirrorAction(
+        enemy,
+        encounter,
+        entries,
+        type,
+        operator,
+        question,
+        notes,
+        facts,
+        {
+          empowered: enemy.id === empoweredOpforMirror?.id,
+          simulatedCorrect,
+          simulatedElapsed: plan.simulatedElapsed + 1,
+          followup: true,
+          barrageIndex: 2
+        }
+      );
+      followup.opforImmediateAbilityAttack = immediate;
+      followup.opforAbilityLabel = immediate ? abilityEvent?.label || "" : "";
+      enemyActions.push(followup);
+      totalDamage += followup.targets.reduce((sum, hit) => sum + hit.damage + (hit.redirected?.damage || 0), 0);
+      actions.push(followup);
+    }
+    return actions;
+  };
+  // Support/control OPFOR abilities still prime the round before initiative.
+  // Offensive class abilities resolve their enhanced attacks immediately here.
+  const opforAbilityEventByEnemyId = new Map();
+  for (const plan of opforInitiativePlans) {
+    if (plan.enemy.defeated || plan.enemy.id === opforStunTargetId) continue;
+    const abilityEvent = resolveYellowOpforAbility(plan.enemy, encounter, question, facts, {
+      eligiblePlayers: attackQueue.map((entry) => entry.player)
+        .filter((player) => player && !opforStunnedPlayerNames.has(normalize(player.name)))
+    });
+    if (!abilityEvent) continue;
+    opforAbilityEvents.push(abilityEvent);
+    opforAbilityEventByEnemyId.set(plan.enemy.id, abilityEvent);
+    for (const targetName of abilityEvent.stunTargets || []) {
+      opforStunnedPlayerNames.add(normalize(targetName));
+    }
+    if (["damage", "aoe"].includes(abilityEvent.kind)) {
+      plan.resolved = true;
+      opforImmediateActions.push(...resolveOpforAttackPlan(plan, abilityEvent, true));
+    }
+  }
+  const resolvePlannedOpfor = (plan) => {
+    if (!plan || plan.resolved) return;
+    const enemy = plan.enemy;
+    if (enemy.defeated) {
+      plan.resolved = true;
+      if (enemy.id === opforStunTargetId) opforStunTargetId = "";
+      return;
+    }
+    // Keep this plan eligible while replacing a destroyed stun target. That
+    // prevents the last surviving mirror from escaping a valid disruption.
+    if (disrupted > 0 && !opforStunTargetId) opforStunTargetId = chooseOpforStunTarget();
+    plan.resolved = true;
+    if (disrupted > 0 && enemy.id === opforStunTargetId) {
+      disrupted -= 1;
+      enemy.opforLastCorrect = null;
+      const disruptedAction = {
+        enemy,
+        disrupted: true,
+        yellowOpforMirror: true,
+        opforInitiativeElapsed: plan.simulatedElapsed,
+        targets: []
+      };
+      enemyActions.push(disruptedAction);
+      initiativeSequence.push({ kind: "opfor", action: disruptedAction, initiativeElapsed: plan.simulatedElapsed });
+      return;
+    }
+    const abilityEvent = opforAbilityEventByEnemyId.get(enemy.id) || null;
+    const actions = resolveOpforAttackPlan(plan, abilityEvent, false);
+    actions.forEach((action, index) => initiativeSequence.push({
+      kind: "opfor",
+      action,
+      initiativeElapsed: plan.simulatedElapsed + index
+    }));
+  };
+  let nextOpforPlanIndex = 0;
+  const resolveOpforThrough = (elapsed) => {
+    while (nextOpforPlanIndex < opforInitiativePlans.length
+      && opforInitiativePlans[nextOpforPlanIndex].simulatedElapsed <= elapsed) {
+      resolvePlannedOpfor(opforInitiativePlans[nextOpforPlanIndex]);
+      nextOpforPlanIndex += 1;
+    }
+  };
+  let greenPossessionActivatedThisRound = false;
+  let greenPossessionPhaseEndedThisRound = false;
+  let yellowOpforDeployedThisRound = false;
   for (const entry of attackQueue) {
+    resolveOpforThrough(combatAnswerElapsedMs(entry.submittedAt || Date.now()));
+    // Possession can begin between queued attacks. An operator seized by the
+    // threshold hit no longer completes a pending squad attack.
+    if (entry.player.incapacitated || entry.player._greenPossessed) continue;
     const damage = combatPlayerDamage(entry, question, type) + tacticianBonus;
-    const target = encounter.enemies.find((enemy) => !enemy.defeated) || null;
+    const possessedTargets = encounter.greenPossessionActive
+      ? activePlayers().filter((player) => player._greenPossessed)
+      : [];
+    if (encounter.greenPossessionActive && possessedTargets.length) {
+      const rescueTarget = possessedTargets[Math.floor(state.rng() * possessedTargets.length)] || null;
+      const braceEntry = combatBraceEntry(entries, type, operator, rescueTarget);
+      const braced = Boolean(braceEntry?.correct);
+      const braceMitigation = braced ? combatBraceMitigation(braceEntry, type) : 0;
+      const mitigatedDamage = braced ? Math.max(0, Math.round(damage * (1 - braceMitigation))) : damage;
+      const hpBefore = rescueTarget.hp;
+      const releaseHp = greenPossessionReleaseHp(encounter, rescueTarget);
+      const dealt = applyCombatDamage(rescueTarget, mitigatedDamage, "possession rescue", notes, facts, encounter, false, releaseHp);
+      const freed = rescueTarget.hp <= releaseHp
+        ? releaseGreenPossessedPlayer(encounter, rescueTarget, notes, facts, `the squad suppresses them to ${releaseHp} HP`)
+        : false;
+      const rescueResult = {
+        player: entry.player,
+        damage: dealt,
+        empowered: Boolean(entry.empoweredFollowUp || (tacticianCommand && Number(tactician.player.level) >= 3)),
+        doubleAttack: Boolean(entry.empoweredFollowUp),
+        defeated: [],
+        possessionRescue: true,
+        possessionFreed: freed,
+        possessionReleasedBraced: freed,
+        rescueTarget,
+        braced,
+        braceMitigation,
+        targetId: `possessed-${normalize(rescueTarget.name)}`,
+        targetLabel: rescueTarget.name,
+        targetMaxHp: rescueTarget.maxHp,
+        targetHpBefore: hpBefore,
+        targetHpAfter: rescueTarget.hp,
+        possessionReleaseHp: releaseHp,
+        greenPossessionEndedAfter: Boolean(freed && !encounter.greenPossessionActive)
+      };
+      attackResults.push(rescueResult);
+      initiativeSequence.push({ kind: "player", attack: rescueResult, initiativeElapsed: combatAnswerElapsedMs(entry.submittedAt || Date.now()) });
+      facts.push(`${entry.player.name} attacks possessed ${rescueTarget.name} for ${dealt} nonlethal damage${freed ? " and restores their control" : ""}`);
+      if (freed && !encounter.greenPossessionActive) {
+        greenPossessionPhaseEndedThisRound = true;
+        break;
+      }
+      continue;
+    }
+    const summonOnlyTarget = encounter.greenPossessionActive
+      ? encounter.enemies.find((enemy) => enemy.summoned && !enemy.defeated) || null
+      : null;
+    const activeOpforMirrors = yellowFinalOpforMirrors(encounter);
+    const yellowOpforCounterpart = activeOpforMirrors.find((enemy) => sameName(enemy.mirrorTargetName, entry.player.name)) || null;
+    // Operators engage their own hostile mirror first. Once that counterpart
+    // falls, their fire advances to the first remaining OPFOR card in line.
+    const yellowOpforTarget = yellowOpforCounterpart || activeOpforMirrors[0] || null;
+    const target = summonOnlyTarget || yellowOpforTarget || encounter.enemies.find((enemy) => !enemy.defeated) || null;
     const targetHpBefore = target?.hp || 0;
+    const bossHpBeforeThisAttack = Math.max(0, Number(bossEnemyForEncounter(encounter)?.hp) || 0);
     const groupHpBefore = encounter.hp;
     const enemyStatesBefore = encounter.enemies.map((enemy) => ({ id: enemy.id, hp: enemy.hp }));
-    const applied = combatSystem.applyGroupDamage(encounter, damage);
-    attackResults.push({
+    if (opforStunnedPlayerNames.has(normalize(entry.player.name))) {
+      // A Tactician stun removes the operator's entire activation, including a
+      // queued Soldier follow-up, but is represented only once in the timeline.
+      if (opforStunResolvedPlayerNames.has(normalize(entry.player.name))) continue;
+      opforStunResolvedPlayerNames.add(normalize(entry.player.name));
+      const stunnedAttack = {
+        player: entry.player,
+        damage: 0,
+        empowered: Boolean(entry.empoweredFollowUp),
+        doubleAttack: Boolean(entry.empoweredFollowUp),
+        opforStunned: true,
+        defeated: [],
+        targetId: target?.id || "",
+        targetLabel: target?.label || "hostile line",
+        targetMaxHp: target?.maxHp || 1,
+        targetHpBefore,
+        targetHpAfter: targetHpBefore,
+        enemyStatesBefore,
+        enemyStatesAfter: encounter.enemies.map((enemy) => ({ id: enemy.id, hp: enemy.hp, maxHp: enemy.maxHp, defeated: enemy.defeated })),
+        groupHpBefore,
+        groupHpAfter: encounter.hp
+      };
+      attackResults.push(stunnedAttack);
+      initiativeSequence.push({ kind: "player", attack: stunnedAttack, initiativeElapsed: combatAnswerElapsedMs(entry.submittedAt || Date.now()) });
+      facts.push(`${entry.player.name}'s attack is disrupted by the opposing OPFOR Tactician`);
+      continue;
+    }
+    const focusedTarget = summonOnlyTarget || yellowOpforTarget;
+    const applied = focusedTarget
+      ? yellowOpforTarget
+        ? applyYellowOpforDamage(encounter, focusedTarget, damage)
+        : applyFocusedEnemyDamage(encounter, focusedTarget, damage)
+      : combatSystem.applyGroupDamage(encounter, damage);
+    const attackResult = {
       player: entry.player,
       damage: applied.damage,
       empowered: Boolean(entry.empoweredFollowUp || (tacticianCommand && Number(tactician.player.level) >= 3)),
       doubleAttack: Boolean(entry.empoweredFollowUp),
-      aoe: Boolean(type.locked),
+      aoe: Boolean(type.locked && !yellowOpforTarget),
       defeated: applied.defeated,
       targetId: target?.id || "",
       targetLabel: target?.label || "hostile line",
@@ -8647,12 +10663,80 @@ function applyCombatEncounter(entries, type, operator, question) {
       enemyStatesBefore,
       enemyStatesAfter: encounter.enemies.map((enemy) => ({ id: enemy.id, hp: enemy.hp, maxHp: enemy.maxHp, defeated: enemy.defeated })),
       groupHpBefore,
-      groupHpAfter: encounter.hp
-    });
+      groupHpAfter: encounter.hp,
+      opforBubbleBlocked: Boolean(applied.opforBubbleBlocked),
+      opforShieldBlocked: Boolean(applied.opforShieldBlocked),
+      opforGuardReduction: Math.max(0, Number(applied.opforGuardReduction) || 0),
+      opforAbilityArmed: Boolean(applied.opforAbilityArmed)
+    };
+    const retaliationScopes = armYellowOpforRetaliationScopes(encounter, applied.defeated, facts);
+    if (retaliationScopes.length) {
+      attackResult.yellowOpforRetaliationScopeTargetNames = retaliationScopes;
+      attackResult.yellowOpforRetaliationScopeTargetNamesAfter = [...encounter.yellowOpforRetaliationSniperTargetNames];
+    }
+    attackResults.push(attackResult);
+    initiativeSequence.push({ kind: "player", attack: attackResult, initiativeElapsed: combatAnswerElapsedMs(entry.submittedAt || Date.now()) });
     if (applied.defeated.length) bankCombatXp(encounter, entry.player, 2 * applied.defeated.length);
     if (applied.cleared) break;
+    if (summonOnlyTarget && applied.defeated.length && !syncGreenPossessionPhase(encounter)) {
+      attackResult.greenPossessionEndedAfter = true;
+      greenPossessionPhaseEndedThisRound = true;
+      facts.push("The final summoned hostile falls; the green boss returns to the battlefield");
+      break;
+    }
+    const possessionPhase = activateGreenBossPossession(encounter, state.nodes[state.currentNode], notes, facts);
+    if (possessionPhase) {
+      greenPossessionActivatedThisRound = true;
+      attackResult.greenPossessionTriggeredAfter = true;
+      attackResult.greenPossessionTargets = possessionPhase.selected.map((player) => player.name);
+      attackResult.greenSummonedEnemies = possessionPhase.summoned.map((enemy) => ({ ...enemy }));
+      attackResult.greenPossessionPhaseName = possessionPhase.phaseName;
+      break;
+    }
+    const activeBoss = bossEnemyForEncounter(encounter);
+    const activeNode = state.nodes[state.currentNode];
+    if (bossUsesGreenPossessionBehavior(activeNode)
+      && activeNode?.bossPhase === "final"
+      && !encounter.greenMindEraserActive
+      && activeBoss?.maxHp
+      && activeBoss.hp / activeBoss.maxHp <= 0.4) {
+      encounter.greenMindEraserActive = true;
+      attackResult.greenMindEraserTriggeredAfter = true;
+      facts.push(`${GREEN_FINAL_MIND_ERASER_PHASE_NAME} activates at 40% integrity; answer positions scramble every second, the second activation strikes half the party, and the third strikes the whole party for 25% max health`);
+    }
+    if (bossUsesYellowBallisticsBehavior(activeNode) && activeNode?.bossPhase === "final" && activeBoss?.maxHp && target?.boss) {
+      const beforeRatio = bossHpBeforeThisAttack / activeBoss.maxHp;
+      const afterRatio = activeBoss.hp / activeBoss.maxHp;
+      if (!encounter.yellowFinalOpforTriggered && beforeRatio > 0.75 && afterRatio <= 0.75) {
+        const mirrors = summonYellowFinalOpfor(encounter, activeNode, facts);
+        attackResult.yellowOpforTriggeredAfter = Boolean(mirrors.length);
+        attackResult.yellowOpforSpawnedEnemies = mirrors.map((enemy) => ({ ...enemy }));
+        attackResult.groupHpAfter = encounter.hp;
+        if (mirrors.length) {
+          yellowOpforDeployedThisRound = true;
+          facts.push(`${YELLOW_FINAL_OPFOR_PHASE_NAME} ends combat round ${encounter.round} immediately; the newly deployed mirrors cannot attack until the next round`);
+          break;
+        }
+      }
+    }
+    if (bossUsesYellowBallisticsBehavior(activeNode)
+      && activeNode?.bossPhase === "final"
+      && encounter.yellowFinalOpforTriggered
+      && !yellowFinalOpforMirrors(encounter).length
+      && !attackResults.some((attack) => attack.yellowOpforRetaliationScopeTargetNames?.length)
+      && !encounter.yellowFinalRainTriggered
+      && activeBoss?.maxHp
+      && activeBoss.hp / activeBoss.maxHp <= 0.3) {
+      const rain = prepareYellowFinalRainOfTerror(encounter, activeNode, facts);
+      attackResult.yellowFinalRainTriggeredAfter = Boolean(rain);
+      attackResult.yellowFinalRainSniperTargets = rain?.sniperTargets.map((player) => player.name) || [];
+      attackResult.yellowFinalRainC4Targets = rain?.c4Targets.map((player) => player.name) || [];
+    }
   }
-  for (const entry of entries.filter((entry) => !entry.correct && entry.player && !entry.player.incapacitated)) {
+  if (!yellowOpforDeployedThisRound) resolveOpforThrough(Number.POSITIVE_INFINITY);
+  for (const entry of yellowOpforDeployedThisRound
+    ? []
+    : entries.filter((candidate) => !candidate.correct && candidate.player && !candidate.player.incapacitated)) {
     const backlash = Math.max(0, itemRisk(entry.player, "selfDamageOnMiss"));
     if (backlash) {
       applyDamage(entry.player, backlash, "risk item backlash");
@@ -8660,43 +10744,183 @@ function applyCombatEncounter(entries, type, operator, question) {
     }
   }
   encounter.cleared = encounter.hp <= 0;
+  const activeBossNodeForPhase = state.nodes[state.currentNode];
+  const activeBossAfterPlayers = bossEnemyForEncounter(encounter);
+  // Phase checks intentionally happen after each individual player attack has
+  // been applied. This keeps the boss visible through the attack animation and
+  // announces a newly crossed threshold before the enemy phase begins.
+  const yellowMidBossPhase = Boolean(
+    activeBossNodeForPhase?.bossPhase === "mid"
+    && bossUsesYellowBallisticsBehavior(activeBossNodeForPhase)
+  );
+  let bossPhasePrompt = crossedBossPhasePrompt(
+    activeBossNodeForPhase,
+    roundStartBossHp,
+    activeBossAfterPlayers?.hp ?? encounter.hp,
+    roundStartBossMaxHp
+  );
+  const yellowFinalBossPhase = Boolean(
+    activeBossNodeForPhase?.bossPhase === "final"
+    && bossUsesYellowBallisticsBehavior(activeBossNodeForPhase)
+  );
+  if (yellowFinalBossPhase) {
+    if (attackResults.some((attack) => attack.yellowFinalRainTriggeredAfter)) {
+      bossPhasePrompt = `BossPhase 30% — ${YELLOW_FINAL_RAIN_PHASE_NAME}`;
+    } else if (attackResults.some((attack) => attack.yellowOpforTriggeredAfter)) {
+      bossPhasePrompt = `BossPhase 75% — ${YELLOW_FINAL_OPFOR_PHASE_NAME}`;
+    }
+  }
+  if (yellowMidBossPhase && !encounter.cleared) {
+    const yellowBossAtHalfHealth = Boolean(
+      activeBossAfterPlayers?.maxHp
+      && activeBossAfterPlayers.hp / activeBossAfterPlayers.maxHp <= 0.5
+    );
+    if (yellowBossAtHalfHealth && !encounter.yellowC4BombResolved && !encounter.yellowC4BombArmed) {
+      // Crossing 50% schedules a plant after this round's attacks. It does not
+      // replace the current enemy phase or detonate until the following round.
+      encounter.yellowC4BombPending = true;
+    }
+    if (!encounter.yellowSniperScopeResolved) {
+      // Modern combat announces this after the intro and before the question.
+      // Retain the post-answer prompt only as a fallback for legacy flows.
+      bossPhasePrompt = encounter.yellowSniperScopeAnnounced ? "" : yellowSniperScopeOpeningPrompt();
+    } else if (!encounter.yellowC4BombResolved) {
+      // C4 is announced when it is visibly planted at round end, not here
+      // between the player and enemy phases.
+      bossPhasePrompt = "";
+    }
+  }
   if (encounter.cleared && encounter.roomType === "boss" && !encounter.victoryXpAwarded) {
     encounter.victoryXpAwarded = true;
     for (const player of activePlayers()) bankCombatXp(encounter, player, 5);
     facts.push("Boss-victory experience is banked until the combat is fully resolved");
   }
   preserveUnusedCombatQuestions(state.nodes[state.currentNode], encounter);
-  let totalDamage = 0;
-  const enemyActions = [];
+  let yellowC4AppliedAfterRound = null;
+  let yellowFinalRainAppliedAfterRound = null;
   const incorrectTargetPriority = new Set(entries
-    .filter((entry) => !entry.correct && entry.player && !entry.player.incapacitated)
+    .filter((entry) => !entry.correct && entry.player && !entry.player.incapacitated && !entry.player._greenPossessed && !entry.player._possessionReleasedBracedReady)
     .map((entry) => normalize(entry.player.name)));
-  const lockedSuppression = Boolean(type.locked && operator && entries.some((entry) => entry.player && sameName(entry.player.name, operator.name) && entry.correct));
-  if (!encounter.cleared && lockedSuppression) {
-    facts.push(`${operator.name}'s locked-operator sweep suppresses the entire hostile counterattack`);
+  const remainingOpforMirrors = yellowFinalOpforMirrors(encounter);
+  const unplannedOpforMirrors = remainingOpforMirrors.filter((enemy) => !plannedOpforEnemyIds.has(enemy.id));
+  const opforStunLimited = roundStartOpforMirrors.length > 0 || unplannedOpforMirrors.length > 0;
+  // The scoped opener is scripted and un-stunnable. Small squads receive one
+  // shot; larger final-boss squads receive two.
+  const lockedSuppression = Boolean(lockedSuppressionAttempted && !yellowSniperScopePending && !opforStunLimited);
+  if (unplannedOpforMirrors.length && !roundStartOpforMirrors.length) {
+    // Any number of queued stun charges, including a locked-question sweep,
+    // collapses to one OPFOR target instead of disabling every hostile mirror.
+    disrupted = Math.min(1, disrupted + (lockedSuppressionAttempted ? 1 : 0));
+    if (lockedSuppressionAttempted) facts.push(`${operator.name}'s sweep disruption locks onto one OPFOR mirror`);
+  }
+  const possessionActions = greenPossessionActivatedThisRound
+    ? []
+    : resolveGreenPossessedAttacks(encounter, entries, question, type, operator, notes, facts);
+  enemyActions.push(...possessionActions);
+  totalDamage += possessionActions.flatMap((action) => action.targets || []).reduce((sum, hit) => sum + hit.damage, 0);
+  if (yellowOpforDeployedThisRound) {
+    facts.push("OPFOR deployment suppresses every remaining player and hostile activation in the current round");
+  } else if (greenPossessionActivatedThisRound) {
+    facts.push("Possession activation ends the combat round immediately; all remaining player and hostile attacks are canceled");
+  } else if (greenPossessionPhaseEndedThisRound) {
+    facts.push("The possession phase ends the combat round; the returning boss cannot attack during the handoff");
+  } else if (!encounter.cleared && lockedSuppression) {
+    facts.push(`${operator.name}'s locked-operator sweep suppresses every remaining hostile activation`);
   } else if (!encounter.cleared && !state.selectedEMS) {
+    const opforMirrors = remainingOpforMirrors;
+    const unplannedOpforStunSourceNames = [
+      ...(lockedSuppressionAttempted && operator ? [operator.name] : []),
+      ...pendingOpforStunSourceNames
+    ];
+    const opforStunTarget = disrupted > 0 && unplannedOpforMirrors.length
+      ? unplannedOpforStunSourceNames
+        .map((sourceName) => unplannedOpforMirrors.find((mirror) => sameName(mirror.mirrorTargetName, sourceName)))
+        .find(Boolean)
+        || unplannedOpforMirrors[Math.floor(state.rng() * unplannedOpforMirrors.length)]
+      : null;
+    const lateEmpoweredOpforMirror = unplannedOpforMirrors.length
+      ? unplannedOpforMirrors[Math.floor(state.rng() * unplannedOpforMirrors.length)] || null
+      : null;
+    if (lateEmpoweredOpforMirror) facts.push(`${bossEnemyForEncounter(encounter)?.label || "The boss"} empowers ${lateEmpoweredOpforMirror.label} for this turn`);
     enemyPhase:
     for (const enemy of encounter.enemies.filter((entry) => !entry.defeated)) {
+      if (enemy.boss && encounter.greenPossessionActive) continue;
+      if (enemy.boss && (roundStartOpforMirrors.length || opforMirrors.length)) continue;
+      if (enemy.yellowOpforMirror) {
+        if (plannedOpforEnemyIds.has(enemy.id)) continue;
+        if (disrupted > 0 && enemy.id === opforStunTarget?.id) {
+          disrupted -= 1;
+          enemy.opforLastCorrect = null;
+          enemyActions.push({ enemy, disrupted: true, yellowOpforMirror: true, targets: [] });
+          continue;
+        }
+        const simulatedCorrect = state.rng() < 0.5;
+        enemy.opforLastCorrect = simulatedCorrect;
+        const mirrorAction = resolveYellowOpforMirrorAction(
+          enemy,
+          encounter,
+          entries,
+          type,
+          operator,
+          question,
+          notes,
+          facts,
+          {
+            empowered: enemy.id === lateEmpoweredOpforMirror?.id,
+            simulatedCorrect
+          }
+        );
+        enemyActions.push(mirrorAction);
+        totalDamage += mirrorAction.targets.reduce((sum, hit) => sum + hit.damage + (hit.redirected?.damage || 0), 0);
+        continue;
+      }
       const tier = combatSystem.enemyTiers?.[enemy.tier] || combatSystem.enemyTiers?.light;
-      const midBoss = Boolean(enemy.boss && state.nodes[state.currentNode]?.bossPhase === "mid");
+      const activeBossNode = state.nodes[state.currentNode];
+      const redAssaultBoss = Boolean(enemy.boss && bossUsesRedAssaultBehavior(activeBossNode));
+      const greenFinalBoss = Boolean(enemy.boss && bossUsesGreenPossessionBehavior(activeBossNode) && activeBossNode?.bossPhase === "final");
+      const yellowMidBoss = Boolean(enemy.boss && bossUsesYellowBallisticsBehavior(activeBossNode) && activeBossNode?.bossPhase === "mid");
+      const yellowFinalBoss = Boolean(enemy.boss && bossUsesYellowBallisticsBehavior(activeBossNode) && activeBossNode?.bossPhase === "final");
+      if (yellowFinalBoss && encounter.yellowFinalRainPending) continue;
+      const midBoss = Boolean(redAssaultBoss && activeBossNode?.bossPhase === "mid");
       const midBossHalfHealthAttack = Boolean(
         midBoss
         && !encounter.midBossHalfHealthAttackResolved
-        && encounter.maxHp
-        && encounter.hp / encounter.maxHp <= 0.5
+        && enemy.maxHp
+        && enemy.hp / enemy.maxHp <= 0.5
       );
+      const yellowOpeningActions = preemptiveEnemyActions.filter((action) => action.enemy?.id === enemy.id && action.yellowSniperScope && !action.yellowFinalRainVolley);
+      const yellowSniperScope = Boolean((yellowMidBoss || yellowFinalBoss) && yellowOpeningActions.length);
+      const yellowC4Bomb = Boolean(yellowMidBoss && preemptiveEnemyActions.some((action) => action.enemy?.id === enemy.id && action.yellowC4Bomb));
+      const yellowFinalRainVolley = Boolean(yellowFinalBoss && preemptiveEnemyActions.some((action) => action.enemy?.id === enemy.id && action.yellowFinalRainVolley));
+      if (yellowFinalRainVolley) continue;
       const activations = midBossHalfHealthAttack ? 1 : Math.max(1, Number(enemy.activations) || 1);
-      const finalBoss = Boolean(enemy.boss && state.nodes[state.currentNode]?.bossPhase === "final");
+      const finalBoss = Boolean(redAssaultBoss && activeBossNode?.bossPhase === "final");
       const activeBossDamageProfile = finalBoss ? finalBossDamageProfile(encounter) : null;
       if (activeBossDamageProfile) facts.push(`${enemy.label} damage state ${activeBossDamageProfile.label}: ${activeBossDamageProfile.range[0]}-${activeBossDamageProfile.range[1]} for targeted activations${activeBossDamageProfile.forceSecondAoe ? `; second activation is area-wide at ${FINAL_BOSS_SECOND_AOE_DAMAGE[0]}-${FINAL_BOSS_SECOND_AOE_DAMAGE[1]} damage per operator` : ""}`);
       if (midBossHalfHealthAttack) {
         encounter.midBossHalfHealthAttackResolved = true;
-        facts.push(`${enemy.label} crosses half integrity and replaces its enemy phase with one un-stunnable 20-damage area attack`);
+        facts.push(`${enemy.label} activates Feral Rupture at half integrity, replacing its enemy phase with one un-stunnable 20-damage area attack that cannot reduce an operator below 1 HP`);
       }
       for (let activation = 0; activation < activations; activation += 1) {
-        if (!activePlayers().length) break enemyPhase;
+        // The scripted shot/detonation has already resolved ahead of the player
+        // phase. Its follow-up AOE remains in normal enemy order.
+        // Double Kill always reserves its first two activation slots. Small
+        // squads receive only one scoped shot; the unused slot does not turn
+        // into an extra normal attack, and the final slot remains the AOE.
+        const yellowPreemptiveActivationCount = yellowSniperScope
+          ? (yellowFinalBoss ? YELLOW_FINAL_DOUBLE_KILL_TARGETS : 1)
+          : yellowC4Bomb ? 1 : 0;
+        if (activation < yellowPreemptiveActivationCount) continue;
+        if (!enemyTargetablePlayers().length) break enemyPhase;
+        const finalBossSecondAoe = Boolean(finalBoss && activeBossDamageProfile?.forceSecondAoe && activation === 1);
+        const mindEraserAoe = Boolean(greenFinalBoss && encounter.greenMindEraserActive && activation >= 1);
+        const mindEraserHalfAoe = Boolean(mindEraserAoe && activation === 1);
+        const yellowSniperAoe = Boolean(yellowSniperScope && activation === yellowPreemptiveActivationCount);
+        const yellowC4Aoe = Boolean(yellowC4Bomb && activation === 1);
+        const yellowFinalRainAoe = Boolean(yellowFinalBoss && encounter.yellowFinalRainResolved);
+        const yellowSniperUnstunnable = yellowSniperAoe;
         let disruptionResisted = false;
-        if (disrupted > 0 && !midBossHalfHealthAttack) {
+        if (disrupted > 0 && !midBossHalfHealthAttack && !yellowSniperUnstunnable) {
           disrupted -= 1;
           if (bossDisruptionSucceeds(enemy)) {
             enemyActions.push({ enemy, disrupted: true, targets: [] });
@@ -8704,18 +10928,38 @@ function applyCombatEncounter(entries, type, operator, question) {
           }
           disruptionResisted = true;
           facts.push(`${enemy.label} resists the attempted disruption`);
+        } else if (disrupted > 0 && yellowSniperAoe) {
+          facts.push(`${enemy.label}'s ${YELLOW_MID_SNIPER_PHASE_NAME} shot and follow-up AOE ignore disruption`);
         }
-        const finalBossSecondAoe = Boolean(finalBoss && activeBossDamageProfile?.forceSecondAoe && activation === 1);
-        const forcedBossAoe = Boolean(midBossHalfHealthAttack || finalBossSecondAoe);
+        // Scripted follow-ups rejoin the normal enemy phase as area attacks.
+        const yellowHealthAoe = yellowSniperAoe;
+        const forcedBossAoe = Boolean(midBossHalfHealthAttack || finalBossSecondAoe || mindEraserAoe || yellowHealthAoe || yellowC4Aoe || yellowFinalRainAoe);
         const aoe = type.kind === "team" || forcedBossAoe;
+        const targetablePlayers = enemyTargetablePlayers();
         let targets = forcedBossAoe
-          ? activePlayers()
+          ? mindEraserHalfAoe
+            // An attack announced as an AOE must visibly hit multiple
+            // operators whenever at least two valid targets remain.
+            ? shuffle(targetablePlayers).slice(0, Math.min(targetablePlayers.length, Math.max(2, Math.ceil(targetablePlayers.length / 2))))
+            : targetablePlayers
           : combatTargetsForActivation(entries, type, operator, incorrectTargetPriority);
-        const standToughEnforcer = activePlayers().find((player) => player._standToughReady) || null;
+        const standToughEnforcer = enemyTargetablePlayers().find((player) => player._standToughReady) || null;
         if (!aoe && standToughEnforcer) targets = [standToughEnforcer];
-        const damageRange = finalBossSecondAoe ? FINAL_BOSS_SECOND_AOE_DAMAGE : activeBossDamageProfile?.range || tier.damage;
-        const rolledAmount = midBossHalfHealthAttack ? 20 : combatSystem.rollRange?.(damageRange, state.rng) || 1;
-        const amount = midBossHalfHealthAttack || finalBossSecondAoe
+        const damageRange = finalBossSecondAoe
+          ? FINAL_BOSS_SECOND_AOE_DAMAGE
+          : activeBossDamageProfile?.range || (yellowFinalBoss ? YELLOW_FINAL_NORMAL_DAMAGE : tier.damage);
+        const yellowC4FollowupDamage = Math.max(1, Math.ceil(Math.max(1, Number(tier.damage?.[1]) || 1) * YELLOW_MID_C4_FOLLOWUP_FRACTION));
+        const yellowFinalRainAoeDamage = Math.max(1, Math.ceil(YELLOW_FINAL_NORMAL_DAMAGE[1] * YELLOW_FINAL_RAIN_AOE_FRACTION));
+        const rolledAmount = midBossHalfHealthAttack
+          ? 20
+          : yellowC4Aoe
+            ? yellowC4FollowupDamage
+            : yellowFinalRainAoe
+              ? yellowFinalRainAoeDamage
+            : mindEraserAoe || yellowHealthAoe
+              ? 0
+              : combatSystem.rollRange?.(damageRange, state.rng) || 1;
+        const amount = midBossHalfHealthAttack || finalBossSecondAoe || yellowC4Aoe || yellowFinalRainAoe
           ? rolledAmount
           : aoe
             ? Math.max(1, Math.round(rolledAmount * 0.35))
@@ -8725,7 +10969,7 @@ function applyCombatEncounter(entries, type, operator, question) {
           // A correct answer always puts that operator in a braced state. If
           // the targeting rules select a wrong responder, they remain fully
           // vulnerable instead.
-          const rebirthBraced = Boolean(target._rebirthBracedReady && !target._standToughReady);
+          const rebirthBraced = Boolean((target._rebirthBracedReady || target._secondChanceBracedReady || target._possessionReleasedBracedReady) && !target._standToughReady);
           const braced = Boolean((braceEntry?.correct || rebirthBraced) && !target._standToughReady);
           const braceMitigation = rebirthBraced
             ? REBIRTH_BRACE_MITIGATION
@@ -8733,17 +10977,23 @@ function applyCombatEncounter(entries, type, operator, question) {
               ? combatBraceMitigation(braceEntry, type)
               : 0;
           const commandGuard = Math.max(0, Number(encounter.tacticianGuardAmount) || 0);
+          const incomingAmount = mindEraserAoe || yellowHealthAoe
+            // Percentage attacks scale per operator rather than from one shared
+            // roll, which keeps the effect consistent across class/level HP.
+            ? Math.max(1, Math.ceil(Math.max(1, Number(target.maxHp) || 1) * 0.25))
+            : amount;
           const mitigatedAmount = braced
-            ? Math.round(amount * (1 - braceMitigation))
-            : Math.max(0, amount - commandGuard);
+            ? Math.round(incomingAmount * (1 - braceMitigation))
+            : Math.max(0, incomingAmount - commandGuard);
           let blocked = braced && mitigatedAmount <= 0;
           const targetAmount = blocked ? 0 : Math.max(0, mitigatedAmount);
-          if (target.classId === "enforcer" && amount > targetAmount) addEnforcerReserve(target, amount - targetAmount);
+          if (target.classId === "enforcer" && incomingAmount > targetAmount) addEnforcerReserve(target, incomingAmount - targetAmount);
           if (braced) facts.push(`${target.name} braces, mitigating ${Math.round(braceMitigation * 100)}% of the incoming attack`);
           else if (commandGuard) facts.push(`${target.name} is covered by Guard Protocol, reducing the incoming attack by ${commandGuard}`);
           if (blocked) facts.push(`${target.name} braces and blocks the area attack`);
           const hpBefore = target.hp;
-          const damage = applyCombatDamage(target, targetAmount, "combat", notes, facts, encounter);
+          const minimumHp = midBossHalfHealthAttack ? 1 : 0;
+          const damage = applyCombatDamage(target, targetAmount, "combat", notes, facts, encounter, true, minimumHp);
           const combatBlocked = Boolean(target._combatBlocked);
           const redirected = target._combatRedirect || null;
           const bubbleBlocked = Boolean(target._combatBubble);
@@ -8754,13 +11004,45 @@ function applyCombatEncounter(entries, type, operator, question) {
           delete target._combatRedirect;
           delete target._combatBubble;
           delete target._combatKickStarted;
-          return { target, braced, braceMitigation, blocked, bubbleBlocked, redirected, kickStarted, damage: kickStarted?.damageTaken || damage, hpBefore, hpAfter: target.hp };
+          return {
+            target, braced, braceMitigation, blocked, bubbleBlocked, redirected, kickStarted,
+            damage: kickStarted?.damageTaken || damage,
+            hpBefore,
+            hpAfter: target.hp,
+            downed: Boolean(kickStarted || hpBefore > 0 && target.incapacitated)
+          };
         });
         totalDamage += hits.reduce((sum, hit) => sum + hit.damage + (hit.redirected?.damage || 0), 0);
         hits.forEach((hit) => {
           if (hit.damage > 0) incorrectTargetPriority.delete(normalize(hit.target.name));
         });
-        enemyActions.push({ enemy, aoe, forcedBossAoe, finalBossSecondAoe, midBossHalfHealthAttack, amount, rolledAmount, targets: hits, disruptionResisted, bossDamagePhase: activeBossDamageProfile?.label || "" });
+        enemyActions.push({
+          enemy,
+          aoe,
+          forcedBossAoe,
+          finalBossSecondAoe,
+          midBossHalfHealthAttack,
+          mindEraserAoe,
+          mindEraserHalfAoe,
+          yellowSniperScope: false,
+          yellowSniperAoe,
+          yellowFinalDoubleKillAoe: Boolean(yellowSniperAoe && yellowFinalBoss),
+          unstunnable: yellowSniperUnstunnable,
+          yellowC4Bomb: false,
+          yellowC4Aoe,
+          yellowC4CarrierName: "",
+          yellowC4CarrierCorrect: false,
+          yellowC4FollowupDamage,
+          yellowFinalRainAoe,
+          yellowFinalRainAoeDamage,
+          // These booleans are presentation metadata. They let the UI choose a
+          // telegraph without recalculating gameplay or inspecting boss HP.
+          amount,
+          rolledAmount,
+          targets: hits,
+          disruptionResisted,
+          bossDamagePhase: activeBossDamageProfile?.label || ""
+        });
       }
     }
     const standToughEnforcer = state.players.find((player) => player._standToughReady) || null;
@@ -8777,35 +11059,78 @@ function applyCombatEncounter(entries, type, operator, question) {
   } else if (!encounter.cleared && state.selectedEMS) {
     facts.push("The armed EMS field absorbs the enemy phase");
   }
+  if (!encounter.cleared && activePlayers().length && encounter.yellowC4BombPending) {
+    const c4Target = armYellowC4Bomb(encounter, activeBossNodeForPhase);
+    if (c4Target) {
+      yellowC4AppliedAfterRound = { target: c4Target, targetName: c4Target.name };
+      facts.push(`${YELLOW_MID_C4_PHASE_NAME} is attached to ${c4Target.name} at the end of combat round ${encounter.round} and will detonate as the boss's first activation next round`);
+    }
+  }
+  if (!encounter.cleared
+    && activePlayers().length
+    && encounter.yellowFinalRainTriggered
+    && !encounter.yellowFinalRainPending) {
+    const rain = armYellowFinalRainVolley(encounter, activeBossNodeForPhase, facts);
+    if (rain) {
+      yellowFinalRainAppliedAfterRound = {
+        volleyNumber: rain.volleyNumber,
+        sniperTargetNames: rain.sniperTargets.map((player) => player.name),
+        c4TargetNames: rain.c4Targets.map((player) => player.name)
+      };
+      facts.push(`${YELLOW_FINAL_RAIN_PHASE_NAME} reacquires surviving operators at the end of combat round ${encounter.round} for another preemptive volley next round`);
+    }
+  }
+  state.players.forEach((player) => {
+    delete player._secondChanceBracedReady;
+    delete player._possessionReleasedBracedReady;
+  });
   state.selectedEMS = false;
   const defeatedCount = attackResults.reduce((sum, attack) => sum + attack.defeated.length, 0);
   const attackSummary = attackResults.length
     ? `${attackResults.map((attack) => attack.player.name).join(", ")} drive fire into the hostile line${defeatedCount ? ` and drop ${defeatedCount} attacker${defeatedCount === 1 ? "" : "s"}` : ""}`
     : "The squad fails to break the hostile line";
-  const hostileCountered = enemyActions.some((action) => !action.disrupted);
+  const hostileCountered = [...preemptiveEnemyActions, ...enemyActions].some((action) => !action.disrupted);
   const narration = encounter.cleared
     ? `${attackSummary}. The last hostile signal collapses and the route clears.`
+    : yellowOpforDeployedThisRound
+      ? `${attackSummary}. Hostile mirrors deploy across the enemy line and force an immediate end to the round.`
     : `${attackSummary}. ${hostileCountered ? "The surviving hostiles answer with a coordinated counterattack." : "The enemy counterattack is completely disrupted."}`;
   const down = state.players.filter((player) => player.incapacitated);
   const combatStatusLines = [
     ...combatSupportEvents.map(supportEventStatusLine).filter(Boolean),
-    ...attackResults.map((attack) => `${attack.player.name}${attack.empowered ? " uses an empowered ability and" : " attacks"} ${attack.targetLabel} for ${attack.damage} damage${attack.defeated.length ? ` — KILLING BLOW (${attack.defeated.map((enemy) => enemy.label).join(", ")})` : ""}.`),
-    ...(lockedSuppression ? [`${operator.name}'s area attack suppresses every enemy activation.`] : []),
-    ...enemyActions.flatMap((action) => action.disrupted
-      ? [`${action.enemy.label}'s attack is disrupted.`]
-      : action.targets.map((hit) => hit.kickStarted
-        ? `${hit.kickStarted.source}'s Kick Start Your Heart revives ${hit.target.name} at 25% HP with a protection bubble.`
-        : hit.redirected
-        ? `${hit.target.name}'s fatal damage is redirected to ${hit.redirected.target.name} by RRR at half strength.`
-        : hit.bubbleBlocked
-          ? `${hit.target.name}'s Engineer bubble absorbs ${action.enemy.label}'s attack.`
-          : hit.blocked
-            ? `${hit.target.name} braces and blocks ${action.enemy.label}'s attack.`
-            : `${action.enemy.label}${action.midBossHalfHealthAttack ? " [HALF-INTEGRITY OVERLOAD]" : action.bossDamagePhase === "ENRAGED" ? " [ENRAGED]" : ""}${action.disruptionResisted ? " resists disruption and" : ""} attacks ${hit.target.name} for ${hit.damage} damage${hit.braced ? ` after bracing (${Math.round(hit.braceMitigation * 100)}% mitigated)` : ""}.`)),
-    ...postEnemySupportEvents.map(supportEventStatusLine).filter(Boolean)
+    ...enemyActionStatusLines(preemptiveEnemyActions),
+    ...attackResults.map((attack) => {
+      if (attack.missedHiddenBoss) return `${attack.player.name} attacks the vanished boss, but the phased-out target cannot be hit.`;
+      if (attack.opforStunned) return `${attack.player.name}'s attack is disrupted by the opposing OPFOR Tactician.`;
+      if (attack.possessionRescue) {
+        return `${attack.player.name} attacks possessed ${attack.targetLabel} for ${attack.damage} nonlethal damage${attack.braced ? ` after bracing (${Math.round(attack.braceMitigation * 100)}% mitigated)` : ""}${attack.possessionFreed ? " and restores their control at a defensive brace" : ""}.`;
+      }
+      if (attack.opforBubbleBlocked) return `${attack.targetLabel}'s Bubble Network absorbs ${attack.player.name}'s attack.`;
+      if (attack.opforShieldBlocked) return `${attack.targetLabel}'s Ballistic Shield blocks ${attack.player.name}'s attack.`;
+      return `${attack.player.name}${attack.empowered ? " uses an empowered ability and" : " attacks"} ${attack.targetLabel} for ${attack.damage} damage${attack.opforAbilityArmed ? "; its class ability arms for the next round" : ""}${attack.defeated.length ? ` — KILLING BLOW (${attack.defeated.map((enemy) => enemy.label).join(", ")})` : ""}.`;
+    }),
+    ...(lockedSuppression ? [`${operator.name}'s area attack suppresses every remaining enemy activation.`] : []),
+    ...opforAbilityEvents.map(opforAbilityStatusLine).filter(Boolean),
+    ...enemyActionStatusLines(enemyActions),
+    ...postEnemySupportEvents.map(supportEventStatusLine).filter(Boolean),
+    ...(yellowOpforDeployedThisRound ? [`${YELLOW_FINAL_OPFOR_PHASE_NAME} ends the current combat round immediately; OPFOR actions begin next round.`] : []),
+    ...(yellowC4AppliedAfterRound ? [`${YELLOW_MID_C4_PHASE_NAME} attaches to ${yellowC4AppliedAfterRound.targetName} and arms for the next enemy phase.`] : []),
+    ...(yellowFinalRainAppliedAfterRound ? [`${YELLOW_FINAL_RAIN_PHASE_NAME} volley ${yellowFinalRainAppliedAfterRound.volleyNumber} applies new alternating Sniper Scope and C4 markers for the next round.`] : []),
+    ...attackResults.filter((attack) => attack.yellowOpforTriggeredAfter)
+      .map((attack) => `${YELLOW_FINAL_OPFOR_PHASE_NAME} deploys ${attack.yellowOpforSpawnedEnemies?.length || 0} matching-class hostile mirrors.`),
+    ...attackResults.flatMap((attack) => (attack.yellowOpforRetaliationScopeTargetNames || [])
+      .map((targetName) => `An OPFOR mirror falls; ${bossEnemyForEncounter(encounter)?.label || "the boss"} acquires a retaliatory ${YELLOW_MID_SNIPER_PHASE_NAME} lock on ${targetName}.`)),
+    ...attackResults.filter((attack) => attack.yellowFinalRainTriggeredAfter)
+      .map((attack) => `${YELLOW_FINAL_RAIN_PHASE_NAME} alternates ${attack.yellowFinalRainSniperTargets?.length || 0} sniper lock${attack.yellowFinalRainSniperTargets?.length === 1 ? "" : "s"} with ${attack.yellowFinalRainC4Targets?.length || 0} non-overlapping C4 charge${attack.yellowFinalRainC4Targets?.length === 1 ? "" : "s"}, beginning with Sniper Scope.`)
   ];
-  encounter.lastRound = { round: encounter.round, attackResults, enemyActions, supportEvents: [...combatSupportEvents, ...postEnemySupportEvents], totalDamage, defeatedCount, roundStartEnemies, combatStatusLines, challengeKind: type.kind };
+  prepareGreenConfusionForNextQuestion(encounter, facts);
+  encounter.lastRound = { round: encounter.round, attackResults, preemptiveEnemyActions, enemyActions, initiativeSequence, opforAbilityEvents, opforImmediateActions, supportEvents: [...combatSupportEvents, ...postEnemySupportEvents], totalDamage, defeatedCount, roundStartEnemies, combatStatusLines, challengeKind: type.kind, yellowOpforRetaliationSniperPendingAtRoundStart, yellowOpforRetaliationSniperTargetNamesAtRoundStart };
   facts.push(`Private mechanics: combat round ${encounter.round}; hostile pool ${encounter.hp}/${encounter.maxHp}; player attacks ${attackResults.map((attack) => `${attack.player.name} ${attack.damage}`).join(", ") || "none"}; enemy damage ${totalDamage}. Narrate physical outcomes without numbers.`);
+  const resolvedYellowOpeningTargetNames = preemptiveEnemyActions
+    .filter((action) => action.yellowSniperScope && !action.yellowFinalRainVolley)
+    .flatMap((action) => action.targets || [])
+    .map((hit) => hit.target?.name)
+    .filter(Boolean);
   return {
     narration,
     loot: "",
@@ -8819,15 +11144,46 @@ function applyCombatEncounter(entries, type, operator, question) {
     teamDefeated: !activePlayers().length,
     encounter,
     attackResults,
+    preemptiveEnemyActions,
     enemyActions,
+    initiativeSequence,
+    greenPossessionVisualActive: greenPossessionActiveAtRoundStart,
+    greenPossessionRescuePhase: possessionRescuePhase,
+    greenPossessionReleasedByAnswers,
+    greenPossessionActivatedThisRound,
+    greenPossessionRoundHalted: greenPossessionActivatedThisRound,
+    yellowOpforDeployedThisRound,
+    yellowOpforRoundHalted: yellowOpforDeployedThisRound,
+    greenPossessionEndedThisRound: Boolean(greenPossessionPhaseEndedThisRound || possessionRescuePhase && !encounter.greenPossessionActive),
+    greenFinalInfectionOpening,
+    greenInfectionClearedByAnswers,
+    bossPhasePrompt,
+    yellowC4AppliedAfterRound,
+    yellowFinalRainAppliedAfterRound,
+    yellowSniperScopePendingAtRoundStart,
+    yellowSniperTargetNamesAtRoundStart: resolvedYellowOpeningTargetNames.length
+      ? resolvedYellowOpeningTargetNames
+      : yellowSniperTargetNamesAtRoundStart,
+    yellowSniperTargetNameAtRoundStart: preemptiveEnemyActions.find((action) => action.yellowSniperScope)?.targets?.[0]?.target?.name
+      || yellowSniperTargetNameAtRoundStart
+      || "",
+    yellowOpforRetaliationSniperPendingAtRoundStart,
+    yellowOpforRetaliationSniperTargetNamesAtRoundStart,
+    yellowC4ArmedAtRoundStart,
+    yellowC4TargetNameAtRoundStart,
+    yellowFinalRainPendingAtRoundStart,
+    yellowFinalRainSniperTargetsAtRoundStart,
+    yellowFinalRainC4TargetsAtRoundStart,
     lockedSuppression,
     roundStartEnemies,
     roundStartVitals,
     roundStartPlayers,
     combatPlayerResults: entries.map((entry) => ({ name: entry.player.name, correct: Boolean(entry.correct) })),
     combatSupportEvents,
+    opforAbilityEvents,
+    opforImmediateActions,
     postEnemySupportEvents,
-    combatAbilityEvents: facts.filter((fact) => /empowered|upgraded|bubble|command protocol|Surgical Kit|Rebirth|Determined Aim|Stand Tough|Kick Start Your Heart|Inspire the Masses|Arc Toolkit|Ballistic Shield|R&R|RRR/.test(fact)),
+    combatAbilityEvents: facts.filter((fact) => /empowered|upgraded|bubble|command protocol|Surgical Kit|Rebirth|Determined Aim|Stand Tough|Kick Start Your Heart|Inspire the Masses|Split Fire|Auto-Med Array|Initiative Override|Twin Barrage|Bubble Network|Tactical Lockdown|Ballistic Shield|R&R|RRR/.test(fact)),
     combatStatusLog: combatStatusLines.join("\n")
   };
 }
@@ -9026,37 +11382,14 @@ function renderAiBriefing() {
     }
     state.currentBriefing = briefing;
 
-    const sections = [
-      ["Situation", briefing.situation],
-      ["Objective", briefing.objective],
-      ["Route", briefing.route],
-      ["Rules of Engagement", briefing.engagement]
-    ].filter((section) => section[1]);
-
-    const sectionHtml = sections.map(([label, text]) => `
-      <section class="briefing-section">
-        <h3>${escapeHtml(label)}</h3>
-        <p class="typewriter" data-text="${escapeAttribute(text)}"></p>
-      </section>
-    `).join("");
-
     els.briefingCard.innerHTML = `
-      <p class="eyebrow">Mission Briefing</p>
-      <h2 class="mission-title">${escapeHtml(briefing.title || state.title)}</h2>
       <div id="briefingBody" class="briefing-body">
-        ${briefing.subtitle ? `<p class="briefing-kicker typewriter" data-text="${escapeAttribute(briefing.subtitle)}"></p>` : ""}
-        <div class="briefing-sections">
-          ${sectionHtml}
-        </div>
+        <p class="typewriter" data-text="${escapeAttribute(briefing.situation || openingScene())}"></p>
       </div>
     `;
 
-    const introPromise = state.localDmMode
-      ? (startOpeningWaitCounter(), loadLocalOpeningIntro(briefing))
-      : Promise.resolve(fallbackOpeningIntro(briefing));
-
-    Promise.all([completeDeploymentSequence(), introPromise]).then(([active, intro]) => {
-      state.openingLogStory = missionBriefingLogStory(briefing, intro);
+    completeDeploymentSequence().then((active) => {
+      state.openingLogStory = missionBriefingLogStory(briefing, "");
       if (active) finishBriefing();
     });
   });
@@ -9079,21 +11412,25 @@ function withTimeout(promise, ms, fallback) {
 
 function loadLocalDmBriefing() {
   const fallback = fallbackBriefing();
-  return requestOllama(makeLocalBriefingPrompt(), { temperature: 0.82, format: "json" })
+  return requestOllama(makeLocalBriefingPrompt(), { temperature: 0.82, format: "json", maxTokens: 520 })
     .then((text) => parseLocalBriefing(text, fallback))
     .catch(() => fallback);
 }
 
 function makeLocalBriefingPrompt() {
-  return dmPrompts.makeMissionBriefingPrompt({
-    fieldLength: narrationSentenceRange("1-2 sentences", "1 sentence"),
-    actionDrivenMode: state.actionDrivenMode,
-    missionType: state.missionType,
-    environment: state.environment,
-    threat: state.threat,
-    threatProfile: compactThreatProfileText(),
-    teamSize: state.players.length
-  });
+  const bossCues = bossNamingCuesForMission(state.missionType);
+  return [
+    "FINAL OUTPUT ONLY. Return valid JSON only. No narration, scene prose, dialogue, or markdown.",
+    "Generate mission metadata and two distinct boss identities.",
+    "Return exactly: {\"title\":\"\",\"threatDetails\":{\"manifestation\":\"\",\"signs\":\"\",\"tactics\":\"\",\"escalation\":\"\",\"confrontation\":\"\",\"weakness\":\"\"},\"bossAreas\":{\"mid\":\"\",\"final\":\"\"},\"bosses\":{\"mid\":{\"name\":\"\",\"description\":\"\"},\"final\":{\"name\":\"\",\"description\":\"\"}}}",
+    "The mid-boss is strong but subordinate to the final boss. Names must be concise title-like identifiers.",
+    "Private naming cues guide identity only. Never copy cue words, mention eye color, or use the cues as names.",
+    `Mission style: ${state.missionType}.`,
+    `Environment: ${state.environment}.`,
+    `Threat archetype: ${state.threat}; ${compactThreatProfileText()}.`,
+    `Mid-boss private naming direction: ${bossCues.mid}.`,
+    `Final-boss private naming direction: ${bossCues.final}.`
+  ].join("\n");
 }
 
 function parseLocalBriefing(text, fallback) {
@@ -9102,6 +11439,7 @@ function parseLocalBriefing(text, fallback) {
     const title = cleanOperationTitle(parsed.title) || fallback.title;
     applyGeneratedThreatDetails(parsed.threatDetails);
     applyGeneratedBossAreas(parsed.bossAreas);
+    applyGeneratedBossIdentities(parsed.bosses);
     logDebugEvent({
       kind: "response",
       label: "Briefing parsed",
@@ -9109,11 +11447,11 @@ function parseLocalBriefing(text, fallback) {
     });
     return {
       title,
-      subtitle: cleanBriefingField(parsed.subtitle) || fallback.subtitle,
-      situation: cleanBriefingField(parsed.situation) || fallback.situation,
-      objective: cleanBriefingField(parsed.objective) || fallback.objective,
-      route: cleanBriefingField(parsed.route) || fallback.route,
-      engagement: cleanBriefingField(parsed.engagement) || fallback.engagement
+      subtitle: NARRATION_DEFAULTS.gameIntro,
+      situation: NARRATION_DEFAULTS.gameIntro,
+      objective: NARRATION_DEFAULTS.gameIntro,
+      route: NARRATION_DEFAULTS.gameIntro,
+      engagement: NARRATION_DEFAULTS.gameIntro
     };
   } catch (error) {
     logDebugEvent({
@@ -9159,6 +11497,69 @@ function applyGeneratedBossAreas(areas) {
   if (final) state.bossAreaNames.final = final;
 }
 
+function fallbackBossIdentities(missionType = state.missionType) {
+  const spaceStation = normalize(missionType).includes("space station");
+  return spaceStation
+    ? {
+        mid: { name: "The Apostate Marshal", description: "a disciplined augmented commander who hunts the squad through practiced firing lanes" },
+        final: { name: "The Hollow Broodmind", description: "an unknowable organism directing the station's infestation as one predatory intelligence" }
+      }
+    : {
+        mid: { name: "The Ruin Stalker", description: "a furious physical predator that breaks cover and drives the squad into close quarters" },
+        final: { name: "The Pale Tenant", description: "an invasive presence that occupies bodies, signals, and sealed rooms as extensions of itself" }
+      };
+}
+
+function applyGeneratedBossIdentities(bosses) {
+  const fallback = fallbackBossIdentities();
+  const source = bosses && typeof bosses === "object" ? bosses : {};
+  const midName = validatedBossName(source.mid?.name || source.mid?.identity, fallback.mid.name);
+  const finalName = validatedBossName(source.final?.name || source.final?.identity, fallback.final.name, midName);
+  state.bossIdentities = {
+    mid: {
+      name: midName,
+      description: cleanBriefingField(source.mid?.description || source.mid?.manifestation || fallback.mid.description)
+    },
+    final: {
+      name: finalName,
+      description: cleanBriefingField(source.final?.description || source.final?.manifestation || fallback.final.description)
+    }
+  };
+}
+
+function validatedBossName(value, fallback, disallowedDuplicate = "") {
+  const candidate = sanitizeText(value, { maxLength: 48, fallback: "" })
+    .replace(/^["'`\s]+|["'`\s.!?,:;]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const normalized = normalize(candidate);
+  const words = normalized.split(/\s+/).filter(Boolean);
+  const genericWords = new Set([
+    "a", "an", "the", "facility", "persistent", "threat", "hostile", "force", "entity", "enemy", "boss",
+    "mid", "final", "unknown", "unnamed", "haunting", "ghost", "monster", "creature", "presence", "manifestation",
+    "beastly", "angry", "ghostly", "possession", "possessed", "human", "super", "soldier", "heretic", "alien",
+    "xenomorphic", "horror", "red", "green", "yellow", "blue", "eyes"
+  ]);
+  const hasDistinctiveWord = words.some((word) => !genericWords.has(word));
+  const duplicate = disallowedDuplicate && normalize(disallowedDuplicate) === normalized;
+  const valid = candidate.length >= 5 && candidate.length <= 48 && words.length >= 2 && words.length <= 5 && hasDistinctiveWord && !duplicate;
+  if (valid) return candidate;
+  if (candidate) {
+    logDebugEvent({
+      kind: "state",
+      label: "Vague boss name replaced",
+      detail: `${candidate} -> ${fallback}`
+    });
+  }
+  return fallback;
+}
+
+function bossIdentityForNode(node = state.nodes[state.currentNode]) {
+  const phase = node?.bossPhase === "final" ? "final" : "mid";
+  const identity = state.bossIdentities?.[phase] || fallbackBossIdentities()[phase];
+  return identity?.name || (phase === "final" ? state.threat || "Final Hostile" : `${state.threat || "Hostile"} Vanguard`);
+}
+
 function cleanBossAreaName(value) {
   const cleaned = cleanBriefingField(value)
     .replace(/^operation\s+/i, "")
@@ -9193,23 +11594,22 @@ function loadDmBriefing() {
 function fallbackBriefing() {
   return {
     title: state.title,
-    subtitle: "Training run initialized. The squad is entering an unstable facility under emergency conditions.",
-    situation: openingScene(),
-    objective: "Move room by room through the facility, answer each challenge, and keep the team operational until the final system is restored.",
-    route: "The map marks the current room, recovery points, boss contacts, and the final gate.",
-    engagement: "Answer only the active challenge. Use Medkits and EMS Devices when the team chooses to spend them. Maintain team status, preserve supplies, and keep moving until the mission is complete."
+    subtitle: NARRATION_DEFAULTS.gameIntro,
+    situation: NARRATION_DEFAULTS.gameIntro,
+    objective: NARRATION_DEFAULTS.gameIntro,
+    route: NARRATION_DEFAULTS.gameIntro,
+    engagement: NARRATION_DEFAULTS.gameIntro
   };
 }
 
 function loadLocalOpeningIntro(briefing) {
-  return requestOllama(makeLocalOpeningIntroPrompt(briefing), { temperature: 0.82 })
-    .then((text) => sanitizeText(text, { fallback: fallbackOpeningIntro(briefing), maxLength: 1200, preserveNewlines: true }))
-    .catch(() => fallbackOpeningIntro(briefing));
+  return Promise.resolve(NARRATION_DEFAULTS.gameIntro);
 }
 
 function makeLocalOpeningIntroPrompt(briefing) {
   return [
     `Write one player-facing opening paragraph, ${narrationSentenceRange("3-5", "2-3")} sentences.`,
+    narrationStyleBible(),
     "Output only narration: no labels, checklist, analysis, or restated instructions.",
     "Blend the briefing situation with cinematic mission-opening flair for the whole operation.",
     "No study terms, answers, choices, HP, dice, mechanics, first-room names, or first-topic hints.",
@@ -9219,29 +11619,21 @@ function makeLocalOpeningIntroPrompt(briefing) {
     `Operation: ${briefing?.title || state.title}.`,
     `Mission style: ${state.missionType}.`,
     `Environment: ${state.environment}.`,
-    `Threat: ${state.threat}; ${compactThreatProfileText()}.`
+    `Threat: ${state.threat}; ${compactThreatProfileText()}.`,
+    `Operator formation:\n${narrationRosterText()}`
   ].join("\n");
 }
 
 function fallbackOpeningIntro(briefing) {
-  return `Rain hammers the approach road as the squad reaches ${state.environment}, and the last line of the briefing fades beneath the sound of water striking concrete and steel. Inside, the air tastes like hot dust and old batteries while emergency strips cast long, trembling shadows over conduit, blast doors, and dead monitors. A low vibration moves through the structure from somewhere deep in the route, turning every rail, cable tray, and sealed hatch into part of the same warning. The squad can hear ${state.threat} threaded through the emergency speakers, close enough to bend the audio but not close enough to name. Dust hangs in the flashlight beams and seems to warp around the cabling as the route display paints a narrow path through the dark. The team has one clean moment to confirm readiness before committing to the operation.`;
+  return NARRATION_DEFAULTS.gameIntro;
 }
 
 function missionBriefingLogStory(briefing, intro) {
-  const situation = combineOpeningSituation(briefing?.situation, intro);
-  const lines = [
-    briefing?.subtitle,
-    situation ? `Situation: ${situation}` : "",
-    briefing?.objective ? `Objective: ${briefing.objective}` : "",
-    briefing?.route ? `Route: ${briefing.route}` : "",
-    briefing?.engagement ? `Rules of Engagement: ${briefing.engagement}` : ""
-  ].filter(Boolean);
-  return lines.join("\n\n");
+  return NARRATION_DEFAULTS.gameIntro;
 }
 
 function missionBriefingSpeechText(briefing, story) {
-  const situation = extractBriefingStorySection(story, "Situation")
-    || cleanBriefingField(briefing?.situation);
+  const situation = cleanBriefingField(story) || cleanBriefingField(briefing?.situation);
   return situation.replace(/^Situation:\s*/i, "").trim();
 }
 
@@ -9449,6 +11841,7 @@ function completeDeploymentSequence() {
       if (els.deploymentReadyMessage) {
         els.deploymentReadyMessage.hidden = false;
         window.requestAnimationFrame(() => {
+          if (runId !== state.deploymentRunId || !state.started || els.deploymentOverlay.hidden || !els.deploymentOverlay.classList.contains("deployment-visible")) return;
           els.deploymentReadyMessage.classList.remove("standby");
           els.deploymentReadyMessage.classList.add("visible");
           startDeploymentReadyBlinkAudio(runId);
@@ -9490,11 +11883,18 @@ function completeDeploymentSequence() {
 function startDeploymentReadyBlinkAudio(runId) {
   stopDeploymentReadyBlinkAudio();
   const ping = () => {
-    if (runId !== state.deploymentRunId || !state.started || !els.deploymentReadyMessage?.classList.contains("visible")) {
+    if (
+      runId !== state.deploymentRunId
+      || !state.started
+      || els.deploymentOverlay.hidden
+      || !els.deploymentOverlay.classList.contains("deployment-visible")
+      || !els.deploymentReadyMessage?.classList.contains("visible")
+    ) {
       stopDeploymentReadyBlinkAudio();
       return;
     }
-    playGameSfx("loot");
+    // This cue belongs to the full-screen deployment layer, not the live map.
+    playGameSfx("loot", { pulse: false });
   };
   ping();
   state.deploymentReadySfxTimer = window.setInterval(ping, 700);
@@ -9761,6 +12161,11 @@ function stopDeploymentSequence(options = {}) {
   state.deploymentCompletionWait = 0;
   els.deploymentOverlay.hidden = true;
   els.deploymentOverlay.classList.remove("deployment-visible", "deployment-fading", "deployment-blackout");
+  if (els.deploymentReadyMessage) {
+    els.deploymentReadyMessage.hidden = true;
+    els.deploymentReadyMessage.classList.remove("visible");
+    els.deploymentReadyMessage.classList.add("standby");
+  }
   document.body.classList.remove("session-entering", "session-revealing", "setup-to-deployment");
   if (!options.preserveDashboardBoot) clearDashboardBootSequence();
 }
@@ -9933,6 +12338,16 @@ function collapseMissionBriefing() {
   els.briefingCard.classList.add("briefing-collapsed");
 }
 
+function playerAnswerAccuracy(player) {
+  const total = Math.max(0, Math.round(Number(player?.totalAnswers) || 0));
+  const correct = Math.min(total, Math.max(0, Math.round(Number(player?.correctAnswers) || 0)));
+  return {
+    correct,
+    total,
+    percent: total ? Math.round(correct / total * 100) : null
+  };
+}
+
 function statusRenderKey() {
   const players = state.players.map((player) => [
     player.name,
@@ -9942,6 +12357,8 @@ function statusRenderKey() {
     player.level,
     player.xp,
     player.answerStreak,
+    player.totalAnswers,
+    player.correctAnswers,
     player.enforcerReserve,
     (player.items || []).join(","),
     JSON.stringify(player.classCooldowns || {}),
@@ -9989,6 +12406,12 @@ function renderStatusCore() {
       : player;
     const classDefinition = combatSystem.classDefinition?.(player.classId) || {};
     const abilityState = classAbilityCooldownState(player);
+    const ultimateVisual = ultimateRechargeVisualState(player);
+    const accuracy = playerAnswerAccuracy(player);
+    const accuracyLabel = accuracy.percent == null ? "ACC --" : `ACC ${accuracy.percent}%`;
+    const accuracyTitle = accuracy.total
+      ? `${accuracy.correct} correct of ${accuracy.total} individual responses`
+      : "No scored responses yet";
     const promptResolved = state.resolved || state.answerPending;
     const promptAnswer = state.playerAnswers.find((entry) => sameName(entry.playerName || entry.playerId, player.name));
     const currentResult = state.answerResults[normalize(player.name)];
@@ -10001,8 +12424,8 @@ function renderStatusCore() {
     const readyClass = accuracyResult === false ? "bad" : accuracyResult === true ? "" : "answer-neutral";
     const readyGlyph = accuracyResult === false ? "&#10005;" : accuracyResult === true ? "&#10003;" : "";
     const readyLabel = accuracyResult === false ? "Previous answer incorrect" : accuracyResult === true ? "Previous answer correct" : "No answer result";
-    const equippedItems = playerItems(player).slice(0, 2);
-    const itemDots = Array.from({ length: 2 }, (_, slotIndex) => {
+    const equippedItems = playerItems(player).slice(0, ITEM_CAPACITY);
+    const itemDots = Array.from({ length: ITEM_CAPACITY }, (_, slotIndex) => {
       const item = equippedItems[slotIndex];
       return item
         ? `<i class="roster-item-dot rarity-${escapeAttribute(item.rarity || "common")}" title="${escapeAttribute(item.name)}"></i>`
@@ -10010,10 +12433,10 @@ function renderStatusCore() {
     }).join("");
     return `
     <article class="status-card roster-card ${playerStatusClasses(displayedPlayer)} ${playerPromptStatusClasses(player)}" style="--player-color:${playerColor(player.name)}; --role:${playerColor(player.name)}; --turn-rank:${actionTurnRank(player)}; --operator-boot-index:${index}" data-player-index="${index}" data-player-name="${escapeAttribute(player.name)}">
-      <span class="role-hex player-class-icon" title="${escapeAttribute(classDefinition.label || "Operator")}" aria-hidden="true">${playerClassIcon(player.classId)}</span>
+      <span class="role-hex player-class-icon ${ultimateVisual.charging ? "ultimate-recharging" : ""}" style="--ultimate-charge:${ultimateVisual.progress}%" title="${escapeAttribute(ultimateVisual.title || classDefinition.label || "Operator")}" aria-hidden="true">${playerClassIcon(player.classId)}</span>
       <div class="roster-main">
         <div class="roster-name"><strong title="${escapeAttribute(player.name)}">${escapeHtml(displayPlayerName(player.name))}</strong><small>LV ${Math.max(1, Number(player.level) || 1)}</small></div>
-        <div class="roster-vitals"><span>${Math.max(0, displayedPlayer.hp)} / ${Math.max(10, Number(player.maxHp) || 10)} HP</span><span class="state-pill ${statusCodeClass(displayedPlayer)}" title="${escapeAttribute(displayedPlayer.incapacitated || displayedPlayer.hp <= 0 ? "Incapacitated" : playerLowHealth(displayedPlayer) ? "Low health" : "Operational")}">${escapeHtml(statusCodeText(displayedPlayer))}</span></div>
+        <div class="roster-vitals"><span>${Math.max(0, displayedPlayer.hp)} / ${Math.max(10, Number(player.maxHp) || 10)} HP</span><span class="state-pill ${statusCodeClass(displayedPlayer)}" title="${escapeAttribute(displayedPlayer.incapacitated || displayedPlayer.hp <= 0 ? "Incapacitated" : playerLowHealth(displayedPlayer) ? "Low health" : "Operational")}">${escapeHtml(statusCodeText(displayedPlayer))}</span><span class="roster-accuracy" title="${escapeAttribute(accuracyTitle)}">${accuracyLabel}</span></div>
       </div>
       <span class="ready-mark ${readyClass}" aria-label="${readyLabel}">${readyGlyph}</span>
       <div class="gear-line"><span>${escapeHtml(classDefinition.gear || classAbilityLabel(player.classId))}</span><b>${escapeHtml(abilityUsedThisTurn(player) ? "ARMED" : abilityState.label)}</b><span class="roster-item-dots">${itemDots}</span></div>
@@ -10069,23 +12492,10 @@ function renderStatusCore() {
       }
     });
   });
-  els.statusGrid.querySelectorAll("[data-tactician-protocol-for]").forEach((button) => {
-    button.addEventListener("click", () => {
-      if (button.disabled) return;
-      const protocols = ["assault", "guard", "support"];
-      const current = protocols.indexOf(button.dataset.protocol || "assault");
-      const next = protocols[(current + 1 + protocols.length) % protocols.length];
-      button.dataset.protocol = next;
-      button.classList.remove("protocol-assault", "protocol-guard", "protocol-support");
-      button.classList.add(`protocol-${next}`);
-      const label = button.querySelector("[data-protocol-label]");
-      if (label) label.textContent = next.toUpperCase();
-    });
-  });
   els.statusGrid.querySelectorAll("[data-class-ability-use]").forEach((button) => {
     button.addEventListener("click", () => {
       const card = button.closest("[data-player-name]");
-      const protocol = card?.querySelector("[data-tactician-protocol-for]")?.dataset.protocol || "assault";
+      const protocol = card?.querySelector("[data-tactician-protocol-for]")?.value || "assault";
       const sourceName = button.dataset.classAbilityUse || "";
       const used = queueClassAbilityUse(sourceName, protocol, "teacher", button.dataset.classId || "");
       if (!used) {
@@ -10356,7 +12766,7 @@ function renderInventoryActions() {
       <strong>Squad Supplies</strong>
       <span>${state.inventory.medkits} Medkits</span>
       <span>${state.inventory.ems} EMS Devices</span>
-      <button id="openItemCodexBtn" class="secondary inventory-codex-btn" type="button">Item Codex</button>
+      ${combatSystem.items?.length ? '<button id="openItemCodexBtn" class="secondary inventory-codex-btn" type="button">Item Codex</button>' : ""}
       ${state.sideActionGuard ? "<span>Defensive preparation active</span>" : ""}
       ${state.selectedEMS ? '<span class="ems-field-status">EMS FIELD ACTIVE</span>' : ""}
     </div>
@@ -10409,9 +12819,9 @@ function medicReviveCooldownState(player) {
   const key = "level6-medic";
   const cadence = 6;
   const unlocked = String(player?.classId || "").toLowerCase() === "medic" && Number(player?.level) >= 6;
-  const last = Number(player?.classCooldowns?.[key]);
+  const last = questionCooldownLastUse(player, key);
   const remaining = unlocked && Number.isFinite(last)
-    ? Math.max(0, cadence - (Number(state.currentQuestion || 0) - last))
+    ? Math.max(0, cadence - (questionCooldownCount() - last))
     : 0;
   return { key, cadence, unlocked, remaining, ready: unlocked && !remaining, label: !unlocked ? "LV 6" : remaining ? `RECHARGE ${remaining}` : "READY" };
 }
@@ -10433,9 +12843,51 @@ function levelSixAbilityCooldownState(player) {
   const key = `level6-${classId}`;
   const cadence = 6;
   const unlocked = Boolean(levelSixAbilityDefinition(classId) && Number(player?.level) >= 6);
-  const last = Number(player?.classCooldowns?.[key]);
-  const remaining = unlocked && Number.isFinite(last) ? Math.max(0, cadence - (Number(state.currentQuestion || 0) - last)) : 0;
+  const last = questionCooldownLastUse(player, key);
+  const remaining = unlocked && Number.isFinite(last) ? Math.max(0, cadence - (questionCooldownCount() - last)) : 0;
   return { key, cadence, unlocked, remaining, ready: unlocked && !remaining, label: !unlocked ? "LV 6" : remaining ? `RECHARGE ${remaining}` : "READY" };
+}
+
+function questionCooldownCount() {
+  // Question indexes can move backward while a boss cycles its combat bank.
+  // Resolved history is monotonic, so six-question ultimates always recharge
+  // after six actual responses regardless of which question index was shown.
+  return Math.max(0, Number(state.challengeHistory?.length) || 0);
+}
+
+function questionCooldownLastUse(player, key) {
+  const marker = player?.classCooldowns?.[key];
+  if (marker && typeof marker === "object" && Number.isFinite(Number(marker.questionCount))) {
+    return Number(marker.questionCount);
+  }
+  const legacyIndex = Number(marker);
+  if (!Number.isFinite(legacyIndex)) return null;
+  const legacyElapsed = Math.max(0, (Number(state.currentQuestion) || 0) - legacyIndex);
+  return Math.max(0, questionCooldownCount() - legacyElapsed);
+}
+
+function markQuestionCooldown(player, key) {
+  player.classCooldowns = {
+    ...(player.classCooldowns || {}),
+    [key]: { questionCount: questionCooldownCount() }
+  };
+}
+
+/** Converts the six-question ultimate timer into a zero-to-100 icon fill. */
+function ultimateRechargeVisualState(player) {
+  const definition = levelSixAbilityDefinition(player?.classId);
+  const cooldown = levelSixAbilityCooldownState(player);
+  const cadence = Math.max(1, Number(cooldown.cadence) || 6);
+  const remaining = Math.max(0, Math.min(cadence, Number(cooldown.remaining) || 0));
+  const charging = Boolean(cooldown.unlocked && remaining > 0);
+  const progress = charging ? Math.round(((cadence - remaining) / cadence) * 1000) / 10 : 100;
+  const classLabel = combatSystem.classDefinition?.(player?.classId)?.label || "Operator";
+  const title = !cooldown.unlocked || !definition
+    ? classLabel
+    : charging
+      ? `${classLabel} — ${definition.label} charging: ${cadence - remaining} of ${cadence}`
+      : `${classLabel} — ${definition.label} ready`;
+  return { ...cooldown, charging, progress, title };
 }
 
 function classAbilityCooldownState(player, protocol = "assault") {
@@ -10476,12 +12928,20 @@ function classAbilityCooldownState(player, protocol = "assault") {
 
 function itemAbilityDefinition(item) {
   if (!item) return null;
-  if (item.ability && typeof item.ability === "object") return item.ability;
-  const stat = Object.keys(item.bonuses || {})[0] || "";
+  const listedReduction = Math.max(0, Number(item.bonuses?.damageReduction) || 0);
+  if (item.ability && typeof item.ability === "object") {
+    if (item.ability.effect !== "guard") return item.ability;
+    const amount = Math.max(1, Number(item.ability.amount) || listedReduction || 4);
+    return { ...item.ability, amount, description: `Reduce the next incoming hit by ${amount}.` };
+  }
   if (!item.rarity || !["rare", "epic", "legendary"].includes(item.rarity)) return null;
+  // A multi-stat defensive item still exposes Guard Matrix even when another
+  // passive stat, such as max HP, appears first in its data.
+  const stat = listedReduction > 0 ? "damageReduction" : Object.keys(item.bonuses || {})[0] || "";
+  const guardAmount = Math.max(4, listedReduction);
   const abilities = {
     damage: { id: "overdrive", label: "Overdrive", description: "Your next correct combat answer deals +4 damage.", effect: "damage", cooldown: 3 },
-    damageReduction: { id: "guard-matrix", label: "Guard Matrix", description: "Reduce the next incoming hit by 4.", effect: "guard", cooldown: 3 },
+    damageReduction: { id: "guard-matrix", label: "Guard Matrix", description: `Reduce the next incoming hit by ${guardAmount}.`, effect: "guard", amount: guardAmount, cooldown: 3 },
     healing: { id: "field-patch", label: "Field Patch", description: "Restore 4 HP to a selected operator.", effect: "heal", cooldown: 3 },
     hintPower: { id: "signal-burst", label: "Signal Burst", description: "Reveal an extra clue on the current question.", effect: "hint", cooldown: 5 },
     disruption: { id: "pulse-jammer", label: "Pulse Jammer", description: "Disrupt one enemy activation this round.", effect: "disrupt", cooldown: 4 },
@@ -10660,7 +13120,7 @@ function queueMedicReviveUse(sourceName, targetName = "", sourceMode = "teacher"
   if (!source || source.incapacitated || !target?.incapacitated) return false;
   const cooldown = medicReviveCooldownState(source);
   if (!cooldown.ready || abilityUsedThisTurn(source)) return false;
-  source.classCooldowns = { ...(source.classCooldowns || {}), [cooldown.key]: state.currentQuestion };
+  markQuestionCooldown(source, cooldown.key);
   source._abilityTurnKey = currentAbilityTurnKey();
   source._levelSixAbilityTurnKey = currentAbilityTurnKey();
   state.pendingClassAbilityUses.push({ sourceName: source.name, classId: "medic", targetName: target.name, revive: true });
@@ -10688,7 +13148,7 @@ function queueLevelSixAbilityUse(sourceName, sourceMode = "teacher") {
     const answer = String(info?.question?.answerText || "").trim();
     if (!answer) return false;
     state.classHints[state.currentQuestion] = `${source.name}'s Intel Sniper reveals the correct answer to all operators: ${answer}`;
-    source.classCooldowns = { ...(source.classCooldowns || {}), [cooldown.key]: state.currentQuestion };
+    markQuestionCooldown(source, cooldown.key);
     source._abilityTurnKey = currentAbilityTurnKey();
     source._levelSixAbilityTurnKey = currentAbilityTurnKey();
     source.abilityNotice = "ACTIVE: Intel Sniper revealed the current answer";
@@ -10698,7 +13158,7 @@ function queueLevelSixAbilityUse(sourceName, sourceMode = "teacher") {
     publishPlayerSession({ status: "open", prompt: buildPlayerPrompt(), resetAnswers: false });
     return true;
   }
-  source.classCooldowns = { ...(source.classCooldowns || {}), [cooldown.key]: state.currentQuestion };
+  markQuestionCooldown(source, cooldown.key);
   source._abilityTurnKey = currentAbilityTurnKey();
   source._levelSixAbilityTurnKey = currentAbilityTurnKey();
   state.pendingClassAbilityUses.push({ sourceName: source.name, classId, targetName: source.name, levelSix: classId });
@@ -10773,7 +13233,7 @@ function playerItemSlotsHtml(player) {
     ? `${Number(player.level) >= 3 ? "RRR" : "R&R"} — Ballistic Shield`
     : (definition?.gear || "Class ability");
   const abilityLabelHtml = `<span class="player-class-icon" aria-hidden="true">${playerClassIcon(player.classId)}</span>${escapeHtml(displayedClassAbility)} <b class="player-ability-state ${abilityState.ready && !abilityTurnUsed ? "ready" : "recharging"}">${escapeHtml(abilityLabel)}</b>${reserveText ? `<b class="player-ability-reserve">${escapeHtml(reserveText)}</b>` : ""}${targetNotice ? `<b class="player-ability-targeted">${escapeHtml(targetNotice)}</b>` : ""}`;
-  const itemText = [0, 1].map((slot) => {
+  const itemText = Array.from({ length: ITEM_CAPACITY }, (_, slot) => {
     const item = items[slot];
     if (!item) return `<span class="player-item-dot empty" aria-label="Empty item slot"></span>`;
     const ability = itemAbilityDefinition(item);
@@ -10787,14 +13247,14 @@ function playerItemSlotsHtml(player) {
     ? `<button type="button" class="player-ability-label class-ability-button" data-class-ability-use="${escapeAttribute(player.name)}" data-class-id="${escapeAttribute(classId)}" ${abilityState.ready && !abilityTurnUsed ? "" : "disabled"}>${abilityLabelHtml}<small>${classId === "tactician" ? "Choose protocol, then use" : classId === "enforcer" ? "Arm shield" : "Use now"}</small></button>`
     : `<span class="player-ability-label">${abilityLabelHtml}</span>`;
   const tacticianProtocolPicker = manualClass && classId === "tactician"
-    ? `<button type="button" class="tactician-protocol-button protocol-assault" data-tactician-protocol-for="${escapeAttribute(player.name)}" data-protocol="assault" ${abilityState.ready && !abilityTurnUsed ? "" : "disabled"}><span>PROTOCOL</span><strong data-protocol-label>ASSAULT</strong><small>Click to cycle</small></button>`
+    ? `<label class="tactician-protocol-picker"><span>Protocol</span><select data-tactician-protocol-for="${escapeAttribute(player.name)}" ${abilityState.ready && !abilityTurnUsed ? "" : "disabled"}><option value="assault">Assault</option><option value="guard">Guard</option><option value="support">Support</option></select></label>`
     : "";
   const medicReviveControl = manualClass && classId === "medic" && reviveState.unlocked
-    ? `<button type="button" class="player-ability-label class-ability-button medic-revive-button" data-medic-revive-target="${escapeAttribute(player.name)}" ${reviveState.ready && !abilityTurnUsed && state.players.some((candidate) => candidate.incapacitated) ? "" : "disabled"}><span class="player-class-icon" aria-hidden="true">+</span>Rebirth <b class="player-ability-state ${reviveState.ready && !abilityTurnUsed ? "ready" : "recharging"}">${escapeHtml(abilityTurnUsed ? "USED THIS TURN" : reviveState.label)}</b><small>Revive at 75% HP with full brace; forfeit attack</small></button>`
+    ? `<button type="button" class="player-ability-label class-ability-button medic-revive-button" data-medic-revive-target="${escapeAttribute(player.name)}" ${reviveState.ready && !abilityTurnUsed && state.players.some((candidate) => candidate.incapacitated) ? "" : "disabled"}><span class="player-class-icon" aria-hidden="true">+</span>Rebirth <b class="player-ability-state ${reviveState.ready && !abilityTurnUsed ? "ready" : "recharging"}">${escapeHtml(abilityTurnUsed ? "USED THIS TURN" : reviveState.remaining ? "CHARGING" : "READY")}</b><small>Revive at 75% HP with full brace; forfeit attack</small></button>`
     : "";
   const levelSixWindow = manualClass || (state.deviceMode === "single" && classId === "scout" && state.questionPresentationReady && !state.resolved);
   const levelSixControl = levelSixWindow && levelSixState.unlocked && classId !== "medic"
-    ? `<button type="button" class="player-ability-label class-ability-button level-six-ability-button" data-level-six-ability="${escapeAttribute(player.name)}" ${!levelSixDefinition?.passive && levelSixState.ready && !abilityTurnUsed ? "" : "disabled"}><span class="player-class-icon" aria-hidden="true">${playerClassIcon(player.classId)}</span>${escapeHtml(levelSixDefinition?.label || "Level 6 ability")} <b class="player-ability-state ${levelSixState.ready && !abilityTurnUsed ? "ready" : "recharging"}">${escapeHtml(levelSixDefinition?.passive ? `PASSIVE — ${levelSixState.label}` : abilityTurnUsed ? "USED THIS TURN" : levelSixState.label)}</b><small>${levelSixDefinition?.passive ? "Activates automatically" : "Level 6 ability"}</small></button>`
+    ? `<button type="button" class="player-ability-label class-ability-button level-six-ability-button" data-level-six-ability="${escapeAttribute(player.name)}" ${!levelSixDefinition?.passive && levelSixState.ready && !abilityTurnUsed ? "" : "disabled"}><span class="player-class-icon" aria-hidden="true">${playerClassIcon(player.classId)}</span>${escapeHtml(levelSixDefinition?.label || "Level 6 ability")} <b class="player-ability-state ${levelSixState.ready && !abilityTurnUsed ? "ready" : "recharging"}">${escapeHtml(levelSixDefinition?.passive ? `PASSIVE — ${levelSixState.remaining ? "CHARGING" : "READY"}` : abilityTurnUsed ? "USED THIS TURN" : levelSixState.remaining ? "CHARGING" : "READY")}</b><small>${levelSixDefinition?.passive ? "Activates automatically" : "Level 6 ability"}</small></button>`
     : "";
   return `<div class="player-loadout" title="${escapeAttribute(definition?.summary || "Class ability")}">${tacticianProtocolPicker}${classAbilityControl}${medicReviveControl}${levelSixControl}<div class="player-item-slots" aria-label="Equipped items">${itemText}</div>${player.itemNotice ? `<small class="player-item-notice-inline">${escapeHtml(player.itemNotice)}</small>` : ""}${player.abilityNotice ? `<small class="player-ability-notice-inline">${escapeHtml(player.abilityNotice)}</small>` : ""}</div>`;
 }
@@ -10809,11 +13269,21 @@ function abilityTargetPickerHtml(player) {
 }
 
 function playerItems(player) {
-  return (Array.isArray(player?.items) ? player.items : []).map(itemForPlayer).filter(Boolean);
+  return (Array.isArray(player?.items) ? player.items : [])
+    .map(itemForPlayer)
+    .filter(Boolean)
+    .slice(0, ITEM_CAPACITY);
 }
 
 function itemBonus(player, stat) {
   return playerItems(player).reduce((sum, item) => sum + (Number(item.bonuses?.[stat]) || 0), 0);
+}
+
+function passiveItemDamageReduction(player) {
+  return playerItems(player).reduce((sum, item) => {
+    const reduction = Math.max(0, Number(item.bonuses?.damageReduction) || 0);
+    return itemAbilityDefinition(item)?.effect === "guard" ? sum : sum + reduction;
+  }, 0);
 }
 
 function itemRisk(player, stat) {
@@ -10828,9 +13298,9 @@ function markItemDiscovered(item) {
 
 function commitPlayerItem(player, item, replaceIndex = -1) {
   if (!player || !item) return false;
-  player.items = Array.isArray(player.items) ? player.items.slice(0, 2) : [];
+  player.items = Array.isArray(player.items) ? player.items.slice(0, ITEM_CAPACITY) : [];
   if (replaceIndex >= 0 && replaceIndex < player.items.length) player.items[replaceIndex] = item.id;
-  else if (player.items.length < 2) player.items.push(item.id);
+  else if (player.items.length < ITEM_CAPACITY) player.items.push(item.id);
   else return false;
   markItemDiscovered(item);
   player.itemNotice = `New item: ${item.name}`;
@@ -10846,13 +13316,13 @@ function refreshPlayerItemStats(player) {
 }
 
 function openItemRewardChoices(encounter) {
-  if (!encounter?.cleared || encounter.rewardOffered) return false;
+  if (!combatSystem.items?.length || !encounter?.cleared || encounter.rewardOffered) return false;
   const boss = encounter.roomType === "boss";
   const bossNode = state.nodes?.[encounter.nodeIndex];
   if (boss && bossNode?.bossPhase === "final") return false;
   const firstBoss = boss && !state.firstBossRewardGranted;
   if (!boss && state.rng() > 0.42) return false;
-  const queue = state.players.filter((player) => boss || player.items?.length < 2);
+  const queue = state.players.filter((player) => boss || player.items?.length < ITEM_CAPACITY);
   if (!queue.length) return false;
   encounter.rewardOffered = true;
   if (firstBoss) state.firstBossRewardGranted = true;
@@ -10873,7 +13343,7 @@ function openItemRewardChoices(encounter) {
       const choices = combatSystem.rollItemChoices({ rng: state.rng, count: 3, rarity: reward.firstBoss ? "epic" : "" });
       const selected = choices[Math.floor(state.rng() * choices.length)] || choices[0];
       if (!selected) return;
-      const replaceIndex = player.items?.length >= 2 ? Math.floor(state.rng() * 2) : -1;
+      const replaceIndex = player.items?.length >= ITEM_CAPACITY ? Math.floor(state.rng() * ITEM_CAPACITY) : -1;
       if (commitPlayerItem(player, selected, replaceIndex)) {
         announceAbilityUse(`${player.name} receives ${selected.name} (${combatSystem.itemRarity(selected.rarity).label}).`, "loot");
       }
@@ -11131,10 +13601,47 @@ function renderInitiativeTimeline() {
   let attackActors = players
     .filter((actor) => actor.answer?.correct === true)
     .map((actor) => ({ ...actor, kind: "attack", status: "ATTACK" }));
+  let opforOpeningActors = [];
+  let initiativeActors = [];
 
   const type = combatRoundChallengeType(state.currentQuestion);
   const operator = type.locked ? selectOperator(state.currentQuestion) : null;
-  const lockedSuppression = Boolean(type.locked && operator && players.some((actor) => sameName(actor.label, operator.name) && actor.answer?.correct === true));
+  const activeBossNode = state.nodes[state.currentNode];
+  const yellowSniperScopePending = Boolean(
+    ["mid", "final"].includes(activeBossNode?.bossPhase)
+    && bossUsesYellowBallisticsBehavior(activeBossNode)
+    && !encounter.yellowSniperScopeResolved
+  );
+  const yellowC4DetonationPending = Boolean(
+    activeBossNode?.bossPhase === "mid"
+    && bossUsesYellowBallisticsBehavior(activeBossNode)
+    && encounter.yellowC4BombArmed
+    && !encounter.yellowC4BombResolved
+  );
+  const yellowFinalRainPending = Boolean(
+    activeBossNode?.bossPhase === "final"
+    && bossUsesYellowBallisticsBehavior(activeBossNode)
+    && encounter.yellowFinalRainPending
+    && !encounter.yellowFinalRainResolved
+  );
+  const yellowOpforRetaliationPending = Boolean(
+    activeBossNode?.bossPhase === "final"
+    && bossUsesYellowBallisticsBehavior(activeBossNode)
+    && encounter.yellowOpforRetaliationSniperTargetNames?.length
+  );
+  const yellowPreemptivePending = yellowSniperScopePending || yellowOpforRetaliationPending || yellowC4DetonationPending || yellowFinalRainPending;
+  const previewOpforMirrors = yellowFinalOpforMirrors(encounter);
+  const opforStunLimited = previewOpforMirrors.length > 0;
+  const lockedSuppressionAttempted = Boolean(
+    type.locked
+    && operator
+    && players.some((actor) => sameName(actor.label, operator.name) && actor.answer?.correct === true)
+  );
+  const lockedSuppression = Boolean(
+    !yellowPreemptivePending
+    && !opforStunLimited
+    && lockedSuppressionAttempted
+  );
   let disruptedActivations = (state.pendingClassAbilityUses || []).reduce((total, use) => {
     if (String(use.classId || "").toLowerCase() !== "engineer") return total;
     const source = state.players.find((player) => sameName(player.name, use.sourceName));
@@ -11146,20 +13653,72 @@ function renderInitiativeTimeline() {
     const source = state.players.find((player) => sameName(player.name, use.sourceName));
     return total + 1 + (source ? itemBonus(source, "disruption") : 0);
   }, 0);
+  if (opforStunLimited) disruptedActivations = Math.min(1, disruptedActivations + (lockedSuppressionAttempted ? 1 : 0));
+  const previewStunSources = [
+    ...(lockedSuppressionAttempted && operator ? [operator.name] : []),
+    ...pendingCombatDisruptorNames()
+  ];
+  const previewOpforStunTarget = disruptedActivations > 0 && previewOpforMirrors.length
+    ? previewStunSources
+      .map((sourceName) => previewOpforMirrors.find((mirror) => sameName(mirror.mirrorTargetName, sourceName)))
+      .find(Boolean)
+      || previewOpforMirrors[0]
+    : null;
 
+  const preemptiveEnemyActors = [];
   const enemyActors = [];
+  if (!state.selectedEMS && yellowPreemptivePending) {
+    const boss = bossEnemyForEncounter(encounter);
+    if (boss && !boss.defeated) {
+      const yellowRainPreviewSequence = yellowFinalRainPending
+        ? yellowFinalRainSequenceForEncounter(encounter)
+        : [];
+      const count = yellowFinalRainPending
+        ? yellowRainPreviewSequence.length
+        : yellowOpforRetaliationPending
+          ? encounter.yellowOpforRetaliationSniperTargetNames.length
+        : yellowSniperScopePending && activeBossNode?.bossPhase === "final"
+          ? yellowOpeningSniperTargetCount(activeBossNode)
+          : 1;
+      for (let index = 0; index < count; index += 1) {
+        preemptiveEnemyActors.push({
+          label: boss.label || "Hostile",
+          glyph: "B",
+          color: "#ff4a45",
+          kind: "enemy",
+          status: yellowFinalRainPending
+            ? yellowRainPreviewSequence[index]?.kind === "c4" ? "C4 DETONATION" : "SNIPER SHOT"
+            : yellowC4DetonationPending ? "C4 DETONATION" : "SNIPER SHOT"
+        });
+      }
+    }
+  }
   if (!lockedSuppression && !state.selectedEMS) {
     encounter.enemies.filter((enemy) => !enemy.defeated).forEach((enemy) => {
+      if (enemy.boss && encounter.greenPossessionActive) return;
+      if (enemy.boss && (previewOpforMirrors.length || yellowFinalRainPending)) return;
       const midBossHalfHealthAttack = Boolean(
         enemy.boss
+        && bossUsesRedAssaultBehavior(state.nodes[state.currentNode])
         && state.nodes[state.currentNode]?.bossPhase === "mid"
         && !encounter.midBossHalfHealthAttackResolved
-        && encounter.maxHp
-        && encounter.hp / encounter.maxHp <= 0.5
+        && enemy.maxHp
+        && enemy.hp / enemy.maxHp <= 0.5
       );
-      const activations = midBossHalfHealthAttack ? 1 : Math.max(1, Number(enemy.activations) || 1);
+      const yellowSniperActivation = Boolean(enemy.boss && (yellowSniperScopePending || yellowOpforRetaliationPending));
+      const yellowC4Activation = Boolean(enemy.boss && yellowC4DetonationPending);
+      const opforPhaseIncoming = Boolean(enemy.yellowOpforMirror && (enemy.opforAbilityActive
+        || (Number(enemy.opforAbilityArmedRound) > 0
+          && Number(enemy.opforAbilityArmedRound) <= Math.max(1, Number(encounter.round) || 0) + 1)));
+      const opforEnforcerBarrage = Boolean(opforPhaseIncoming && String(enemy.mirrorClassId || "").toLowerCase() === "enforcer");
+      const activations = midBossHalfHealthAttack ? 1 : opforEnforcerBarrage ? 2 : Math.max(1, Number(enemy.activations) || 1);
       for (let activation = 0; activation < activations; activation += 1) {
-        if (disruptedActivations > 0 && !midBossHalfHealthAttack) {
+        const yellowPreemptiveActivationCount = yellowSniperActivation
+          ? (activeBossNode?.bossPhase === "final" ? YELLOW_FINAL_DOUBLE_KILL_TARGETS : 1)
+          : yellowC4Activation ? 1 : 0;
+        if (activation < yellowPreemptiveActivationCount) continue;
+        const disruptionTargetsThisEnemy = !opforStunLimited || enemy.id === previewOpforStunTarget?.id;
+        if (disruptedActivations > 0 && disruptionTargetsThisEnemy && !midBossHalfHealthAttack && !yellowSniperActivation) {
           disruptedActivations -= 1;
           // The first boss disruption is guaranteed. Later attempts remain on
           // the preview timeline because the boss may resist and still attack.
@@ -11167,19 +13726,46 @@ function renderInitiativeTimeline() {
         }
         enemyActors.push({
           label: enemy.label || "Hostile",
-          glyph: enemy.boss ? "B" : "H",
-          color: enemy.boss ? "#ff4a45" : "#d6a84f",
+          glyph: enemy.yellowOpforMirror ? playerClassIcon(enemy.mirrorClassId) : enemy.boss ? "B" : "H",
+          color: enemy.yellowOpforMirror ? enemy.mirrorColor || "#ffd85a" : enemy.boss ? "#ff4a45" : "#d6a84f",
           kind: "enemy",
-          status: "ATTACK"
+          status: enemy.yellowOpforMirror
+            ? opforEnforcerBarrage
+              ? `AOE ${activation + 1}/2`
+              : opforPhaseIncoming
+                ? "CLASS PHASE"
+                : "50% SIM"
+            : "ATTACK"
         });
       }
     });
+    state.players
+      .filter((player) => player._greenPossessed && !player.incapacitated)
+      .forEach((player) => enemyActors.push({ label: player.name, glyph: "P", color: "#68ff9a", kind: "enemy", status: "POSSESSED" }));
   }
 
   const resolvedRound = hasResolvedRound ? encounter.lastRound : null;
   if (resolvedRound) {
-    const actorForName = (name) => players.find((actor) => sameName(actor.label, name));
+    const actorForName = (name) => players.find((actor) => sameName(actor.label, name)) || (() => {
+      const player = state.players.find((candidate) => sameName(candidate.name, name));
+      return player ? { label: player.name, glyph: player.name.slice(0, 1).toUpperCase(), color: playerColor(player.name), answer: null, order: 0 } : null;
+    })();
     const seenAbilities = new Set();
+    const immediateOpforActions = resolvedRound.opforImmediateActions || [];
+    opforOpeningActors = (resolvedRound.opforAbilityEvents || []).flatMap((event) => {
+      const actions = immediateOpforActions.filter((action) => action.enemy?.id === event.sourceId);
+      if (!actions.length) return [];
+      const enemy = actions[0].enemy;
+      const base = {
+        label: enemy?.label || event.source || "OPFOR Mirror",
+        glyph: playerClassIcon(enemy?.mirrorClassId || event.classId),
+        color: enemy?.mirrorColor || "#ffd85a"
+      };
+      return [
+        { ...base, kind: "ability", status: String(event.label || "ABILITY").toUpperCase() },
+        ...actions.map((action) => ({ ...base, kind: "enemy", status: opforAttackTimelineStatus(action) }))
+      ];
+    });
     abilityActors = (resolvedRound.supportEvents || []).map((event) => actorForName(event.source)).filter((actor) => {
       const key = normalize(actor?.label);
       if (!key || seenAbilities.has(key)) return false;
@@ -11187,16 +13773,55 @@ function renderInitiativeTimeline() {
       return true;
     }).map((actor) => ({ ...actor, kind: "ability", status: "ABILITY" }));
     attackActors = (resolvedRound.attackResults || []).map((attack) => actorForName(attack.player?.name)).filter(Boolean).map((actor) => ({ ...actor, kind: "attack", status: "ATTACK" }));
-    enemyActors.splice(0, enemyActors.length, ...(resolvedRound.enemyActions || []).filter((action) => !action.disrupted).map((action) => ({
+    preemptiveEnemyActors.splice(0, preemptiveEnemyActors.length, ...(resolvedRound.preemptiveEnemyActions || []).filter((action) => !action.disrupted).map((action) => ({
       label: action.enemy?.label || "Hostile",
-      glyph: action.enemy?.boss ? "B" : "H",
-      color: action.enemy?.boss ? "#ff4a45" : "#d6a84f",
+      glyph: "B",
+      color: "#ff4a45",
       kind: "enemy",
-      status: "ATTACK"
+      status: action.yellowC4Bomb ? "C4 DETONATION" : "SNIPER SHOT"
     })));
+    enemyActors.splice(0, enemyActors.length, ...(resolvedRound.enemyActions || []).filter((action) => !action.disrupted && !action.opforImmediateAbilityAttack).map((action) => ({
+      label: action.enemy?.label || "Hostile",
+      glyph: action.possessed ? "P" : action.yellowOpforMirror ? playerClassIcon(action.enemy?.mirrorClassId) : action.enemy?.boss ? "B" : "H",
+      color: action.possessed ? "#68ff9a" : action.yellowOpforMirror ? action.enemy?.mirrorColor || "#ffd85a" : action.enemy?.boss ? "#ff4a45" : "#d6a84f",
+      kind: "enemy",
+      status: action.yellowOpforMirror ? opforAttackTimelineStatus(action) : "ATTACK"
+    })));
+    if (resolvedRound.initiativeSequence?.length) {
+      const sequencedOpforActions = new Set(resolvedRound.initiativeSequence
+        .filter((event) => event.kind === "opfor" && event.action)
+        .map((event) => event.action));
+      initiativeActors = resolvedRound.initiativeSequence.flatMap((event) => {
+        if (event.kind === "player" && event.attack) {
+          const actor = actorForName(event.attack.player?.name);
+          return actor ? [{ ...actor, kind: "attack", status: event.attack.opforStunned ? "STUNNED" : "ATTACK" }] : [];
+        }
+        if (event.kind !== "opfor" || !event.action) return [];
+        const action = event.action;
+        const base = {
+          label: action.enemy?.label || "OPFOR Mirror",
+          glyph: playerClassIcon(action.enemy?.mirrorClassId),
+          color: action.enemy?.mirrorColor || "#ffd85a"
+        };
+        return [
+          ...(action.opforAbilityEvent ? [{ ...base, kind: "ability", status: String(action.opforAbilityEvent.label || "ABILITY").toUpperCase() }] : []),
+          { ...base, kind: "enemy", status: opforAttackTimelineStatus(action) }
+        ];
+      });
+      attackActors = [];
+      enemyActors.splice(0, enemyActors.length, ...(resolvedRound.enemyActions || [])
+        .filter((action) => !action.disrupted && !action.opforImmediateAbilityAttack && !sequencedOpforActions.has(action))
+        .map((action) => ({
+          label: action.enemy?.label || "Hostile",
+          glyph: action.possessed ? "P" : action.yellowOpforMirror ? playerClassIcon(action.enemy?.mirrorClassId) : action.enemy?.boss ? "B" : "H",
+          color: action.possessed ? "#68ff9a" : action.yellowOpforMirror ? action.enemy?.mirrorColor || "#ffd85a" : action.enemy?.boss ? "#ff4a45" : "#d6a84f",
+          kind: "enemy",
+          status: action.yellowOpforMirror ? opforAttackTimelineStatus(action) : "ATTACK"
+        })));
+    }
   }
 
-  const actors = [...abilityActors, ...attackActors, ...enemyActors];
+  const actors = [...abilityActors, ...preemptiveEnemyActors, ...opforOpeningActors, ...attackActors, ...initiativeActors, ...enemyActors];
   const activeTurn = state.initiativeCurrentTurn;
   const actorOccurrences = new Map();
   let activeTokenRendered = false;
@@ -11257,6 +13882,10 @@ function resetBossIntroVideo() {
   video.onended = null;
   video.onerror = null;
   video.pause();
+  video.controls = false;
+  video.removeAttribute("controls");
+  video.disablePictureInPicture = true;
+  video.disableRemotePlayback = true;
   video.muted = true;
   video.defaultMuted = true;
   video.volume = 0;
@@ -11331,6 +13960,10 @@ function playBossIntroVideo(runId, nodeIndex, onComplete) {
   stage.classList.add("boss-intro-playing");
   shell.hidden = false;
   shell.classList.remove("fading");
+  video.controls = false;
+  video.removeAttribute("controls");
+  video.disablePictureInPicture = true;
+  video.disableRemotePlayback = true;
   video.muted = true;
   video.defaultMuted = true;
   video.volume = 0;
@@ -11467,12 +14100,13 @@ function clearCombatPresentation() {
   window.clearTimeout(state.combatNextNodeTimer);
   state.combatNextNodeTimer = null;
   state.combatNextNodeWaitStartedAt = 0;
+  state.bossPreCombatMountHoldNode = null;
   state.combatMountBlocked = false;
   state.combatDisplayedHp = {};
   state.initiativeCurrentTurn = null;
   resetBossIntroVideo();
   if (els?.combatStage) {
-    els.combatStage.classList.remove("entering", "resolving", "combat-cleared", "exiting", "boss-fight", "mid-boss-visual", "final-boss-visual", "boss-eyes-attacking", "boss-eyes-hit", "final-boss-defeated", "boss-intro-playing", "boss-intro-handoff", "boss-intro-complete");
+    els.combatStage.classList.remove("entering", "resolving", "combat-cleared", "exiting", "boss-fight", "mid-boss-visual", "final-boss-visual", "boss-eyes-attacking", "boss-eyes-hit", "final-boss-defeated", "boss-intro-playing", "boss-intro-handoff", "boss-intro-complete", "green-possession-active", "green-possession-returning");
     els.combatStage.hidden = true;
     delete els.combatStage.dataset.nodeIndex;
   }
@@ -11556,39 +14190,71 @@ function recoverCombatPresentationGate(reason = "combat transition") {
 
 function combatEnemyGlyph(enemy) {
   if (enemy.boss) return "◆";
+  if (enemy.yellowOpforMirror) return playerClassIcon(enemy.mirrorClassId);
   if (enemy.tier === "heavy") return "⬢";
   if (enemy.tier === "medium") return "⬟";
   return "▲";
 }
 
-function enemyVisualPool() {
-  return deploymentThemeClass() === "space-station"
-    ? ENEMY_VISUAL_POOLS.spaceStation
-    : ENEMY_VISUAL_POOLS.bunker;
-}
-
-function scheduleEnemyVisualPreload() {
-  const preload = () => enemyVisualPool().forEach((src) => {
-    const image = new Image();
-    image.decoding = "async";
-    image.src = src;
-  });
-  if (typeof window.requestIdleCallback === "function") {
-    window.requestIdleCallback(preload, { timeout: 1800 });
-  } else {
-    window.setTimeout(preload, 0);
-  }
+function combatEnemyCardMarkup(enemy, hp = enemy.hp, defeated = enemy.defeated, visualState = null) {
+  const percent = enemy.maxHp ? Math.max(0, Math.min(100, hp / enemy.maxHp * 100)) : 0;
+  const sprite = enemy.boss
+    ? `<div class="combat-unit-sprite combat-boss-eyes-target" aria-hidden="true"><span class="combat-hit-ring"></span></div>`
+    : enemy.imageSrc
+      ? `<div class="combat-unit-sprite combat-enemy-image-sprite"><img class="combat-enemy-image" src="${escapeAttribute(enemy.imageSrc)}" alt="" draggable="false" decoding="async"><span class="combat-hit-ring"></span></div>`
+      : `<div class="combat-unit-sprite"><i>${combatEnemyGlyph(enemy)}</i><span class="combat-hit-ring"></span></div>`;
+  const mirrorStyle = enemy.yellowOpforMirror ? ` style="--mirror-color:${escapeAttribute(enemy.mirrorColor || "#ffd85a")}"` : "";
+  const visibleOpforCorrect = visualState && Object.prototype.hasOwnProperty.call(visualState, "opforLastCorrect")
+    ? visualState.opforLastCorrect
+    : enemy.opforLastCorrect;
+  const visibleOpforBubble = visualState && Object.prototype.hasOwnProperty.call(visualState, "opforBubbleReady")
+    ? Boolean(visualState.opforBubbleReady)
+    : Boolean(enemy.opforBubbleReady);
+  const visibleOpforAbilityActive = visualState && Object.prototype.hasOwnProperty.call(visualState, "opforAbilityActive")
+    ? Boolean(visualState.opforAbilityActive)
+    : Boolean(enemy.opforAbilityActive);
+  const visibleOpforAbilityArmed = !visibleOpforAbilityActive && (visualState && Object.prototype.hasOwnProperty.call(visualState, "opforAbilityArmedRound")
+    ? Number(visualState.opforAbilityArmedRound) > 0
+    : Number(enemy.opforAbilityArmedRound) > 0);
+  const opforAnswerClass = visibleOpforCorrect === true
+    ? "opfor-answer-correct"
+    : visibleOpforCorrect === false
+      ? "opfor-answer-incorrect"
+      : "";
+  const opforAnswerAttribute = enemy.yellowOpforMirror && typeof visibleOpforCorrect === "boolean"
+    ? ` data-opfor-result="${visibleOpforCorrect ? "CORRECT" : "INCORRECT"}"`
+    : "";
+  return `<article class="combat-enemy-unit ${enemy.tier} ${enemy.boss ? "boss" : ""} ${enemy.summoned ? "summoned" : ""} ${enemy.yellowOpforMirror ? "opfor-mirror" : ""} ${visibleOpforAbilityActive ? "opfor-phase-active" : visibleOpforAbilityArmed ? "opfor-ability-armed" : ""} ${opforAnswerClass} ${defeated ? "defeated" : ""}" data-enemy-id="${escapeAttribute(enemy.id)}"${enemy.yellowOpforMirror ? ` data-mirror-target="${escapeAttribute(normalize(enemy.mirrorTargetName))}"` : ""}${opforAnswerAttribute}${mirrorStyle}>
+    ${enemy.yellowOpforMirror && visibleOpforBubble ? '<span class="combat-bubble" aria-label="OPFOR protection bubble active"></span>' : ""}
+    ${sprite}
+    <strong>${escapeHtml(enemy.label)}</strong>
+    <div class="combat-unit-hp"><i style="width:${percent}%"></i></div>
+    <small>${Math.max(0, hp)} / ${enemy.maxHp}${enemy.boss ? ` · ${Math.round(percent)}%` : enemy.yellowOpforMirror ? ` · ${escapeHtml(combatSystem.classDefinition?.(enemy.mirrorClassId)?.label || "OPERATOR")}` : ""}</small>
+  </article>`;
 }
 
 function assignEnemyVisuals(enemies = []) {
-  const shuffled = [...enemyVisualPool()];
-  for (let index = shuffled.length - 1; index > 0; index -= 1) {
-    const swapIndex = Math.floor(state.rng() * (index + 1));
-    [shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]];
-  }
-  enemies.forEach((enemy, index) => {
-    enemy.imageSrc = shuffled[index % shuffled.length] || "";
+  const availableNames = new Map();
+  enemies.forEach((enemy) => {
+    const tier = ENEMY_VISUAL_POOLS[enemy.tier] ? enemy.tier : "light";
+    const visuals = ENEMY_VISUAL_POOLS[tier];
+    const names = ENEMY_NARRATION_NAMES[tier];
+    enemy.imageSrc = visuals[Math.floor(state.rng() * visuals.length)] || "";
+    if (!availableNames.has(tier)) {
+      const shuffledNames = [...names];
+      for (let index = shuffledNames.length - 1; index > 0; index -= 1) {
+        const swapIndex = Math.floor(state.rng() * (index + 1));
+        [shuffledNames[index], shuffledNames[swapIndex]] = [shuffledNames[swapIndex], shuffledNames[index]];
+      }
+      availableNames.set(tier, shuffledNames);
+    }
+    const tierNames = availableNames.get(tier);
+    enemy.label = tierNames.shift() || names[Math.floor(state.rng() * names.length)];
   });
+}
+
+function enemyNarrationNamingRule() {
+  return "Enemy visual naming: light hostiles are soldier-like, medium hostiles are ghostly, and heavy hostiles are monstrous. Use each hostile's canonical label or a natural synonym from that same archetype; vary repeated wording, but never describe one tier as another archetype.";
 }
 
 function renderCombatStage(encounter, options = {}) {
@@ -11599,42 +14265,89 @@ function renderCombatStage(encounter, options = {}) {
   const bossFight = encounter.roomType === "boss";
   const bossNode = state.nodes?.[encounter.nodeIndex ?? state.currentNode];
   const finalBoss = bossFight && bossNode?.bossPhase === "final";
+  const hasYellowSniperTargetsOverride = Object.prototype.hasOwnProperty.call(options, "yellowSniperTargetNames");
+  const hasYellowSniperTargetOverride = Object.prototype.hasOwnProperty.call(options, "yellowSniperTargetName");
+  const yellowSniperTargetNames = hasYellowSniperTargetsOverride
+    ? (options.yellowSniperTargetNames || []).map(String).filter(Boolean)
+    : hasYellowSniperTargetOverride
+      ? [String(options.yellowSniperTargetName || "")].filter(Boolean)
+    : bossFight && !encounter.yellowSniperScopeResolved
+      ? (encounter.yellowSniperTargetNames || [encounter.yellowSniperTargetName]).filter(Boolean)
+      : bossFight
+        ? [...(encounter.yellowOpforRetaliationSniperTargetNames || [])]
+        : [];
+  const hasYellowC4TargetOverride = Object.prototype.hasOwnProperty.call(options, "yellowC4TargetName");
+  const yellowC4TargetName = hasYellowC4TargetOverride
+    ? String(options.yellowC4TargetName || "")
+    : bossFight && !encounter.cleared && encounter.yellowC4BombArmed && !encounter.yellowC4BombResolved
+      ? encounter.yellowC4TargetName || ""
+      : "";
+  const pendingYellowRainSequence = encounter.yellowFinalRainPending
+    ? yellowFinalRainSequenceForEncounter(encounter)
+    : [];
+  const yellowRainSniperTargetNames = Object.prototype.hasOwnProperty.call(options, "yellowFinalRainSniperTargets")
+    ? (options.yellowFinalRainSniperTargets || []).map(String).filter(Boolean)
+    : pendingYellowRainSequence.filter((entry) => entry.kind === "sniper").map((entry) => entry.targetName);
+  const yellowRainC4TargetNames = Object.prototype.hasOwnProperty.call(options, "yellowFinalRainC4Targets")
+    ? (options.yellowFinalRainC4Targets || []).map(String).filter(Boolean)
+    : pendingYellowRainSequence.filter((entry) => entry.kind === "c4").map((entry) => entry.targetName);
+  const yellowSniperDesignationCounts = new Map();
+  const yellowC4DesignationCounts = new Map();
+  for (const name of [...yellowSniperTargetNames, ...yellowRainSniperTargetNames]) {
+    const key = normalize(name);
+    yellowSniperDesignationCounts.set(key, (yellowSniperDesignationCounts.get(key) || 0) + 1);
+  }
+  for (const name of [yellowC4TargetName, ...yellowRainC4TargetNames].filter(Boolean)) {
+    const key = normalize(name);
+    yellowC4DesignationCounts.set(key, (yellowC4DesignationCounts.get(key) || 0) + 1);
+  }
   if (!bossFight && encounter.enemies.some((enemy) => !enemy.imageSrc)) {
     assignEnemyVisuals(encounter.enemies);
   }
   els.combatStage.classList.toggle("boss-fight", bossFight);
   els.combatStage.classList.toggle("final-boss-visual", finalBoss);
   els.combatStage.classList.toggle("mid-boss-visual", bossFight && !finalBoss);
+  // Resolution mutates the encounter before its animation begins. When a
+  // caller supplies a round-start override, it must win over that future state.
+  const hasPossessionVisualOverride = Object.prototype.hasOwnProperty.call(options, "forceGreenPossession");
+  const possessionVisualActive = hasPossessionVisualOverride
+    ? Boolean(options.forceGreenPossession)
+    : Boolean(encounter.greenPossessionActive);
+  els.combatStage.classList.toggle("green-possession-active", possessionVisualActive);
+  const opforVisualActive = Array.isArray(options.enemyStates)
+    ? encounter.enemies.some((enemy) => {
+        const snapshot = enemyStates.get(enemy.id);
+        return enemy.yellowOpforMirror && snapshot && !snapshot.defeated && Number(snapshot.hp) > 0;
+      })
+    : yellowFinalOpforMirrors(encounter).length > 0;
+  els.combatStage.classList.toggle("yellow-opfor-active", opforVisualActive);
   els.combatStage.dataset.nodeIndex = String(encounter.nodeIndex ?? state.currentNode);
   if (bossFight) primeBossThemeForNode(encounter.nodeIndex ?? state.currentNode);
   els.combatStage.hidden = false;
   syncBossThemePresence();
   els.combatStageLabel.textContent = encounter.roomType === "boss" ? "CRITICAL HOSTILE" : "HOSTILE CONTACT";
   els.combatStageRound.textContent = `ROUND ${Math.max(1, encounter.round + (options.beforeRound ? 0 : 1))}`;
+  const restrictToRoundStartEnemies = Boolean(options.beforeRound && Array.isArray(options.enemyStates));
   els.combatEnemyFormation.innerHTML = encounter.enemies.filter((enemy) => {
     const snapshot = enemyStates.get(enemy.id);
+    if (restrictToRoundStartEnemies && !snapshot) return false;
     return !(snapshot ? snapshot.defeated : enemy.defeated);
   }).map((enemy) => {
     const snapshot = enemyStates.get(enemy.id);
     const hp = snapshot ? snapshot.hp : enemy.hp;
     const defeated = snapshot ? snapshot.defeated : enemy.defeated;
-    const percent = enemy.maxHp ? Math.max(0, Math.min(100, hp / enemy.maxHp * 100)) : 0;
-    const sprite = enemy.boss
-      ? `<div class="combat-unit-sprite combat-boss-eyes-target" aria-hidden="true"><span class="combat-hit-ring"></span></div>`
-      : enemy.imageSrc
-        ? `<div class="combat-unit-sprite combat-enemy-image-sprite"><img class="combat-enemy-image" src="${escapeAttribute(enemy.imageSrc)}" alt="" draggable="false" decoding="async"><span class="combat-hit-ring"></span></div>`
-        : `<div class="combat-unit-sprite"><i>${combatEnemyGlyph(enemy)}</i><span class="combat-hit-ring"></span></div>`;
-    return `<article class="combat-enemy-unit ${enemy.tier} ${enemy.boss ? "boss" : ""} ${defeated ? "defeated" : ""}" data-enemy-id="${escapeAttribute(enemy.id)}">
-      ${sprite}
-      <strong>${escapeHtml(enemy.label)}</strong>
-      <div class="combat-unit-hp"><i style="width:${percent}%"></i></div>
-      <small>${Math.max(0, hp)} / ${enemy.maxHp}</small>
-    </article>`;
+    return combatEnemyCardMarkup(enemy, hp, defeated, snapshot || null);
   }).join("");
   els.combatPartyFormation.innerHTML = state.players.map((player) => {
     const snapshot = playerStates.get(normalize(player.name));
     const visibleHp = snapshot ? snapshot.hp : player.hp;
     const visibleDown = snapshot ? visibleHp <= 0 : player.incapacitated;
+    const visiblePossessed = Boolean(possessionVisualActive && (player._greenPossessed || snapshot?.possessed));
+    const visibleConfused = Boolean(!visiblePossessed && !visibleDown && (
+      snapshot && typeof snapshot.confused === "boolean"
+        ? snapshot.confused
+        : player._spectralInfected
+    ));
     const answerResult = playerResults.get(normalize(player.name));
     const answerClass = answerResult === true ? "answer-correct" : answerResult === false ? "answer-wrong" : "";
     const answerCue = answerResult === true ? "ATTACK READY" : answerResult === false ? "BRACE" : "";
@@ -11643,20 +14356,88 @@ function renderCombatStage(encounter, options = {}) {
     const classLabel = classDefinition.label || "Operator";
     const classArmed = (state.pendingClassAbilityUses || []).some((use) => sameName(use.sourceName, player.name));
     const itemArmed = (state.pendingAbilityUses || []).some((use) => sameName(use.sourceName, player.name));
-    const bubbleActive = snapshot && typeof snapshot.bubbleActive === "boolean"
+    const playerKey = normalize(player.name);
+    const sniperDesignationCount = yellowSniperDesignationCounts.get(playerKey) || 0;
+    const c4DesignationCount = yellowC4DesignationCounts.get(playerKey) || 0;
+    const sniperDesignated = Boolean(sniperDesignationCount && !visibleDown);
+    const c4Designated = Boolean(c4DesignationCount && !visibleDown);
+    const yellowTargetClass = [
+      sniperDesignated ? "yellow-boss-targeted sniper-scoped sniper-designated" : "",
+      c4Designated ? "yellow-boss-targeted c4-armed c4-designated" : ""
+    ].filter(Boolean).join(" ");
+    const yellowTargetLabel = [
+      sniperDesignated ? `SNIPER LOCK${sniperDesignationCount > 1 ? ` ×${sniperDesignationCount}` : ""}` : "",
+      c4Designated ? `C4 ARMED${c4DesignationCount > 1 ? ` ×${c4DesignationCount}` : ""}` : ""
+    ].filter(Boolean).join(" + ");
+    const bubbleActive = !visiblePossessed && (snapshot && typeof snapshot.bubbleActive === "boolean"
       ? snapshot.bubbleActive
       : Boolean(
         player._engineerBubbleReady
         || (encounter.bubbleTargetName && sameName(encounter.bubbleTargetName, player.name))
-      );
+      ));
     const equippedNames = playerItems(player).map((item) => item.name).join(" · ");
-    return `<article class="combat-party-unit ${visibleDown ? "down" : ""} ${answerClass} ${classArmed ? "class-armed" : ""} ${itemArmed ? "item-armed" : ""}" style="--player-color:${playerColor(player.name)}" data-player-name="${escapeAttribute(normalize(player.name))}">
+    return `<article class="combat-party-unit ${visibleDown ? "down" : ""} ${visiblePossessed ? "possessed" : ""} ${visibleConfused ? "possession-confused" : ""} ${answerClass} ${classArmed ? "class-armed" : ""} ${itemArmed ? "item-armed" : ""} ${yellowTargetClass}" style="--player-color:${playerColor(player.name)}" data-player-name="${escapeAttribute(normalize(player.name))}"${yellowTargetLabel ? ` data-yellow-target="${yellowTargetLabel}"` : ""}>
       ${bubbleActive ? '<span class="combat-bubble" aria-label="Protection bubble active"></span>' : ""}
       <div class="combat-party-avatar" style="--player-color:${playerColor(player.name)}"><span>${escapeHtml(player.name.slice(0, 1).toUpperCase())}</span></div>
       <div><strong>${escapeHtml(player.name)}${answerCue ? `<b class="combat-answer-cue">${answerCue}</b>` : ""}</strong><small>${escapeHtml(classLabel)} · LV ${player.level || 1}</small><em class="combat-ability-label">${escapeHtml(classDefinition.gear || "Ability ready")}</em>${equippedNames ? `<em class="combat-item-label">${escapeHtml(equippedNames)}</em>` : ""}<div class="combat-unit-hp party"><i style="width:${hpPercent}%"></i></div><em>${visibleHp} / ${player.maxHp} HP</em></div>
     </article>`;
   }).join("");
+  positionPossessedCombatCards();
   renderInitiativeTimeline();
+}
+
+function positionPossessedCombatCards() {
+  const possessedCards = [...(els.combatPartyFormation?.querySelectorAll(".combat-party-unit.possessed") || [])];
+  possessedCards.forEach((card, index) => {
+    card.style.setProperty("--possession-offset", `${(index - (possessedCards.length - 1) / 2) * 96}px`);
+  });
+  organizeCombatFormations();
+}
+
+function organizeCombatFormations() {
+  const partyCards = [...(els.combatPartyFormation?.querySelectorAll(".combat-party-unit:not(.possessed)") || [])];
+  const enemyCards = [...(els.combatEnemyFormation?.querySelectorAll(".combat-enemy-unit:not(.defeated)") || [])];
+  if (els.combatPartyFormation) {
+    const gap = partyCards.length >= 6 ? 6 : partyCards.length >= 4 ? 8 : 12;
+    els.combatPartyFormation.style.gap = `${gap}px`;
+    els.combatPartyFormation.dataset.formationCount = String(partyCards.length);
+  }
+  if (els.combatEnemyFormation) {
+    const bossFight = Boolean(els.combatStage?.classList.contains("boss-fight"));
+    const widths = ["0", "min(34%, 18rem)", "min(58%, 32rem)", "min(82%, 46rem)"];
+    els.combatEnemyFormation.style.width = bossFight
+      ? (enemyCards.length > 1 ? "min(92%, 58rem)" : "min(78%, 46rem)")
+      : (widths[Math.min(3, enemyCards.length)] || "min(94%, 58rem)");
+    els.combatEnemyFormation.style.gap = enemyCards.length >= 4 ? ".45rem" : enemyCards.length === 3 ? ".8rem" : "1.25rem";
+    els.combatEnemyFormation.dataset.formationCount = String(enemyCards.length);
+  }
+}
+
+function activateGreenPossessionCombatVisual(possessedNames = []) {
+  if (!els.combatStage) return;
+  const possessed = new Set(possessedNames.map(normalize));
+  els.combatStage.classList.remove("green-possession-returning");
+  els.combatStage.classList.add("green-possession-active");
+  for (const card of els.combatPartyFormation?.querySelectorAll(".combat-party-unit") || []) {
+    const isPossessed = possessed.has(card.dataset.playerName || "");
+    card.classList.toggle("possessed", isPossessed);
+    card.classList.toggle("possession-confused", !isPossessed && !card.classList.contains("down"));
+    if (isPossessed) clearCombatBubble(card);
+  }
+  positionPossessedCombatCards();
+}
+
+function releaseGreenPossessionCombatVisual(runId) {
+  if (!els.combatStage) return;
+  els.combatStage.classList.remove("green-possession-active");
+  els.combatStage.classList.add("green-possession-returning");
+  for (const card of els.combatPartyFormation?.querySelectorAll(".combat-party-unit") || []) {
+    const player = state.players.find((candidate) => normalize(candidate.name) === (card.dataset.playerName || ""));
+    card.classList.remove("possessed");
+    card.classList.toggle("possession-confused", Boolean(player?._spectralInfected && !card.classList.contains("down")));
+  }
+  positionPossessedCombatCards();
+  combatPresentationTimer(() => els.combatStage?.classList.remove("green-possession-returning"), 1650, runId);
 }
 
 function syncCombatStage() {
@@ -11664,7 +14445,7 @@ function syncCombatStage() {
   if (state.retiredCombatNodes.has(state.currentNode)) {
     if (els.combatStage) {
       els.combatStage.hidden = true;
-      els.combatStage.classList.remove("entering", "resolving", "combat-cleared", "exiting", "boss-fight", "mid-boss-visual", "final-boss-visual", "boss-intro-playing", "boss-intro-handoff", "boss-intro-complete");
+      els.combatStage.classList.remove("entering", "resolving", "combat-cleared", "exiting", "boss-fight", "mid-boss-visual", "final-boss-visual", "boss-intro-playing", "boss-intro-handoff", "boss-intro-complete", "green-possession-active", "green-possession-returning");
       delete els.combatStage.dataset.nodeIndex;
     }
     syncBossThemePresence();
@@ -11680,7 +14461,7 @@ function syncCombatStage() {
   if (leavingCurrentCombat) {
     if (els.combatStage) {
       els.combatStage.hidden = true;
-      els.combatStage.classList.remove("entering", "resolving", "combat-cleared", "exiting", "boss-fight", "mid-boss-visual", "final-boss-visual", "boss-intro-playing", "boss-intro-handoff", "boss-intro-complete");
+      els.combatStage.classList.remove("entering", "resolving", "combat-cleared", "exiting", "boss-fight", "mid-boss-visual", "final-boss-visual", "boss-intro-playing", "boss-intro-handoff", "boss-intro-complete", "green-possession-active", "green-possession-returning");
       delete els.combatStage.dataset.nodeIndex;
     }
     syncBossThemePresence();
@@ -11751,7 +14532,16 @@ function syncCombatStage() {
       els.combatStage?.classList.remove("entering");
       els.mapPanel?.classList.remove("combat-map-transitioning");
       roomTransitionTraceStepEnd(combatEntryStep, { bossEntry });
-      if (els.combatActionBanner) els.combatActionBanner.textContent = encounter.cleared ? "HOSTILE LINE CLEARED" : combatIntentText();
+      if (els.combatActionBanner) {
+        const finalGreenOpening = encounter.round === 0
+          && encounter.greenFinalInfectionTriggered
+          && state.nodes[entryNodeIndex]?.bossPhase === "final";
+        els.combatActionBanner.textContent = encounter.cleared
+          ? "HOSTILE LINE CLEARED"
+          : finalGreenOpening
+            ? `${GREEN_FINAL_INFECTION_PHASE_NAME.toUpperCase()} — ALL OPERATORS INFECTED`
+            : combatIntentText();
+      }
       if (state.backgroundMusicMode !== "boss") {
         loadBackgroundMusic("boss", state.backgroundMusicLoaded ? { transition: true } : { fadeIn: true });
       }
@@ -11797,6 +14587,15 @@ function showCombatFloat(card, text, kind) {
   window.setTimeout(() => node.remove(), 900);
 }
 
+function setOpforAnswerCardResult(card, correct) {
+  if (!card) return;
+  card.classList.remove("opfor-answer-correct", "opfor-answer-incorrect");
+  delete card.dataset.opforResult;
+  if (typeof correct !== "boolean") return;
+  card.classList.add(correct ? "opfor-answer-correct" : "opfor-answer-incorrect");
+  card.dataset.opforResult = correct ? "CORRECT" : "INCORRECT";
+}
+
 function updateCombatEnemyVisual(attack) {
   const card = els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(attack.targetId || "")}"]`);
   if (!card) return;
@@ -11820,7 +14619,10 @@ function updateCombatEnemyVisual(attack) {
     const fill = enemyCard?.querySelector(".combat-unit-hp i");
     const hpLabel = enemyCard?.querySelector("small");
     if (fill) fill.style.width = `${Math.max(0, Math.min(100, enemyState.hp / Math.max(1, enemyState.maxHp || 1) * 100))}%`;
-    if (hpLabel) hpLabel.textContent = `${Math.max(0, enemyState.hp)} / ${enemyState.maxHp}`;
+    if (hpLabel) {
+      const percent = Math.max(0, Math.min(100, enemyState.hp / Math.max(1, enemyState.maxHp || 1) * 100));
+      hpLabel.textContent = `${Math.max(0, enemyState.hp)} / ${enemyState.maxHp}${enemyCard?.classList.contains("boss") ? ` · ${Math.round(percent)}%` : ""}`;
+    }
   }
   showCombatFloat(card, attack.aoe ? `AOE -${attack.damage}` : `-${attack.damage}`, "damage");
   if (attack.defeated?.length) playEnemyDeathSound(attack.defeated.length);
@@ -11830,7 +14632,11 @@ function updateCombatEnemyVisual(attack) {
       for (const enemy of attack.defeated) {
         const defeatedCard = els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(enemy.id)}"]`);
         defeatedCard?.classList.add("defeated");
-        window.setTimeout(() => defeatedCard?.remove(), 520);
+        window.setTimeout(() => {
+          defeatedCard?.remove();
+          els.combatStage?.classList.toggle("yellow-opfor-active", Boolean(els.combatEnemyFormation?.querySelector(".combat-enemy-unit.opfor-mirror:not(.defeated)")));
+          organizeCombatFormations();
+        }, 520);
       }
     }, 260, runId);
   }
@@ -11928,15 +14734,20 @@ function showBossSwipeAttack() {
   window.setTimeout(() => swipe.remove(), 980);
 }
 
-function appendCombatActionStatus(log, text) {
-  if (!log || !text) return;
-  const line = document.createElement("p");
-  line.className = "combat-status-live-line";
-  line.textContent = text;
-  log.appendChild(line);
+function appendCombatActionStatus(log, ...messages) {
+  if (!log) return;
+  const lines = messages.flat(Infinity).map((text) => String(text || "").trim()).filter(Boolean);
+  if (!lines.length) return;
+  const appendedLines = lines.map((text) => {
+    const line = document.createElement("p");
+    line.className = "combat-status-live-line";
+    line.textContent = text;
+    log.appendChild(line);
+    return line;
+  });
   const feed = els.statusUpdateFeed;
   window.requestAnimationFrame(() => {
-    line.classList.add("visible");
+    appendedLines.forEach((line) => line.classList.add("visible"));
     if (feed) feed.scrollTop = feed.scrollHeight;
   });
 }
@@ -11986,6 +14797,24 @@ function presentCombatResolution(result, options = {}) {
       return snapshot || { name: player.name, hp: player.hp, maxHp: player.maxHp, incapacitated: player.incapacitated };
     }),
     playerResults: result.combatPlayerResults,
+    forceGreenPossession: result.greenPossessionVisualActive,
+    yellowSniperTargetNames: result.yellowSniperScopePendingAtRoundStart
+      ? result.yellowSniperTargetNamesAtRoundStart
+      : result.yellowOpforRetaliationSniperPendingAtRoundStart
+        ? result.yellowOpforRetaliationSniperTargetNamesAtRoundStart
+        : [],
+    yellowSniperTargetName: result.yellowSniperScopePendingAtRoundStart
+      ? result.yellowSniperTargetNameAtRoundStart
+      : "",
+    yellowC4TargetName: result.yellowC4ArmedAtRoundStart
+      ? result.yellowC4TargetNameAtRoundStart
+      : "",
+    yellowFinalRainSniperTargets: result.yellowFinalRainPendingAtRoundStart
+      ? result.yellowFinalRainSniperTargetsAtRoundStart
+      : [],
+    yellowFinalRainC4Targets: result.yellowFinalRainPendingAtRoundStart
+      ? result.yellowFinalRainC4TargetsAtRoundStart
+      : [],
     beforeRound: true
   });
   // Publish the round-start snapshot before the first incoming attack so
@@ -11994,6 +14823,8 @@ function presentCombatResolution(result, options = {}) {
   els.combatStage.classList.add("resolving");
   const statusLog = renderCombatRoundStatus(result, { deferLines: true });
   let cursor = 520;
+  const enemyInitiativeOccurrences = new Map();
+  const opforAbilityOccurrences = new Map();
   for (const ability of result.combatSupportEvents || []) {
     combatPresentationTimer(() => {
       setInitiativeCurrentTurn("ability", ability.source);
@@ -12026,12 +14857,291 @@ function presentCombatResolution(result, options = {}) {
     }, cursor, runId);
     cursor += 900;
   }
-  combatPresentationTimer(() => { els.combatActionBanner.textContent = "PLAYER PHASE — CORRECT ANSWERS ATTACK"; }, cursor, runId);
+  if (result.greenInfectionClearedByAnswers?.length) {
+    combatPresentationTimer(() => {
+      for (const playerName of result.greenInfectionClearedByAnswers) {
+        const card = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(playerName))}"]`);
+        card?.classList.remove("possession-confused");
+        showCombatFloat(card, "MIND CLEAR", "heal");
+      }
+      appendCombatActionStatus(statusLog, `${result.greenInfectionClearedByAnswers.join(", ")} clear the eight-choice infection.`);
+    }, cursor, runId);
+    cursor += 700;
+  }
+  if (result.greenPossessionReleasedByAnswers?.length) {
+    combatPresentationTimer(() => {
+      for (const playerName of result.greenPossessionReleasedByAnswers) {
+        const card = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(playerName))}"]`);
+        const player = state.players.find((candidate) => sameName(candidate.name, playerName));
+        card?.classList.remove("possessed");
+        card?.classList.toggle("possession-confused", Boolean(player?._spectralInfected));
+        card?.classList.add("possession-released", "blocking");
+        showCombatFloat(card, "CONTROL RESTORED\nBRACED", "heal");
+        combatPresentationTimer(() => card?.classList.remove("possession-released"), 720, runId);
+      }
+      positionPossessedCombatCards();
+      if (!result.greenPossessionRescuePhase) releaseGreenPossessionCombatVisual(runId);
+      els.combatActionBanner.textContent = result.greenPossessionRescuePhase
+        ? "CONTROL PARTIALLY RESTORED"
+        : "POSSESSION BROKEN — HOSTILE RE-MANIFESTING";
+    }, cursor, runId);
+    cursor += result.greenPossessionRescuePhase ? 950 : 1650;
+  }
+  for (const action of result.preemptiveEnemyActions || []) {
+    combatPresentationTimer(() => {
+      const enemyKey = normalize(action.enemy.label || "Hostile");
+      const occurrence = enemyInitiativeOccurrences.get(enemyKey) || 0;
+      enemyInitiativeOccurrences.set(enemyKey, occurrence + 1);
+      setInitiativeCurrentTurn("enemy", action.enemy.label || "Hostile", occurrence);
+      const enemyCard = els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(action.enemy.id)}"]`);
+      enemyCard?.classList.add("aoe-telegraph");
+      const abilityName = action.yellowAbilityName || (action.yellowC4Bomb ? YELLOW_MID_C4_PHASE_NAME : YELLOW_MID_SNIPER_PHASE_NAME);
+      const label = action.yellowSniperFallback
+        ? "SCOPE TARGET DOWN // RANDOM SINGLE-TARGET ATTACK"
+        : action.yellowC4Bomb
+        ? `${abilityName.toUpperCase()} // PREEMPTIVE DETONATION`
+        : `${abilityName.toUpperCase()} // PREEMPTIVE SHOT${action.yellowScriptedActivation ? ` ${action.yellowScriptedActivation}` : ""}`;
+      els.combatActionBanner.textContent = `${action.enemy.label} // ${label}`;
+      showCombatFloat(enemyCard, action.yellowSniperFallback ? "TARGET SWITCH" : action.yellowC4Bomb ? "C4 DETONATION" : "SNIPER FIRE", "block");
+      appendCombatActionStatus(statusLog, action.yellowSniperFallback
+        ? `${action.enemy.label}'s scoped target ${action.yellowSniperOriginalTargetName || "operator"} is already down; the shot converts into a normal single-target attack against a random active operator.`
+        : `${action.enemy.label}'s ${abilityName} triggers before the player attack phase and cannot be stunned.`);
+    }, cursor, runId);
+    cursor += 950;
+    combatPresentationTimer(() => {
+      const enemyCard = els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(action.enemy.id)}"]`);
+      enemyCard?.classList.remove("aoe-telegraph");
+      enemyCard?.classList.add("boss-swiping");
+      els.combatStage?.classList.add("boss-eyes-attacking");
+      showBossSwipeAttack();
+      for (const hit of action.targets || []) {
+        const playerCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(hit.target.name))}"]`);
+        playerCard?.classList.remove("blocking", "hit");
+        if (playerCard) void playerCard.offsetWidth;
+        const fullyProtected = Boolean(hit.blocked || hit.bubbleBlocked || hit.redirected);
+        const protectedHit = fullyProtected || Boolean(hit.braced);
+        playerCard?.classList.add(protectedHit ? "blocking" : "hit");
+        showBossClawImpact(playerCard, fullyProtected);
+        if (hit.bubbleBlocked) clearCombatBubble(playerCard);
+        const floatText = hit.yellowC4CarrierFailure
+          ? "C4 DETONATION\n1 HP"
+          : hit.redirected
+            ? "REDIRECTED"
+            : fullyProtected
+              ? hit.bubbleBlocked ? "BUBBLE" : "BLOCKED"
+              : hit.braced
+                ? `BRACED\n-${hit.damage}`
+                : `-${hit.damage}`;
+        showCombatFloat(playerCard, floatText, hit.redirected ? "redirect" : fullyProtected ? "block" : "damage");
+        if (fullyProtected) playGameSfx("blocked", { minInterval: 120 });
+        else if (hit.damage > 0) playGameSfx("damage");
+        updateCombatPlayerVisual(hit, playerCard);
+        if (hit.kickStarted) {
+          showCombatBubble(playerCard);
+          showCombatFloat(playerCard, `KICK START\n${hit.hpAfter} HP + BUBBLE`, "heal");
+        }
+        if (hit.redirected?.target) {
+          const redirectedTarget = hit.redirected.target;
+          const redirectedCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(redirectedTarget.name))}"]`);
+          showFatalRedirectEffect(playerCard, redirectedCard);
+          updateCombatPlayerVisual({ target: redirectedTarget, hpAfter: redirectedTarget.hp }, redirectedCard);
+        }
+        appendCombatActionStatus(statusLog, ...enemyActionStatusLines([{ ...action, targets: [hit] }]));
+        combatPresentationTimer(() => {
+          playerCard?.classList.remove("blocking", "hit");
+          if (action.yellowSniperScope) consumeYellowBossTargetMarker(playerCard, "sniper");
+          if (action.yellowSniperFallback && action.yellowSniperOriginalTargetName) {
+            const canceledScopeCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(action.yellowSniperOriginalTargetName))}"]`);
+            consumeYellowBossTargetMarker(canceledScopeCard, "sniper");
+          }
+          if (action.yellowC4Bomb && sameName(hit.target.name, action.yellowC4CarrierName)) {
+            consumeYellowBossTargetMarker(playerCard, "c4");
+          }
+        }, 820, runId);
+      }
+      combatPresentationTimer(() => {
+        enemyCard?.classList.remove("boss-swiping");
+        els.combatStage?.classList.remove("boss-eyes-attacking");
+      }, 1080, runId);
+    }, cursor, runId);
+    cursor += 1900;
+  }
+  const scheduledInitiativeOpforActions = new Set();
+  const presentedOpforAbilitySourceIds = new Set();
+  const scheduleOpforAbility = (ability, enemy = null) => {
+    if (!ability) return;
+    const sourceId = ability.sourceId || enemy?.id || "";
+    if (sourceId) presentedOpforAbilitySourceIds.add(sourceId);
+    combatPresentationTimer(() => {
+      const sourceCard = els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(sourceId)}"]`);
+      const primaryTargetCard = ability.targetId
+        ? els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(ability.targetId)}"]`)
+        : sourceCard;
+      const sourceLabel = ability.source || enemy?.label || "OPFOR Mirror";
+      const abilityKey = normalize(sourceLabel);
+      const abilityOccurrence = opforAbilityOccurrences.get(abilityKey) || 0;
+      opforAbilityOccurrences.set(abilityKey, abilityOccurrence + 1);
+      setInitiativeCurrentTurn("ability", sourceLabel, abilityOccurrence);
+      sourceCard?.classList.remove("attacking", "ability-casting");
+      if (sourceCard) void sourceCard.offsetWidth;
+      sourceCard?.classList.remove("opfor-ability-armed");
+      sourceCard?.classList.add("ability-casting", "opfor-phase-active");
+      primaryTargetCard?.classList.add(ability.kind === "heal" || ability.heals?.length ? "healing" : "ability-targeted");
+      els.combatActionBanner.textContent = `${sourceLabel} — ${String(ability.label || "ABILITY").toUpperCase()}`;
+      showCombatFloat(primaryTargetCard || sourceCard, String(ability.label || "ABILITY").toUpperCase(), ability.kind === "heal" || ability.heals?.length ? "heal" : "block");
+      appendCombatActionStatus(statusLog, opforAbilityStatusLine(ability));
+      for (const heal of ability.heals || []) {
+        const healCard = els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(heal.targetId || "")}"]`);
+        const targetEnemy = result.encounter?.enemies?.find((entry) => entry.id === heal.targetId);
+        const maxHp = Math.max(1, Number(targetEnemy?.maxHp) || 1);
+        const fill = healCard?.querySelector(".combat-unit-hp i");
+        const hpLabel = healCard?.querySelector("small");
+        healCard?.classList.add("healing");
+        if (fill) fill.style.width = `${Math.max(0, Math.min(100, Number(heal.hpAfter) / maxHp * 100))}%`;
+        if (hpLabel) hpLabel.textContent = `${Math.max(0, Number(heal.hpAfter) || 0)} / ${maxHp} · ${combatSystem.classDefinition?.(targetEnemy?.mirrorClassId)?.label || "OPERATOR"}`;
+      }
+      for (const bubble of ability.bubbleTargets || []) {
+        const bubbleCard = els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(bubble.targetId || "")}"]`);
+        bubbleCard?.classList.add("ability-targeted");
+        showCombatBubble(bubbleCard);
+      }
+      for (const targetName of ability.stunTargets || []) {
+        const stunCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(targetName))}"]`);
+        stunCard?.classList.add("ability-targeted", "stunned");
+        showCombatFloat(stunCard, "STUNNED", "block");
+      }
+      combatPresentationTimer(() => {
+        sourceCard?.classList.remove("ability-casting");
+        primaryTargetCard?.classList.remove("healing", "ability-targeted");
+        for (const heal of ability.heals || []) {
+          els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(heal.targetId || "")}"]`)?.classList.remove("healing");
+        }
+        for (const bubble of ability.bubbleTargets || []) {
+          els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(bubble.targetId || "")}"]`)?.classList.remove("ability-targeted");
+        }
+        for (const targetName of ability.stunTargets || []) {
+          els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(targetName))}"]`)?.classList.remove("ability-targeted", "stunned");
+        }
+      }, 700, runId);
+    }, cursor, runId);
+    cursor += 1050;
+  };
+  const scheduleOpforAction = (action) => {
+    if (!action) return;
+    const ability = action.opforAbilityEvent || null;
+    if (ability && !presentedOpforAbilitySourceIds.has(ability.sourceId || action.enemy.id)) {
+      scheduleOpforAbility(ability, action.enemy);
+    }
+    combatPresentationTimer(() => {
+      const enemyCard = els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(action.enemy.id)}"]`);
+      const enemyKey = normalize(action.enemy.label || "OPFOR Mirror");
+      const occurrence = enemyInitiativeOccurrences.get(enemyKey) || 0;
+      enemyInitiativeOccurrences.set(enemyKey, occurrence + 1);
+      setInitiativeCurrentTurn("enemy", action.enemy.label || "OPFOR Mirror", occurrence);
+      setOpforAnswerCardResult(enemyCard, action.opforSimulatedCorrect);
+      enemyCard?.classList.remove("attacking", "stunned", "opfor-empowered", "ability-casting");
+      if (enemyCard) void enemyCard.offsetWidth;
+      if (action.disrupted) {
+        els.combatActionBanner.textContent = `${action.enemy.label} — ATTACK DISRUPTED`;
+        enemyCard?.classList.add("stunned");
+        showCombatFloat(enemyCard, "STUNNED", "block");
+        appendCombatActionStatus(statusLog, `${action.enemy.label}'s attack is disrupted.`);
+        return;
+      }
+      if (action.opforNoAttack) {
+        els.combatActionBanner.textContent = `${action.enemy.label} — MATCHING TARGET LOST`;
+        showCombatFloat(enemyCard, "NO TARGET", "block");
+        appendCombatActionStatus(statusLog, ...enemyActionStatusLines([action]));
+        return;
+      }
+      if (action.yellowOpforEmpowered) enemyCard?.classList.add("opfor-empowered");
+      enemyCard?.classList.add("attacking");
+      els.combatActionBanner.textContent = opforAttackBannerText(action);
+    }, cursor, runId);
+    combatPresentationTimer(() => {
+      const enemyCard = els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(action.enemy.id)}"]`);
+      if (!action.disrupted && !action.opforNoAttack) {
+        for (const hit of action.targets || []) {
+          const playerCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(hit.target.name))}"]`);
+          playerCard?.classList.remove("blocking", "hit");
+          if (playerCard) void playerCard.offsetWidth;
+          const fullyProtected = Boolean(hit.blocked || hit.bubbleBlocked || hit.redirected);
+          const protectedHit = fullyProtected || Boolean(hit.braced);
+          playerCard?.classList.add(protectedHit ? "blocking" : "hit");
+          if (hit.bubbleBlocked) clearCombatBubble(playerCard);
+          const floatText = hit.redirected
+            ? "REDIRECTED"
+            : fullyProtected
+              ? hit.bubbleBlocked ? "BUBBLE" : "BLOCKED"
+              : hit.braced ? `BRACED\n-${hit.damage}` : `-${hit.damage}`;
+          showCombatFloat(playerCard, floatText, hit.redirected ? "redirect" : fullyProtected ? "block" : "damage");
+          if (fullyProtected) playGameSfx("blocked", { minInterval: 120 });
+          else if (hit.damage > 0) playGameSfx("damage");
+          updateCombatPlayerVisual(hit, playerCard);
+          if (hit.kickStarted) {
+            showCombatBubble(playerCard);
+            showCombatFloat(playerCard, `KICK START\n${hit.hpAfter} HP + BUBBLE`, "heal");
+          }
+          if (hit.redirected?.target) {
+            const redirectedCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(hit.redirected.target.name))}"]`);
+            showFatalRedirectEffect(playerCard, redirectedCard);
+            updateCombatPlayerVisual({ target: hit.redirected.target, hpAfter: hit.redirected.target.hp }, redirectedCard);
+          }
+          appendCombatActionStatus(statusLog, ...enemyActionStatusLines([{ ...action, targets: [hit] }]));
+          combatPresentationTimer(() => playerCard?.classList.remove("blocking", "hit"), 620, runId);
+        }
+      }
+      combatPresentationTimer(() => enemyCard?.classList.remove("attacking", "stunned", "opfor-empowered"), 760, runId);
+    }, cursor + 430, runId);
+    cursor += action.disrupted || action.opforNoAttack ? 1050 : 1450;
+  };
+  // OPFOR class phases precede player initiative. Offensive abilities are
+  // immediately followed by their enhanced attack instead of leaving that
+  // operator parked until its simulated answer-speed slot.
+  const immediateOpforActions = result.opforImmediateActions || [];
+  for (const ability of result.opforAbilityEvents || []) {
+    scheduleOpforAbility(ability);
+    immediateOpforActions
+      .filter((action) => action.enemy?.id === ability.sourceId)
+      .forEach((action) => {
+        scheduledInitiativeOpforActions.add(action);
+        scheduleOpforAction(action);
+      });
+  }
+  const opforBeforePlayerAttack = new Map();
+  const trailingInitiativeOpfor = [];
+  let pendingInitiativeOpfor = [];
+  for (const event of result.initiativeSequence || []) {
+    if (event.kind === "opfor" && event.action) {
+      pendingInitiativeOpfor.push(event.action);
+    } else if (event.kind === "player" && event.attack) {
+      opforBeforePlayerAttack.set(event.attack, pendingInitiativeOpfor);
+      pendingInitiativeOpfor = [];
+    }
+  }
+  trailingInitiativeOpfor.push(...pendingInitiativeOpfor);
+  combatPresentationTimer(() => {
+    els.combatActionBanner.textContent = result.greenPossessionRescuePhase
+      ? "CONTROL BREACH — FREE OPERATORS ENGAGE POSSESSED SQUAD"
+      : (result.initiativeSequence || []).some((event) => event.kind === "opfor")
+        ? "INITIATIVE PHASE — ACTIONS RESOLVE BY ANSWER SPEED"
+        : "PLAYER PHASE — CORRECT ANSWERS ATTACK";
+  }, cursor, runId);
   cursor += 260;
   for (const attack of result.attackResults || []) {
+    for (const opforAction of opforBeforePlayerAttack.get(attack) || []) {
+      scheduledInitiativeOpforActions.add(opforAction);
+      scheduleOpforAction(opforAction);
+    }
     combatPresentationTimer(() => {
       setInitiativeCurrentTurn("attack", attack.player.name);
       const playerCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(attack.player.name))}"]`);
+      const rescueCard = attack.possessionRescue
+        ? els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(attack.targetLabel))}"]`)
+        : null;
+      const targetEnemyCard = attack.targetId
+        ? els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(attack.targetId)}"]`)
+        : null;
       playerCard?.classList.add("attacking");
       if (attack.empowered) playerCard?.classList.add("empowered");
       if (attack.doubleAttack) playerCard?.classList.add("soldier-double-attack");
@@ -12041,17 +15151,138 @@ function presentCombatResolution(result, options = {}) {
         : `${attack.player.name} attacks ${attack.targetLabel}`;
       combatPresentationTimer(() => {
         playerCard?.classList.remove("attacking");
-        playGameSfx("damage");
-        updateCombatEnemyVisual(attack);
-        appendCombatActionStatus(statusLog, `${attack.player.name} attacks ${attack.targetLabel} for ${attack.damage} damage${attack.defeated.length ? ` — KILLING BLOW (${attack.defeated.map((enemy) => enemy.label).join(", ")})` : ""}.`);
+        if (attack.missedHiddenBoss) {
+          els.combatActionBanner.textContent = `${attack.player.name} — TARGET PHASED OUT`;
+          showCombatFloat(playerCard, "MISS", "block");
+          appendCombatActionStatus(statusLog, `${attack.player.name}'s attack passes through the vanished boss and misses.`);
+        } else if (attack.opforStunned) {
+          els.combatActionBanner.textContent = `${attack.player.name} — ATTACK DISRUPTED`;
+          playerCard?.classList.add("stunned");
+          showCombatFloat(playerCard, "STUNNED", "block");
+          appendCombatActionStatus(statusLog, `${attack.player.name}'s attack is disrupted by the opposing OPFOR Tactician.`);
+          combatPresentationTimer(() => playerCard?.classList.remove("stunned"), 720, runId);
+        } else if (attack.possessionRescue) {
+          playGameSfx("damage");
+          rescueCard?.classList.remove("hit");
+          if (rescueCard) void rescueCard.offsetWidth;
+          rescueCard?.classList.add("hit");
+          updateCombatPlayerVisual({ target: attack.rescueTarget, hpAfter: attack.targetHpAfter }, rescueCard);
+          showCombatFloat(rescueCard, attack.possessionFreed ? `-${attack.damage}\nCONTROL RESTORED\nBRACED` : `-${attack.damage}`, attack.possessionFreed ? "heal" : "damage");
+          els.combatActionBanner.textContent = attack.possessionFreed
+            ? `${attack.targetLabel} — CONTROL RESTORED`
+            : `${attack.player.name} attacks possessed ${attack.targetLabel}`;
+          appendCombatActionStatus(statusLog, `${attack.player.name} attacks possessed ${attack.targetLabel} for ${attack.damage} nonlethal damage${attack.braced ? ` after bracing (${Math.round(attack.braceMitigation * 100)}% mitigated)` : ""}${attack.possessionFreed ? " and restores their control at a defensive brace" : ""}.`);
+          if (attack.possessionFreed) {
+            rescueCard?.classList.remove("possessed");
+            rescueCard?.classList.toggle("possession-confused", Boolean(attack.rescueTarget?._spectralInfected));
+            rescueCard?.classList.add("possession-released", "blocking");
+            positionPossessedCombatCards();
+          }
+          combatPresentationTimer(() => rescueCard?.classList.remove("hit", "possession-released"), 720, runId);
+        } else if (attack.opforBubbleBlocked || attack.opforShieldBlocked) {
+          els.combatActionBanner.textContent = `${attack.targetLabel} — ${attack.opforBubbleBlocked ? "BUBBLE ABSORBS HIT" : "BALLISTIC SHIELD"}`;
+          targetEnemyCard?.classList.add("blocking");
+          if (attack.opforBubbleBlocked) clearCombatBubble(targetEnemyCard);
+          showCombatFloat(targetEnemyCard, attack.opforBubbleBlocked ? "BUBBLE" : "BLOCKED", "block");
+          appendCombatActionStatus(statusLog, attack.opforBubbleBlocked
+            ? `${attack.targetLabel}'s Bubble Network absorbs ${attack.player.name}'s attack.`
+            : `${attack.targetLabel}'s Ballistic Shield blocks ${attack.player.name}'s attack.`);
+          combatPresentationTimer(() => targetEnemyCard?.classList.remove("blocking"), 720, runId);
+        } else {
+          playGameSfx("damage");
+          updateCombatEnemyVisual(attack);
+          appendCombatActionStatus(statusLog, `${attack.player.name} attacks ${attack.targetLabel} for ${attack.damage} damage${attack.opforGuardReduction ? ` after OPFOR Guard reduces it by ${attack.opforGuardReduction}` : ""}${attack.defeated.length ? ` — KILLING BLOW (${attack.defeated.map((enemy) => enemy.label).join(", ")})` : ""}.`);
+          if (attack.opforAbilityArmed) {
+            targetEnemyCard?.classList.add("opfor-ability-armed");
+            showCombatFloat(targetEnemyCard, "CLASS ABILITY\nNEXT ROUND", "block");
+            appendCombatActionStatus(statusLog, `${attack.targetLabel} crosses 50% health; its class ability will activate next round.`);
+          }
+        }
         combatPresentationTimer(() => playerCard?.classList.remove("empowered", "soldier-double-attack"), 520, runId);
       }, 500, runId);
     }, cursor, runId);
     cursor += 1350;
+    if (attack.yellowOpforRetaliationScopeTargetNames?.length) {
+      combatPresentationTimer(() => {
+        const scopedTargets = (attack.yellowOpforRetaliationScopeTargetNamesAfter || [])
+          .map((name) => state.players.find((player) => sameName(player.name, name)))
+          .filter(Boolean);
+        showYellowSniperScopeTargets(result.encounter, scopedTargets, "SNIPER LOCK", YELLOW_MID_SNIPER_PHASE_NAME);
+        for (const targetName of attack.yellowOpforRetaliationScopeTargetNames) {
+          const targetCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(targetName))}"]`);
+          showCombatFloat(targetCard, "SNIPER LOCK\nNEXT ROUND", "block");
+          appendCombatActionStatus(statusLog, `${attack.targetLabel} falls; ${bossEnemyForEncounter(result.encounter)?.label || "the boss"} acquires a retaliatory ${YELLOW_MID_SNIPER_PHASE_NAME} lock on ${targetName}.`);
+        }
+      }, cursor, runId);
+      cursor += 1050;
+    }
+    if (attack.greenPossessionTriggeredAfter) {
+      combatPresentationTimer(() => {
+        if (attack.greenSummonedEnemies?.length && els.combatEnemyFormation) {
+          els.combatEnemyFormation.insertAdjacentHTML("afterbegin", attack.greenSummonedEnemies.map((enemy) => combatEnemyCardMarkup(enemy)).join(""));
+          for (const card of els.combatEnemyFormation.querySelectorAll(".combat-enemy-unit.summoned")) card.classList.add("summoning");
+        }
+        activateGreenPossessionCombatVisual(attack.greenPossessionTargets || []);
+        els.combatActionBanner.textContent = `${String(attack.greenPossessionPhaseName || GREEN_MID_POSSESSION_PHASE_NAME).toUpperCase()} — OPERATORS POSSESSED`;
+      }, cursor, runId);
+      cursor += 1450;
+    }
+    if (attack.greenMindEraserTriggeredAfter) {
+      combatPresentationTimer(() => {
+        els.combatActionBanner.textContent = `${GREEN_FINAL_MIND_ERASER_PHASE_NAME.toUpperCase()} — ANSWER MATRIX DESTABILIZED`;
+      }, cursor, runId);
+      cursor += 1200;
+    }
+    if (attack.yellowOpforTriggeredAfter) {
+      combatPresentationTimer(() => {
+        if (attack.yellowOpforSpawnedEnemies?.length && els.combatEnemyFormation) {
+          els.combatEnemyFormation.insertAdjacentHTML("beforeend", attack.yellowOpforSpawnedEnemies.map((enemy) => combatEnemyCardMarkup(enemy)).join(""));
+          for (const enemy of attack.yellowOpforSpawnedEnemies) {
+            els.combatEnemyFormation.querySelector(`[data-enemy-id="${CSS.escape(enemy.id)}"]`)?.classList.add("summoning");
+          }
+        }
+        els.combatStage?.classList.add("yellow-opfor-active");
+        organizeCombatFormations();
+        els.combatActionBanner.textContent = `${YELLOW_FINAL_OPFOR_PHASE_NAME.toUpperCase()} — HOSTILE MIRRORS DEPLOYED`;
+        appendCombatActionStatus(statusLog, `${YELLOW_FINAL_OPFOR_PHASE_NAME} deploys ${attack.yellowOpforSpawnedEnemies?.length || 0} hostile mirrors matched to the squad's classes.`);
+      }, cursor, runId);
+      cursor += 1450;
+    }
+    if (attack.yellowFinalRainTriggeredAfter) {
+      combatPresentationTimer(() => {
+        showYellowFinalRainTargets(result.encounter);
+        const sniperCount = attack.yellowFinalRainSniperTargets?.length || 0;
+        const c4Count = attack.yellowFinalRainC4Targets?.length || 0;
+        appendCombatActionStatus(statusLog, `${YELLOW_FINAL_RAIN_PHASE_NAME} alternates ${sniperCount} sniper lock${sniperCount === 1 ? "" : "s"} with ${c4Count} non-overlapping C4 charge${c4Count === 1 ? "" : "s"}, beginning with Sniper Scope.`);
+      }, cursor, runId);
+      cursor += 1250;
+    }
+    if (attack.greenPossessionEndedAfter) {
+      combatPresentationTimer(() => {
+        releaseGreenPossessionCombatVisual(runId);
+        els.combatActionBanner.textContent = "POSSESSION BROKEN — HOSTILE RE-MANIFESTING";
+      }, cursor, runId);
+      cursor += 1650;
+    }
+  }
+  for (const opforAction of trailingInitiativeOpfor) {
+    scheduledInitiativeOpforActions.add(opforAction);
+    scheduleOpforAction(opforAction);
   }
   cursor += 650;
+  if (result.bossPhasePrompt) {
+    combatPresentationTimer(() => {
+      appendBossPhasePromptToMissionLog(result.bossPhasePrompt);
+      els.combatActionBanner.textContent = result.bossPhasePrompt;
+    }, cursor, runId);
+    cursor += BOSS_PHASE_PROMPT_DELAY_MS;
+  }
   combatPresentationTimer(() => {
-    els.combatActionBanner.textContent = result.lockedSuppression
+    els.combatActionBanner.textContent = result.yellowOpforRoundHalted
+      ? "ROUND ENDED — OPFOR DEPLOYMENT"
+      : result.greenPossessionRoundHalted
+      ? "ROUND ENDED — SPECTRAL CONTROL SHIFT"
+      : result.lockedSuppression
       ? "LOCKED OPERATOR SWEEP — ENEMY PHASE SUPPRESSED"
       : "ENEMY PHASE — INCOMING ATTACKS";
     if (result.lockedSuppression) {
@@ -12061,30 +15292,88 @@ function presentCombatResolution(result, options = {}) {
         enemyCard.classList.add("stunned");
         showCombatFloat(enemyCard, "STUNNED", "block");
       }
-      appendCombatActionStatus(statusLog, `${result.attackResults[0]?.player.name || "Locked operator"}'s area attack suppresses every enemy activation.`);
+      appendCombatActionStatus(statusLog, `${result.attackResults[0]?.player.name || "Locked operator"}'s area attack suppresses every remaining enemy activation.`);
       combatPresentationTimer(() => enemyCards.forEach((enemyCard) => enemyCard.classList.remove("stunned")), 850, runId);
     }
   }, cursor, runId);
-  cursor += result.lockedSuppression ? 1500 : 950;
+  cursor += result.lockedSuppression || result.yellowOpforRoundHalted ? 1500 : 950;
   let lastEnemyActionEndsAt = 0;
-  const enemyInitiativeOccurrences = new Map();
   for (const action of result.enemyActions || []) {
+    if (scheduledInitiativeOpforActions.has(action)) continue;
+    if (action.yellowOpforMirror) {
+      scheduleOpforAction(action);
+      lastEnemyActionEndsAt = cursor;
+      continue;
+    }
+    if (action.opforNoAttack && !action.disrupted) {
+      combatPresentationTimer(() => {
+        const enemyCard = els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(action.enemy.id)}"]`);
+        setInitiativeCurrentTurn("enemy", action.enemy.label || "OPFOR Mirror");
+        setOpforAnswerCardResult(enemyCard, action.opforSimulatedCorrect);
+        if (action.opforAbilityEvent) {
+          appendCombatActionStatus(statusLog, opforAbilityStatusLine(action.opforAbilityEvent));
+          showCombatFloat(enemyCard, String(action.opforAbilityEvent.label || "ABILITY").toUpperCase(), "block");
+        }
+        els.combatActionBanner.textContent = `${action.enemy.label} — MATCHING TARGET LOST`;
+        showCombatFloat(enemyCard, "NO TARGET", "block");
+        appendCombatActionStatus(statusLog, ...enemyActionStatusLines([action]));
+      }, cursor, runId);
+      cursor += 1100;
+      continue;
+    }
     const bossAoeTelegraph = Boolean(action.enemy.boss && action.aoe && !action.disrupted);
-    const bossAoeLeadTime = bossAoeTelegraph ? 1200 : 0;
+    // This attack-stage targeting effect is created only for the 1.2-second
+    // lead-in and removed after impact. The earlier pre-question designation is
+    // a separate, one-shot acquisition effect rather than a continuous pulse.
+    const yellowTargetTelegraph = Boolean(!action.disrupted && action.yellowSniperScope && action.targets?.length);
+    const bossAttackLeadTime = bossAoeTelegraph || yellowTargetTelegraph ? 1200 : 0;
+    if (yellowTargetTelegraph) {
+      combatPresentationTimer(() => {
+        const hit = action.targets[0];
+        const playerCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(hit.target.name))}"]`);
+        const lockLabel = "SNIPER LOCK";
+        if (playerCard) {
+          playerCard.dataset.yellowTarget = lockLabel;
+          playerCard.classList.add("yellow-boss-targeted", "sniper-scoped");
+        }
+        els.combatActionBanner.textContent = `${action.enemy.label} // ${lockLabel} — ${hit.target.name}`;
+        showCombatFloat(playerCard, lockLabel, "block");
+        appendCombatActionStatus(statusLog, `${action.enemy.label} fires ${YELLOW_MID_SNIPER_PHASE_NAME} at the pre-designated target, ${hit.target.name}; the shot cannot be stunned.`);
+      }, cursor, runId);
+    }
     if (bossAoeTelegraph) {
       combatPresentationTimer(() => {
         const enemyCard = els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(action.enemy.id)}"]`);
         const warningLabel = action.midBossHalfHealthAttack
-          ? "HALF-INTEGRITY OVERLOAD // AOE INCOMING"
-          : action.bossDamagePhase === "ENRAGED"
+          ? "FERAL RUPTURE // AOE INCOMING"
+          : action.yellowSniperAoe
+            ? `${(action.yellowFinalDoubleKillAoe ? YELLOW_FINAL_DOUBLE_KILL_PHASE_NAME : YELLOW_MID_SNIPER_PHASE_NAME).toUpperCase()} // 25% AOE INCOMING`
+          : action.yellowC4Bomb
+            ? `${YELLOW_MID_C4_PHASE_NAME.toUpperCase()} // 15-DAMAGE DETONATION`
+          : action.yellowC4Aoe
+            ? `${YELLOW_MID_C4_PHASE_NAME.toUpperCase()} // ${action.yellowC4FollowupDamage}-DAMAGE AOE`
+          : action.mindEraserAoe
+            ? `${GREEN_FINAL_MIND_ERASER_PHASE_NAME.toUpperCase()} // ${action.mindEraserHalfAoe ? "HALF-SQUAD AOE" : "FULL-SQUAD AOE"} INCOMING`
+          : action.yellowFinalRainAoe
+            ? `${YELLOW_FINAL_RAIN_PHASE_NAME.toUpperCase()} // ${action.yellowFinalRainAoeDamage}-DAMAGE AOE`
+          : action.bossDamagePhase === "Enraged"
             ? "ENRAGED // AOE INCOMING"
-            : action.bossDamagePhase === "ESCALATED"
-              ? "ESCALATED // AOE INCOMING"
+            : action.bossDamagePhase === "Carnal Combo"
+              ? "CARNAL COMBO // AOE INCOMING"
               : "AREA ATTACK INCOMING";
         enemyCard?.classList.add("aoe-telegraph");
         els.combatActionBanner.textContent = `${action.enemy.label} // ${warningLabel}`;
         showCombatFloat(enemyCard, "AOE INCOMING", "block");
-        appendCombatActionStatus(statusLog, `${action.enemy.label} announces an AOE attack against all operators.`);
+        const aoeDetail = action.yellowC4Bomb
+          ? ` ${YELLOW_MID_C4_PHASE_NAME} detonates for ${YELLOW_MID_C4_DAMAGE} base damage across the squad; ${action.yellowC4CarrierCorrect ? "the carrier's correct response grants everyone 90% mitigation" : `the carrier ${action.yellowC4CarrierName || "operator"} is forced to 1 HP while everyone else uses their own brace`}.`
+          : action.yellowC4Aoe
+            ? ` The follow-up is 25% of the boss's maximum normal damage (${action.yellowC4FollowupDamage}).`
+            : action.yellowSniperAoe
+              ? ` The ${action.yellowFinalDoubleKillAoe ? YELLOW_FINAL_DOUBLE_KILL_PHASE_NAME : YELLOW_MID_SNIPER_PHASE_NAME} follow-up cannot be stunned.`
+              : action.yellowFinalRainAoe
+                ? ` Every remaining boss activation is an AOE equal to 20% of maximum boss damage (${action.yellowFinalRainAoeDamage}).`
+              : "";
+        appendCombatActionStatus(statusLog, `${action.enemy.label} announces an AOE attack against ${action.mindEraserHalfAoe ? "half of the active squad" : "all active operators"}.${aoeDetail}`);
       }, cursor, runId);
     }
     combatPresentationTimer(() => {
@@ -12095,10 +15384,32 @@ function presentCombatResolution(result, options = {}) {
         enemyInitiativeOccurrences.set(enemyKey, occurrence + 1);
         setInitiativeCurrentTurn("enemy", action.enemy.label || "Hostile", occurrence);
       }
-      const enemyCard = els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(action.enemy.id)}"]`);
+      const enemyCard = action.possessed
+        ? els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(action.possessedPlayer?.name || action.enemy.label))}"]`)
+        : els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(action.enemy.id)}"]`);
       const bossSwipe = Boolean(action.enemy.boss && !action.disrupted);
       enemyCard?.classList.remove("attacking", "boss-swiping", "stunned", "hit", "aoe-telegraph");
       if (enemyCard) void enemyCard.offsetWidth;
+      if (action.yellowOpforMirror) setOpforAnswerCardResult(enemyCard, action.opforSimulatedCorrect);
+      if (action.yellowOpforEmpowered) enemyCard?.classList.add("opfor-empowered");
+      if (action.opforAbilityEvent) {
+        const ability = action.opforAbilityEvent;
+        const abilityTargetCard = ability.targetId
+          ? els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(ability.targetId)}"]`)
+          : enemyCard;
+        showCombatFloat(abilityTargetCard || enemyCard, String(ability.label || "ABILITY").toUpperCase(), ability.kind === "heal" ? "heal" : "block");
+        appendCombatActionStatus(statusLog, opforAbilityStatusLine(ability));
+        for (const heal of ability.heals || []) {
+          const healCard = els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(heal.targetId || "")}"]`);
+          const targetEnemy = result.encounter?.enemies?.find((entry) => entry.id === heal.targetId);
+          const maxHp = Math.max(1, Number(targetEnemy?.maxHp) || 1);
+          const fill = healCard?.querySelector(".combat-unit-hp i");
+          const hpLabel = healCard?.querySelector("small");
+          if (fill) fill.style.width = `${Math.max(0, Math.min(100, Number(heal.hpAfter) / maxHp * 100))}%`;
+          if (hpLabel) hpLabel.textContent = `${Math.max(0, Number(heal.hpAfter) || 0)} / ${maxHp} · ${combatSystem.classDefinition?.(targetEnemy?.mirrorClassId)?.label || "OPERATOR"}`;
+        }
+        if (ability.kind === "disrupt" && ability.bubbleTarget && abilityTargetCard) showCombatBubble(abilityTargetCard);
+      }
       enemyCard?.classList.add(bossSwipe ? "boss-swiping" : "attacking");
       if (action.disrupted) {
         els.combatActionBanner.textContent = `${action.enemy.label} — ATTACK DISRUPTED`;
@@ -12109,6 +15420,8 @@ function presentCombatResolution(result, options = {}) {
         const targetNames = (action.targets || []).map((hit) => hit.target.name).join(", ");
         els.combatActionBanner.textContent = bossSwipe
           ? `${action.enemy.label}${action.aoe ? " launches its AOE" : " rakes the battle line"} — ${targetNames}`
+          : action.yellowOpforMirror
+            ? opforAttackBannerText(action)
           : `${action.enemy.label} targets ${targetNames}`;
         if (bossSwipe) {
           els.combatStage?.classList.add("boss-eyes-attacking");
@@ -12124,7 +15437,9 @@ function presentCombatResolution(result, options = {}) {
           if (bossSwipe) showBossClawImpact(playerCard, fullyProtected);
           if (hit.bubbleBlocked) clearCombatBubble(playerCard);
           const protectionLabel = hit.redirected ? "REDIRECT" : hit.bubbleBlocked ? "BUBBLE" : fullyProtected ? "BLOCKED" : "BRACED";
-          const floatText = hit.redirected
+          const floatText = hit.yellowC4CarrierFailure
+            ? "C4 DETONATION\n1 HP"
+            : hit.redirected
             ? "REDIRECTED"
             : fullyProtected
             ? protectionLabel
@@ -12150,7 +15465,9 @@ function presentCombatResolution(result, options = {}) {
             const redirectedCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(redirectedTarget.name))}"]`);
             updateCombatPlayerVisual({ target: redirectedTarget, hpAfter: redirectedTarget.hp }, redirectedCard);
           }
-          appendCombatActionStatus(statusLog, hit.kickStarted
+          appendCombatActionStatus(statusLog, hit.yellowC4CarrierFailure
+            ? `${YELLOW_MID_C4_PHASE_NAME} detonates on ${hit.target.name}; their incorrect response forces them directly to 1 HP.`
+            : hit.kickStarted
             ? `${hit.kickStarted.source}'s Kick Start Your Heart revives ${hit.target.name} at ${hit.hpAfter} HP with a protection bubble.`
             : hit.redirected
             ? `${hit.target.name}'s fatal damage is redirected to ${hit.redirected.target.name} by RRR at half strength.`
@@ -12158,17 +15475,19 @@ function presentCombatResolution(result, options = {}) {
               ? `${hit.target.name}'s Engineer bubble absorbs ${action.enemy.label}'s attack.`
               : hit.blocked
                 ? `${hit.target.name} braces and blocks ${action.enemy.label}'s attack.`
-                : `${action.enemy.label} attacks ${hit.target.name} for ${hit.damage} damage${hit.braced ? ` after bracing (${Math.round(hit.braceMitigation * 100)}% mitigated)` : ""}.`);
-          combatPresentationTimer(() => playerCard?.classList.remove("blocking", "hit"), bossSwipe ? 820 : 620, runId);
+                 : `${action.enemy.label} attacks ${hit.target.name} for ${hit.damage} damage${hit.braced ? ` after bracing (${Math.round(hit.braceMitigation * 100)}% mitigated)` : ""}.`);
+          combatPresentationTimer(() => {
+            playerCard?.classList.remove("blocking", "hit");
+          }, bossSwipe ? 820 : 620, runId);
         }
       }
       combatPresentationTimer(() => {
-        enemyCard?.classList.remove("attacking", "boss-swiping", "stunned", "hit", "aoe-telegraph");
+        enemyCard?.classList.remove("attacking", "boss-swiping", "stunned", "hit", "aoe-telegraph", "opfor-empowered");
         if (bossSwipe) els.combatStage?.classList.remove("boss-eyes-attacking");
       }, bossSwipe ? 1080 : 720, runId);
-    }, cursor + bossAoeLeadTime, runId);
-    lastEnemyActionEndsAt = cursor + bossAoeLeadTime + (action.enemy.boss && !action.disrupted ? 1080 : 720);
-    cursor += bossAoeLeadTime + (action.enemy.boss && !action.disrupted ? 1900 : 1550);
+    }, cursor + bossAttackLeadTime, runId);
+    lastEnemyActionEndsAt = cursor + bossAttackLeadTime + (action.enemy.boss && !action.disrupted ? 1080 : 720);
+    cursor += bossAttackLeadTime + (action.enemy.boss && !action.disrupted ? 1900 : 1550);
   }
   for (const ability of result.postEnemySupportEvents || []) {
     combatPresentationTimer(() => {
@@ -12180,6 +15499,34 @@ function presentCombatResolution(result, options = {}) {
       appendCombatActionStatus(statusLog, supportEventStatusLine(ability));
     }, cursor, runId);
     cursor += 900;
+  }
+  if (result.yellowC4AppliedAfterRound) {
+    const c4 = result.yellowC4AppliedAfterRound;
+    combatPresentationTimer(() => {
+      const phaseTag = `BossPhase 50% — ${YELLOW_MID_C4_PHASE_NAME}`;
+      appendBossPhasePromptToMissionLog(phaseTag);
+      showYellowC4Target(result.encounter, c4.target);
+      const targetCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(c4.targetName))}"]`);
+      showCombatFloat(targetCard, "C4 ARMED\nNEXT ROUND", "block");
+      appendCombatActionStatus(statusLog, `${YELLOW_MID_C4_PHASE_NAME} attaches to ${c4.targetName} and arms for the next enemy phase.`);
+    }, cursor, runId);
+    cursor += 1100;
+  }
+  if (result.yellowFinalRainAppliedAfterRound) {
+    const rain = result.yellowFinalRainAppliedAfterRound;
+    combatPresentationTimer(() => {
+      showYellowFinalRainTargets(result.encounter);
+      for (const targetName of rain.sniperTargetNames || []) {
+        const targetCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(targetName))}"]`);
+        showCombatFloat(targetCard, "SNIPER LOCK\nNEXT ROUND", "block");
+      }
+      for (const targetName of rain.c4TargetNames || []) {
+        const targetCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(targetName))}"]`);
+        showCombatFloat(targetCard, "C4 ARMED\nNEXT ROUND", "block");
+      }
+      appendCombatActionStatus(statusLog, `${YELLOW_FINAL_RAIN_PHASE_NAME} volley ${rain.volleyNumber} marks ${rain.sniperTargetNames?.length || 0} sniper target${rain.sniperTargetNames?.length === 1 ? "" : "s"} and ${rain.c4TargetNames?.length || 0} C4 carrier${rain.c4TargetNames?.length === 1 ? "" : "s"} for the next round.`);
+    }, cursor, runId);
+    cursor += 1200;
   }
   const combatFinalizationDelay = result.teamDefeated && lastEnemyActionEndsAt
     ? lastEnemyActionEndsAt + 160
@@ -12240,12 +15587,29 @@ function presentCombatResolution(result, options = {}) {
 }
 
 function renderCombatRoundStatus(result, options = {}) {
-  if (!result?.combatStatusLog || !els.statusUpdateFeed) return;
+  if (!result?.combat || !els.statusUpdateFeed) return;
   const log = document.createElement("div");
   log.className = "damage-log combat-round-log";
-  if (!options.deferLines) result.combatStatusLog.split(/\r?\n/).filter(Boolean).forEach((text) => appendCombatActionStatus(log, text));
+  const heading = document.createElement("p");
+  heading.className = "combat-status-round-heading";
+  heading.textContent = `COMBAT ROUND ${Math.max(1, Number(result.encounter?.round) || 1)}`;
+  log.appendChild(heading);
+  if (!options.deferLines) String(result.combatStatusLog || "").split(/\r?\n/).filter(Boolean).forEach((text) => appendCombatActionStatus(log, text));
   appendStatusUpdateLog(log, null);
   return log;
+}
+
+function appendBossPhasePromptToMissionLog(tag) {
+  const transcript = document.getElementById("chatTranscript");
+  const inner = missionLogScrollInner(transcript);
+  if (!inner || !tag) return;
+  const entry = document.createElement("section");
+  entry.className = "transcript-entry question-setup-entry boss-phase-prompt-entry";
+  const text = document.createElement("p");
+  text.textContent = tag;
+  entry.appendChild(text);
+  inner.appendChild(entry);
+  startMissionLogAutoScroll({ startAtBottom: true });
 }
 
 function routeMarkerPixelPoint(position) {
@@ -12381,6 +15745,7 @@ function renderMapQuestionOverlay() {
   }
 
   if (showAlert) {
+    stopTeacherAnswerShuffle();
     const heading = `${info.areaName || roomName(state.nodes[state.currentNode] || { type: "challenge" }, state.currentNode)} - ${formatEncounterTag(info.type.label)}`;
     const overlayKey = [
       "query-alert",
@@ -12407,10 +15772,20 @@ function renderMapQuestionOverlay() {
   }
 
   const progress = mapQuestionResponseProgress(info);
-  const choices = info.question.mode === "action"
+  const combatEncounter = isCombatNode(node) ? currentCombatEncounter() : null;
+  const confusedOperatorVisible = state.players.some((player) => (
+    !player.incapacitated
+    && !player._greenPossessed
+    && player._spectralInfected
+  ));
+  const displayQuestion = confusedOperatorVisible
+    ? questionWithPossessionInfectionChoices(info.question) || info.question
+    : info.question;
+  const teacherMindEraserActive = Boolean(combatEncounter?.greenMindEraserActive && displayQuestion.mode === "multiple");
+  const choices = displayQuestion.mode === "action"
     ? `<div class="map-question-fill">Player actions required</div>`
-    : info.question.mode === "multiple"
-    ? `<div class="map-question-choices">${info.question.choices.map((choice) => `<span>${escapeHtml(choice.key)}. ${escapeHtml(choice.text)}</span>`).join("")}</div>`
+    : displayQuestion.mode === "multiple"
+    ? `<div class="map-question-choices ${displayQuestion.choices.length > 4 ? "expanded-choice-grid" : ""}">${displayQuestion.choices.map((choice) => `<span>${escapeHtml(choice.key)}. ${escapeHtml(choice.text)}</span>`).join("")}</div>`
     : `<div class="map-question-fill">Short response required</div>`;
   const heading = `${info.areaName || roomName(state.nodes[state.currentNode] || { type: "challenge" }, state.currentNode)} - ${formatEncounterTag(info.type.label)}`;
   const overlayKey = [
@@ -12418,16 +15793,17 @@ function renderMapQuestionOverlay() {
     state.currentQuestion,
     state.currentNode,
     heading,
-    info.question.mode,
+    displayQuestion.mode,
     info.type.kind,
-    info.question.question,
-    info.question.mode === "multiple" ? info.question.choices.map((choice) => `${choice.key}:${choice.text}`).join("|") : ""
+    displayQuestion.question,
+    displayQuestion.mode === "multiple" ? displayQuestion.choices.map((choice) => `${choice.key}:${choice.text}`).join("|") : ""
   ].join("::");
   const alreadyVisible = !els.mapQuestionOverlay.hidden && els.mapQuestionOverlay.classList.contains("visible");
 
   if (alreadyVisible && overlayKey === state.mapQuestionOverlayKey) {
     const progressNode = els.mapQuestionOverlay.querySelector(".map-question-topline strong");
     if (progressNode) progressNode.textContent = progress;
+    syncTeacherAnswerShuffle(teacherMindEraserActive);
     return;
   }
   state.mapQuestionOverlayKey = overlayKey;
@@ -12438,7 +15814,7 @@ function renderMapQuestionOverlay() {
         <span>${escapeHtml(heading)}</span>
         <strong>${escapeHtml(progress)}</strong>
       </div>
-      <p>${escapeHtml(displayQuestionText(info.question))}</p>
+      <p>${escapeHtml(displayQuestionText(displayQuestion))}</p>
       ${choices}
     </div>
   `;
@@ -12449,6 +15825,38 @@ function renderMapQuestionOverlay() {
   } else {
     window.requestAnimationFrame(() => els.mapQuestionOverlay.classList.add("visible"));
   }
+  syncTeacherAnswerShuffle(teacherMindEraserActive);
+}
+
+function syncTeacherAnswerShuffle(active) {
+  if (!active) {
+    stopTeacherAnswerShuffle();
+    return;
+  }
+  if (state.teacherAnswerShuffleTimer) return;
+  const shuffleChoices = () => {
+    const grid = els.mapQuestionOverlay?.querySelector(".map-question-choices");
+    if (!grid || els.mapQuestionOverlay.hidden || state.answerPending || !currentCombatEncounter()?.greenMindEraserActive) {
+      stopTeacherAnswerShuffle();
+      return;
+    }
+    const choices = [...grid.children];
+    for (let index = choices.length - 1; index > 0; index -= 1) {
+      const swapIndex = Math.floor(Math.random() * (index + 1));
+      [choices[index], choices[swapIndex]] = [choices[swapIndex], choices[index]];
+    }
+    const fragment = document.createDocumentFragment();
+    choices.forEach((choice) => fragment.appendChild(choice));
+    grid.appendChild(fragment);
+    grid.classList.remove("mind-eraser-shuffle");
+    window.requestAnimationFrame(() => grid.classList.add("mind-eraser-shuffle"));
+  };
+  state.teacherAnswerShuffleTimer = window.setInterval(shuffleChoices, 1_000);
+}
+
+function stopTeacherAnswerShuffle() {
+  if (state.teacherAnswerShuffleTimer) window.clearInterval(state.teacherAnswerShuffleTimer);
+  state.teacherAnswerShuffleTimer = null;
 }
 
 function mapQuestionResponseProgress(info) {
@@ -12474,6 +15882,7 @@ function mapQuestionResponseProgress(info) {
 }
 
 function fadeMapQuestionOverlay(callback) {
+  stopTeacherAnswerShuffle();
   if (!els.mapQuestionOverlay || els.mapQuestionOverlay.hidden) {
     els.mapPanel?.classList.remove("question-open");
     if (callback) callback();
@@ -12862,23 +16271,19 @@ function preloadActionRoomOpening(info = currentQuestionInfo()) {
   if (!state.actionDrivenMode || !room) return Promise.resolve(null);
   if (room.openingPayload) return Promise.resolve(room.openingPayload);
   if (room.openingPromise) return room.openingPromise;
-  const fallback = actionRoomOpeningFallback(info);
   room.openingPromise = ensureActionRoomDetails(info)
-    .then(() => requestOllama(makeLocalActionRoomDescriptionPrompt(info), { temperature: 0.78 }))
-    .then((text) => {
-      const parsed = parseActionRoomDescriptionResponse(text, info, fallback);
+    .then(() => {
+      const parsed = {
+        opening: NARRATION_DEFAULTS.preQuestion,
+        generatedEntityCount: 0,
+        source: "narration-reset"
+      };
       room.openingPayload = parsed;
-      logRoomDebug(`Room description: ${info.areaName}`, {
-        roomType: info.tag,
-        raw: text,
-        parsed,
-        trackedEntities: room.entities || []
-      });
       return parsed;
     })
     .catch((error) => {
       const parsed = {
-        opening: fallback,
+        opening: NARRATION_DEFAULTS.preQuestion,
         generatedEntityCount: 0,
         entities: room.entities || []
       };
@@ -12886,7 +16291,7 @@ function preloadActionRoomOpening(info = currentQuestionInfo()) {
       logRoomDebug(`Room opening fallback: ${info.areaName}`, {
         roomType: info.tag,
         error: error?.message || "",
-        fallback,
+        fallback: NARRATION_DEFAULTS.preQuestion,
         trackedEntities: room.entities || []
       });
       return parsed;
@@ -12919,7 +16324,7 @@ function ensureActionRoomDetails(info) {
   if (!room || room.entitiesGenerated) return Promise.resolve(room.entities || []);
   if (room.entityPromise) return room.entityPromise;
   room.entityRequestPending = true;
-  room.entityPromise = requestOllama(makeActionRoomEntityPrompt(info), { temperature: 0.32 })
+  room.entityPromise = requestOllama(makeActionRoomEntityPrompt(info), { temperature: 0.32, maxTokens: 640 })
     .then((text) => {
       const generated = parseActionRoomEntities(text, room);
       if (generated.length) room.entities = mergeRoomEntities(room.entities || [], generated);
@@ -12950,7 +16355,7 @@ function requestActionRoomEntities(info) {
   const room = info.actionRoom || {};
   if (!room || room.entitiesGenerated || room.entityRequestPending) return;
   room.entityRequestPending = true;
-  requestOllama(makeActionRoomEntityPrompt(info), { temperature: 0.32 })
+  requestOllama(makeActionRoomEntityPrompt(info), { temperature: 0.32, maxTokens: 640 })
     .then((text) => {
       const generated = parseActionRoomEntities(text, room);
       if (generated.length) room.entities = mergeRoomEntities(room.entities || [], generated);
@@ -13080,7 +16485,9 @@ function makeLocalActionRoomDescriptionPrompt(info) {
     roomEntities: roomEntitySummary(room),
     threat: state.threat,
     threatProfile: compactThreatProfileText(),
-    threatPressure: state.actionThreatPressure
+    threatPressure: state.actionThreatPressure,
+    styleBible: narrationStyleBible(),
+    operatorRoster: narrationRosterText()
   });
 }
 
@@ -13100,7 +16507,9 @@ function makeLocalActionRoomOpeningPrompt(info) {
     roomEntities: roomEntitySummary(room),
     threat: state.threat,
     threatProfile: compactThreatProfileText(),
-    threatPressure: state.actionThreatPressure
+    threatPressure: state.actionThreatPressure,
+    styleBible: narrationStyleBible(),
+    operatorRoster: narrationRosterText()
   });
 }
 
@@ -13185,7 +16594,7 @@ function renderChatControls() {
   const answerForm = actionModeActive ? `
     <div class="player-answer-form action-mission-form">
       <div id="answerSubmitState" class="answer-submit-state ${state.answerPending ? "pending" : ""}">
-        ${state.answerPending ? "Resolving submitted actions. Receiving transmission." : state.deviceMode === "multi" ? `${actionEntries.length} action${actionEntries.length === 1 ? "" : "s"} submitted from player devices.` : "Enter the team's field action, then resolve the room."}
+        ${state.answerPending ? NARRATION_DEFAULTS.actionResolution : state.deviceMode === "multi" ? `${actionEntries.length} action${actionEntries.length === 1 ? "" : "s"} submitted from player devices.` : "Enter the team's field action, then resolve the room."}
       </div>
       ${state.deviceMode === "single" ? `
         <label>
@@ -13205,7 +16614,7 @@ function renderChatControls() {
     <div class="player-answer-form">
       ${classHintHtml}
       <div id="answerSubmitState" class="answer-submit-state ${state.answerPending ? "pending" : ""}">
-        ${state.answerPending ? `${escapeHtml(state.lastSubmittedAnswer)}. Receiving transmission.` : presentationLocked ? "Incoming mission prompt..." : "Collecting answers from player devices."}
+        ${state.answerPending ? NARRATION_DEFAULTS.afterQuestion : presentationLocked ? NARRATION_DEFAULTS.preQuestion : "Collecting answers from player devices."}
       </div>
     </div>
   ` : `
@@ -13222,7 +16631,7 @@ function renderChatControls() {
         </div>
       </label>
       <div id="answerSubmitState" class="answer-submit-state ${state.answerPending ? "pending" : ""}">
-        ${state.answerPending ? `Answer sent: ${escapeHtml(state.lastSubmittedAnswer)}. Receiving transmission.` : presentationLocked ? "Incoming mission prompt..." : "Submit from here for faster table flow."}
+        ${state.answerPending ? NARRATION_DEFAULTS.afterQuestion : presentationLocked ? NARRATION_DEFAULTS.preQuestion : "Submit from here for faster table flow."}
       </div>
     </form>
   ` : state.deviceMode === "single" ? `
@@ -13366,7 +16775,8 @@ function confirmBossReady() {
   window.clearTimeout(state.bossReadyAudioTimer);
   state.bossReadyAudioTimer = null;
   state.bossReadyChecks.add(state.currentNode);
-  state.combatMountBlocked = false;
+  state.bossPreCombatMountHoldNode = state.currentNode;
+  state.combatMountBlocked = true;
   // Readiness confirmation is the sole entry point for a boss presentation.
   // Remove any stale mount record left by the preceding combat room so the
   // intro video and formation handoff must run for this node.
@@ -13378,6 +16788,19 @@ function confirmBossReady() {
 
   const qInfo = currentQuestionInfo();
   const fallbackStory = bossOpeningFallback(qInfo);
+  if (!ENABLE_TRANSITION_NARRATION_GENERATION) {
+    roomTransitionTraceEmit("MARK", "boss opening narration skipped");
+    appendTranscript({
+      tag: qInfo.tag,
+      areaName: qInfo.areaName,
+      story: NARRATION_DEFAULTS.bossEntryTransition,
+      bossEntryTransition: true,
+      activeObstacle: qInfo.activeObstacle,
+      question: qInfo.questionText
+    });
+    return;
+  }
+
   appendTranscript({
     tag: qInfo.tag,
     areaName: qInfo.areaName,
@@ -13387,28 +16810,13 @@ function confirmBossReady() {
   });
   startPassiveTransmissionFeedback({ type: qInfo.type });
 
-  if (!ENABLE_TRANSITION_NARRATION_GENERATION) {
-    roomTransitionTraceEmit("MARK", "boss opening LM skipped", { fallbackChars: fallbackStory.length });
-    window.setTimeout(() => {
-      stopTransmissionFeedback();
-      appendTranscript({
-        tag: qInfo.tag,
-        areaName: qInfo.areaName,
-        story: fallbackStory,
-        activeObstacle: qInfo.activeObstacle,
-        question: qInfo.questionText
-      });
-    }, 0);
-    return;
-  }
-
-  requestOllama(makeLocalBossOpeningPrompt(qInfo), { temperature: 0.82 })
+  Promise.resolve(NARRATION_DEFAULTS.preQuestion)
     .then((text) => {
       stopTransmissionFeedback();
       appendTranscript({
         tag: qInfo.tag,
         areaName: qInfo.areaName,
-        story: cleanLocalNarration(text) || fallbackStory,
+        story: enforceBossOpeningDesignation(cleanLocalNarration(text), bossIdentityForNode(state.nodes[state.currentNode])) || fallbackStory,
         activeObstacle: qInfo.activeObstacle,
         question: qInfo.questionText
       });
@@ -13427,27 +16835,7 @@ function confirmBossReady() {
 
 function startLocalOpening() {
   const fallback = localOpeningPayload();
-  appendTranscript({
-    tag: "Opening Channel",
-    areaName: fallback.areaName,
-    story: "Receiving opening transmission...",
-    question: "",
-    recordHistory: false
-  });
-  startPassiveTransmissionFeedback({ type: challengeType(0, state.questions.length) });
-
-  requestOllama(makeLocalOpeningPrompt(), { temperature: 0.78 })
-    .then((text) => {
-      stopTransmissionFeedback();
-      appendTranscript({
-        ...fallback,
-        story: cleanLocalNarration(text) || fallback.story
-      });
-    })
-    .catch(() => {
-      stopTransmissionFeedback();
-      appendTranscript(fallback);
-    });
+  appendTranscript({ ...fallback, story: NARRATION_DEFAULTS.preQuestion });
 }
 
 function submitPlayerAnswer(event) {
@@ -13517,7 +16905,7 @@ function submitPlayerAnswerValue(answer, options = {}) {
   if (button) button.disabled = true;
   if (status) {
     status.classList.add("pending");
-    status.textContent = options.timeout ? "Emergency window expired. Receiving transmission." : `Answer sent: ${cleanAnswer}. Receiving transmission.`;
+    status.textContent = options.timeout ? `Emergency window expired. ${NARRATION_DEFAULTS.afterQuestion}` : NARRATION_DEFAULTS.afterQuestion;
   }
 
   fetchWithTimeout("/api/answer", {
@@ -14106,12 +17494,7 @@ function resolveLocalSideAction(action, options = {}) {
       outcome.areaName = context.question?.area || contextAreaName();
       if (outcome.kind === "bypass") outcome.nextInfo = nextLocalQuestionInfo();
       const playerEvents = changedPlayerEvents(before, outcome.eventNotes);
-      const fallback = sideActionFallback(action, actor, outcome);
-      const prompt = makeLocalSideActionPrompt(action, actor, outcome, playerEvents);
-
-      return requestOllama(prompt, { temperature: 0.86 })
-        .then((text) => finishLocalSideAction(outcome, playerEvents, safeLocalNarration(text, playerEvents, fallback)))
-        .catch(() => finishLocalSideAction(outcome, playerEvents, fallback));
+      return Promise.resolve(finishLocalSideAction(outcome, playerEvents, NARRATION_DEFAULTS.actionResolution));
     })
     .catch(() => {
       state.sideActionPending = false;
@@ -14125,7 +17508,8 @@ function classifyLocalSideAction(action, context) {
   if (obvious.confident) return Promise.resolve(obvious);
   return requestOllama(makeLocalSideActionClassificationPrompt(action, context), {
     temperature: 0.1,
-    format: "json"
+    format: "json",
+    maxTokens: 140
   })
     .then((text) => parseSideActionClassification(text, action))
     .catch(() => heuristicSideActionClassification(action));
@@ -14593,6 +17977,7 @@ function makeLocalSideActionPrompt(action, actor, outcome, playerEvents) {
   const actionOwner = outcome.source === "player" ? `${actor?.name || "one player"}'s optional player action` : "one optional team action";
   return [
     `Write ${narrationSentenceRange("2-4", "1-2")} complete player-facing sentences describing ${actionOwner} inside the current room.`,
+    narrationStyleBible(),
     "Use only the listed facts. Do not add damage, supplies, statuses, advantages, or bypasses unless listed.",
     "The active system remains unresolved unless rare bypass says otherwise.",
     outcome.category === "perform"
@@ -14605,6 +17990,7 @@ function makeLocalSideActionPrompt(action, actor, outcome, playerEvents) {
     `Threat: ${state.threat}; ${compactThreatProfileText()}.`,
     `Player action: ${action}.`,
     `Primary actor: ${actor?.name || "the team"}.`,
+    actor ? `Actor tactical identity: ${classNarrationDoctrine(actor.classId)}` : `Operator roster:\n${narrationRosterText()}`,
     outcome.source === "player" ? `Responsibility rule: ${actor?.name || "the submitting player"} personally attempts this action and owns its direct consequences.` : "Responsibility rule: the squad acts together.",
     `Grounded action category: ${outcome.category}.`,
     `Action modifiers: ${(outcome.modifiers || []).join(", ") || "none"}.`,
@@ -14615,19 +18001,7 @@ function makeLocalSideActionPrompt(action, actor, outcome, playerEvents) {
 }
 
 function sideActionFallback(action, actor, outcome) {
-  const subject = actor?.name || "The team";
-  if (outcome.kind === "bypass") return `${subject} follows the side route opened by the search and finds a buried maintenance override. The locked passage cycles open with a hard mechanical shudder.`;
-  if (outcome.kind === "terminal") return `${subject} reaches into the room's neglected machinery, and a buried fault detonates through the housing. The search ends in a violent flash as the team drags back from the wreckage.`;
-  if (outcome.kind === "hazard" && outcome.category === "protect") return `${subject} braces for impact, but the room shifts harder than expected. The cover holds for the squad, while a loose bracket snaps back into ${subject}'s shoulder.`;
-  if (outcome.kind === "hazard") return `${subject} pushes the ${outcome.category} attempt too close to unstable equipment. A loose assembly snaps free before the team can pull clear.`;
-  if (outcome.kind === "loot") return `${subject} searches behind a damaged service panel and uncovers a sealed emergency cache.`;
-  if (outcome.kind === "narrow") return `${subject} studies the neglected maintenance markings and finds a diagnostic note that rules out part of the active panel sequence.`;
-  if (outcome.kind === "guard") return `${subject} uses the room's damaged fixtures to establish a rough pocket of cover before the squad touches the active system.`;
-  if (outcome.kind === "stabilize") return `${subject} takes a brief field-care window and stabilizes what can be treated without opening the squad's limited medical supplies.`;
-  if (outcome.kind === "reckless") return `${subject}'s reckless improvisation causes exactly the kind of injury the squad should have expected. Nothing in the room rewards it.`;
-  if (outcome.kind === "reject") return `${subject} attempts the idea, but the room offers no plausible way to make it work. The squad abandons the distraction and returns to the active system.`;
-  if (outcome.category === "perform") return `${subject}'s performance earns a deeply unhelpful burst of canned applause from a damaged ceiling speaker. The squad is no closer to opening the route, but the timing is unsettlingly perfect.`;
-  return `${subject} searches the room and finds signs that ${state.threat} passed through the equipment before the squad arrived. Nothing useful is left behind, but the silence feels less empty than it did a moment ago.`;
+  return NARRATION_DEFAULTS.actionResolution;
 }
 
 function recordSideActionFact(outcome) {
@@ -14677,12 +18051,8 @@ function useLocalMedkit(playerIndex) {
   }
   const events = changedPlayerEvents(before);
   renderStatus();
-  appendTranscript({
-    replace: false,
-    players: events,
-    inventory: { ...state.inventory },
-    statusLog: `${player.name} uses a Medkit.`
-  });
+  displayDeferredActionStatus(events, `${player.name} uses a Medkit.`);
+  renderInventoryActions();
   renderChatControls();
 }
 
@@ -14695,7 +18065,7 @@ function localOpeningPayload() {
     tag: type.label,
     areaName: q.area || "Relay Chamber",
     activeObstacle,
-    story: `The briefing packet collapses to the top of the console as the first chamber wakes under amber fault lights. ${obstacleNarration(activeObstacle)} The mission route paints itself across the map one locked room at a time before the blast door behind the squad seals with a magnetic thud.`,
+    story: NARRATION_DEFAULTS.preQuestion,
     question: localQuestionText(q, type)
   };
 }
@@ -14707,6 +18077,7 @@ function makeLocalOpeningPrompt() {
   const activeObstacle = getActiveObstacle(0, q, type, q.area || "Relay Chamber");
   return [
     `Write only the opening Mission Log scene, ${narrationSentenceRange("3-5", "2-3")} player-facing sentences.`,
+    narrationStyleBible(),
     "Do not include a title, heading, markdown header, operation label, or MISSION LOG line.",
     "Use mission brief, first area, first study concept, and active obstacle.",
     "No answer choices, rules, mechanics, dice, odds, AI/meta, quiz language, or correct answer.",
@@ -14715,6 +18086,7 @@ function makeLocalOpeningPrompt() {
     `Mission type: ${state.missionType}.`,
     `Environment: ${state.environment}.`,
     `Threat: ${state.threat}; ${compactThreatProfileText()}.`,
+    `Operator formation:\n${narrationRosterText()}`,
     `First area: ${q.area || "Relay Chamber"}.`,
     `Challenge type: ${type.label}.`,
     `Encounter presentation: ${challengePresentation(q, 0)}.`,
@@ -14728,30 +18100,38 @@ function makeLocalOpeningPrompt() {
 
 function bossOpeningFallback(qInfo) {
   const final = qInfo.type?.bossPhase === "final";
+  const designation = bossIdentityForNode(state.nodes[state.currentNode]);
   const pressure = final
-    ? `${state.threat} forces itself into the room through every failing system at once`
-    : `${state.threat} hammers the chamber through the walls, lights, and comms`;
+    ? `${designation} forces its presence into the room through every failing system at once`
+    : `${designation} hammers the chamber through the walls, lights, and comms`;
   return `The squad crosses the threshold into ${qInfo.areaName}, and the route seals behind them with a heavy mechanical slam. ${pressure}, turning the space into a live kill zone of alarms, moving shadows, and unstable machinery. The next few seconds belong to the operators at the front of the formation. The only way through is to use the active system before the room tears itself apart.`;
 }
 
 function makeLocalBossOpeningPrompt(qInfo) {
   const final = qInfo.type?.bossPhase === "final";
+  const bossIdentity = state.bossIdentities?.[final ? "final" : "mid"];
   const bossLines = bossPhasePromptLines();
+  const namingCue = bossNamingCueForNode(state.nodes[state.currentNode]);
   return [
     `Write only the opening scene for a major confrontation, ${narrationSentenceRange("4-6", "2-3")} player-facing sentences.`,
+    narrationStyleBible(),
     "No study prompt, answer choices, correct answer, boss/phase/mechanics/dice/odds/quiz/question/option language.",
     "Make the room dangerous, active, and continuous: a fight or desperate containment attempt.",
     "Use the current area name at most once; do not repeat it as a refrain.",
     "Do not rename the arena based on the study topic or active obstacle.",
     ...bossLines,
     final
-      ? `This is the final confrontation. The squad is directly combating or defending against ${state.threat}.`
-      : `This is a major mid-mission breach. ${state.threat} should be visible, audible, or physically pressuring the room.`,
+      ? `This is the final confrontation. The squad is directly combating or defending against ${bossIdentityForNode(state.nodes[state.currentNode])}.`
+      : `This is a major mid-mission breach. ${bossIdentityForNode(state.nodes[state.currentNode])} should be visible, audible, or physically pressuring the room.`,
     `Mission title: ${state.title || "Operation Dead Carrier"}.`,
     `Mission style: ${state.missionType}.`,
     `Environment: ${state.environment}.`,
     `Current area: ${qInfo.areaName}. This is a theme-specific location name for the confrontation.`,
-    `Threat: ${state.threat}; ${compactThreatProfileText()}.`,
+    `Private atmospheric threat context only: ${state.threat}; ${compactThreatProfileText()}. Never use this threat label as the opponent's name or substitute designation.`,
+    `MANDATORY OPPONENT NAME: ${bossIdentityForNode(state.nodes[state.currentNode])}${bossIdentity?.description ? `; ${bossIdentity.description}` : ""}. Use this exact name at least once and use it for every direct reference to the opponent. Never rename it or replace it with a descriptive phrase.`,
+    namingCue,
+    `Operator formation:\n${narrationRosterText()}`,
+    "Show the operators taking class-appropriate positions as the threat enters the battlefield. Do not activate named abilities unless listed as already armed.",
     `Active obstacle to stage: ${qInfo.activeObstacle || "The hostile breach itself blocks the squad."}`,
     `Active study concept to stage physically: ${qInfo.question?.question || "critical route control"}.`
   ].join("\n");
@@ -14816,7 +18196,7 @@ function startPassiveTransmissionFeedback({ type = {}, playerEvents = [] } = {})
 }
 
 function captureDeferredRouteTransition(payload, shouldDefer) {
-  if (!shouldDefer || !payload.advanceRoom || !state.routeTransition) return;
+  if (!shouldDefer || payload.finalMissionSequence || !payload.advanceRoom || !state.routeTransition) return;
   payload.deferredRouteTransition = { ...state.routeTransition };
 }
 
@@ -14992,6 +18372,7 @@ function resolveLocalSubmittedAnswer(answer, options = {}) {
     : context.type.kind === "emergency" && options.scoringPlayer
     ? [{ player: options.scoringPlayer, correct, submittedAt: options.submittedAt || Date.now(), answer }]
     : activePlayers().map((player) => ({ player, correct, submittedAt: options.submittedAt || Date.now(), answer }));
+  if (!readinessQuestion) recordQuestionRemediation(combatEntries);
   const result = readinessQuestion
     ? { narration: "The squad confirms readiness and the critical-contact seal begins to open.", loot: "", lootStatus: "", lootFact: "", incapacitated: "", eventNotes: {}, supportEvents: [], factSeed: "Readiness confirmed; no damage, rewards, items, or abilities resolve in staging" }
     : isCombatNode(context.node)
@@ -15017,18 +18398,7 @@ function resolveLocalSubmittedAnswer(answer, options = {}) {
   const fallbackBlocks = localFallbackBlocks(correct, context, result, nextInfo, fallbackAction);
   startTransmissionFeedback({ correct, context, playerEvents });
 
-  const prompt = makeLocalResolutionPrompt({
-    correct,
-    context,
-    result,
-    currentArea,
-    nextInfo,
-    statusLog: promptStatusLog,
-    playerEvents,
-    actionFacts
-  });
-
-  setAnswerPendingText("Receiving transmission...");
+  setAnswerPendingText(narrationDefaultForPayload({ correct }));
   if (!ENABLE_TRANSITION_NARRATION_GENERATION) {
     const continuationStory = assembleLocalContinuation(fallbackBlocks);
     roomTransitionTraceEmit("MARK", "resolution LM skipped", {
@@ -15057,14 +18427,14 @@ function resolveLocalSubmittedAnswer(answer, options = {}) {
         statusLog,
         combatResolutionGate
       });
-      recordLocalTurnFact({ correct, context, currentArea, nextInfo, playerEvents });
+      recordLocalTurnFact({ correct, context, result, currentArea, nextInfo, playerEvents });
       if (state.currentQuestion >= state.questions.length) renderEnding();
     }, 0);
     return;
   }
-  requestOllama(prompt, { temperature: 0.68, format: "json" })
+  Promise.resolve("")
     .then((text) => {
-      const blocks = parseLocalNarrationBlocks(text, playerEvents, fallbackBlocks, nextInfo);
+      const blocks = parseLocalNarrationBlocks(text, playerEvents, fallbackBlocks, nextInfo, result.encounter?.enemies?.find((enemy) => enemy.boss)?.label);
       return ensureGeneratedHazardImpact(blocks, {
         fallbackBlocks,
         correct,
@@ -15100,7 +18470,7 @@ function resolveLocalSubmittedAnswer(answer, options = {}) {
         statusLog,
         combatResolutionGate
       });
-      recordLocalTurnFact({ correct, context, currentArea, nextInfo, playerEvents });
+      recordLocalTurnFact({ correct, context, result, currentArea, nextInfo, playerEvents });
       if (state.currentQuestion >= state.questions.length) renderEnding();
     })
     .catch(() => {
@@ -15126,7 +18496,7 @@ function resolveLocalSubmittedAnswer(answer, options = {}) {
         statusLog,
         combatResolutionGate
       });
-      recordLocalTurnFact({ correct, context, currentArea, nextInfo, playerEvents });
+      recordLocalTurnFact({ correct, context, result, currentArea, nextInfo, playerEvents });
     });
 }
 
@@ -15184,12 +18554,14 @@ function resolveLocalDeviceTeamAnswers(answers) {
   const before = snapshotPlayers();
   const readinessQuestion = context.node?.type === "readiness";
   if (!readinessQuestion) rememberPreviousDeviceTeamAnswers(entries, context.question, challengeSucceeded);
+  if (!readinessQuestion) recordQuestionRemediation(entries);
   setDeviceAnswerResults(entries);
   const result = readinessQuestion
     ? { narration: "The squad confirms readiness and the critical-contact seal begins to open.", loot: "", lootStatus: "", lootFact: "", incapacitated: "", eventNotes: {}, supportEvents: [], factSeed: "Readiness confirmed; no damage, rewards, items, or abilities resolve in staging" }
     : isCombatNode(context.node)
     ? applyCombatEncounter(entries, context.type, context.operator, context.question)
     : applyDeviceTeamEncounter(entries, context.type);
+  if (!readinessQuestion) advanceSecondChanceMode(entries, result.eventNotes, result);
   if (result.combat && context.type.boss) context.type = { ...context.type, bossFinalStep: Boolean(result.combatCleared) };
   const playerEvents = changedPlayerEvents(before, result.eventNotes);
   const currentArea = isCombatNode(context.node)
@@ -15211,18 +18583,7 @@ function resolveLocalDeviceTeamAnswers(answers) {
   const fallbackBlocks = localFallbackBlocks(challengeSucceeded, context, result, nextInfo, fallbackAction);
   startTransmissionFeedback({ correct: challengeSucceeded, context, playerEvents });
 
-  const prompt = makeLocalResolutionPrompt({
-    correct: challengeSucceeded,
-    context,
-    result,
-    currentArea,
-    nextInfo,
-    statusLog: promptStatusLog,
-    playerEvents,
-    actionFacts
-  });
-
-  setAnswerPendingText("Receiving transmission...");
+  setAnswerPendingText(narrationDefaultForPayload({ correct: challengeSucceeded }));
   if (!ENABLE_TRANSITION_NARRATION_GENERATION) {
     const continuationStory = assembleLocalContinuation(fallbackBlocks);
     roomTransitionTraceEmit("MARK", "team resolution LM skipped", {
@@ -15251,14 +18612,14 @@ function resolveLocalDeviceTeamAnswers(answers) {
         statusLog,
         combatResolutionGate
       });
-      recordLocalTurnFact({ correct: challengeSucceeded, context, currentArea, nextInfo, playerEvents });
+      recordLocalTurnFact({ correct: challengeSucceeded, context, result, currentArea, nextInfo, playerEvents });
       if (state.currentQuestion >= state.questions.length) renderEnding();
     }, 0);
     return true;
   }
-  requestOllama(prompt, { temperature: 0.7, format: "json" })
+  Promise.resolve("")
     .then((text) => {
-      const blocks = parseLocalNarrationBlocks(text, playerEvents, fallbackBlocks, nextInfo);
+      const blocks = parseLocalNarrationBlocks(text, playerEvents, fallbackBlocks, nextInfo, result.encounter?.enemies?.find((enemy) => enemy.boss)?.label);
       return ensureGeneratedHazardImpact(blocks, {
         fallbackBlocks,
         correct: challengeSucceeded,
@@ -15293,7 +18654,7 @@ function resolveLocalDeviceTeamAnswers(answers) {
         statusLog,
         combatResolutionGate
       });
-      recordLocalTurnFact({ correct: challengeSucceeded, context, currentArea, nextInfo, playerEvents });
+      recordLocalTurnFact({ correct: challengeSucceeded, context, result, currentArea, nextInfo, playerEvents });
       if (state.currentQuestion >= state.questions.length) renderEnding();
     })
     .catch(() => {
@@ -15319,12 +18680,14 @@ function resolveLocalDeviceTeamAnswers(answers) {
         statusLog,
         combatResolutionGate
       });
-      recordLocalTurnFact({ correct: challengeSucceeded, context, currentArea, nextInfo, playerEvents });
+      recordLocalTurnFact({ correct: challengeSucceeded, context, result, currentArea, nextInfo, playerEvents });
     });
   return true;
 }
 
 function teamFullyIncapacitated() {
+  if (currentCombatEncounter()?.greenPossessionFailed) return true;
+  if (state.secondChanceEnabled && state.currentQuestion < state.questions.length - 1) return false;
   return state.players.length > 0 && state.players.every((player) => player.incapacitated);
 }
 
@@ -15337,16 +18700,13 @@ function beginLocalTeamFailure({ context, result, currentArea, playerEvents }) {
   setMissionFailureVisual(true);
   playMissionFailureAudio();
   startTeamFailureTransmissionFeedback({ context, playerEvents });
-  setAnswerPendingText("Receiving final transmission...");
+  setAnswerPendingText(NARRATION_DEFAULTS.missionResult);
 
-  const fallback = localTeamFailureFallback(result, currentArea);
   const renderIfCurrent = (story) => {
     if (!state.started || missionRunId !== state.deploymentRunId || !state.teamFailurePending) return;
     renderTeamFailureCard(story);
   };
-  requestOllama(makeLocalTeamFailurePrompt({ context, result, currentArea, playerEvents }), { temperature: 0.86 })
-    .then((text) => renderIfCurrent(cleanLocalNarration(text) || fallback))
-    .catch(() => renderIfCurrent(fallback));
+  renderIfCurrent(NARRATION_DEFAULTS.missionResult);
 }
 
 function startTeamFailureTransmissionFeedback({ context, playerEvents = [] }) {
@@ -15368,6 +18728,7 @@ function makeLocalTeamFailurePrompt({ context, result, currentArea, playerEvents
     : "Every operator is incapacitated.";
   return [
     `Write an elaborate player-facing mission-failure scene in ${narrationSentenceRange("7-10", "4-6")} sentences.`,
+    narrationStyleBible(),
     "The entire team is incapacitated. The mission ends here. Do not revive, rescue, extract, or restore anyone.",
     "Describe the physical collapse of the room, the final helpless moments of the squad, and the facility or threat reclaiming the route.",
     "Vivid action-horror tone, but no new injuries beyond facts.",
@@ -15379,12 +18740,13 @@ function makeLocalTeamFailurePrompt({ context, result, currentArea, playerEvents
     `Challenge context: ${context.type.label}.`,
     `Triggered hazard facts: ${result.factSeed || result.narration}.`,
     `Final operator facts: ${eventFacts}.`,
-    `Recent continuity: ${compactTurnHistoryText()}.`
+    `Recent continuity: ${compactTurnHistoryText()}.`,
+    `Operator roster and class identities:\n${narrationRosterText()}`
   ].join("\n");
 }
 
 function localTeamFailureFallback(result, currentArea) {
-  return `${result.narration} The last functioning lights in ${currentArea} stutter from amber to red as every operator channel drops into ragged static. Across the route display, the squad markers stop moving one by one until the map is nothing but a dead chain of sealed rooms. No one is left standing to reach the next control point. ${state.threat} presses through the facility systems and answers the final open microphone with a low, patient signal. The emergency lamps fail in sequence, leaving ${state.environment} to the dark. The final transmission ends before extraction can be called.`;
+  return NARRATION_DEFAULTS.missionResult;
 }
 
 function renderTeamFailureCard(story) {
@@ -15444,9 +18806,13 @@ function currentLocalContext() {
   return { node, question, type, operator, activeObstacle };
 }
 
-function isLocalAnswerCorrect(answer, question) {
+function isLocalAnswerCorrect(answer, question, player = null) {
   if (question.mode === "fill") return isCloseAnswer(answer, question.answerText);
-  return String(answer).trim().toUpperCase() === question.answerKey;
+  const infectionActive = player
+    ? Boolean(player._spectralInfected)
+    : state.players.some((candidate) => candidate._spectralInfected && !candidate.incapacitated && !candidate._greenPossessed);
+  const displayedQuestion = infectionActive ? questionWithPossessionInfectionChoices(question) || question : question;
+  return String(answer).trim().toUpperCase() === displayedQuestion.answerKey;
 }
 
 function answerRevealText(question) {
@@ -15530,7 +18896,10 @@ function changedPlayerEvents(before, eventNotes = {}) {
     const secondWindSecured = /Second Wind secured/i.test(cause);
     const secondWindFailed = /Second Wind fails/i.test(cause);
     const secondWindChanged = secondWindArmed || secondWindSecured || secondWindFailed;
-    if (!hpChanged && !downChanged && !secondWindChanged) return [];
+    const secondChanceProgress = /Second Chance death roll/i.test(cause);
+    const secondChanceRevived = /Second Chance activates/i.test(cause);
+    const possessionChanged = /possess|breaks free/i.test(cause);
+    if (!hpChanged && !downChanged && !secondWindChanged && !secondChanceProgress && !secondChanceRevived && !possessionChanged) return [];
     const lost = Math.max(0, old.hp - player.hp);
     const gained = Math.max(0, player.hp - old.hp);
     const note = secondWindArmed
@@ -15539,6 +18908,12 @@ function changedPlayerEvents(before, eventNotes = {}) {
       ? "Second Wind secured, 1 HP"
       : secondWindFailed
       ? "Second Wind failed, incapacitated"
+      : secondChanceProgress
+      ? `Second Chance ${Math.max(0, Number(player.secondChanceCorrectResponses) || 0)}/2`
+      : secondChanceRevived
+      ? `Second Chance revived, ${player.hp} HP and braced`
+      : possessionChanged
+      ? player._greenPossessed ? `possessed, escape ${Math.max(0, Number(player.greenPossessionCorrectStreak) || 0)}/2` : "possession broken"
       : player.incapacitated && !old.incapacitated
       ? "incapacitated"
       : lost ? `${lost} HP lost`
@@ -15549,7 +18924,7 @@ function changedPlayerEvents(before, eventNotes = {}) {
       hp: player.hp,
       status: [],
       incapacitated: player.incapacitated,
-      effect: secondWindArmed || secondWindSecured || gained ? "heal" : "hit",
+      effect: secondWindArmed || secondWindSecured || secondChanceProgress || secondChanceRevived || gained ? "heal" : "hit",
       amount: secondWindArmed || secondWindSecured ? 1 : lost || gained || 0,
       note,
       cause
@@ -15658,6 +19033,9 @@ function projectedProgressAfterRound() {
     const indexes = combatQuestionIndexes(node);
     const lastQuestion = indexes[indexes.length - 1] ?? state.currentQuestion;
     if (encounter?.cleared) {
+      delete node.activeReviewQuestionIndex;
+      delete node.reviewProgressionKey;
+      delete node.reviewProgressionQuestion;
       if (node.type === "boss" && node.bossPhase === "final") {
         return { nextQuestion: state.questions.length, nextNode: state.nodes.length, stayInRoom: false, missionComplete: true };
       }
@@ -15668,8 +19046,48 @@ function projectedProgressAfterRound() {
         missionComplete: false
       };
     }
+    if (node.type === "combat") {
+      const progressionKey = `${encounter?.round || 0}:${state.currentQuestion}`;
+      if (node.reviewProgressionKey === progressionKey && Number.isInteger(node.reviewProgressionQuestion)) {
+        return {
+          nextQuestion: node.reviewProgressionQuestion,
+          nextNode: state.currentNode,
+          stayInRoom: true,
+          missionComplete: false
+        };
+      }
+      const currentWasReview = Number.isInteger(node.activeReviewQuestionIndex)
+        && node.activeReviewQuestionIndex === state.currentQuestion;
+      const currentPosition = indexes.indexOf(state.currentQuestion);
+      if (!currentWasReview && currentPosition >= 0 && currentPosition < indexes.length - 1) {
+        delete node.activeReviewQuestionIndex;
+        return {
+          nextQuestion: indexes[currentPosition + 1],
+          nextNode: state.currentNode,
+          stayInRoom: true,
+          missionComplete: false
+        };
+      }
+      const reviewQuestion = selectCombatRemediationQuestion(state.currentQuestion);
+      const fallbackPosition = currentPosition >= 0 ? currentPosition : Math.max(0, indexes.indexOf(node.activeReviewQuestionIndex));
+      const nextCombatQuestion = reviewQuestion ?? indexes[(fallbackPosition + 1) % indexes.length] ?? state.currentQuestion;
+      node.baseQuestionCycleCompleted = true;
+      node.activeReviewQuestionIndex = reviewQuestion ?? null;
+      node.reviewProgressionKey = progressionKey;
+      node.reviewProgressionQuestion = nextCombatQuestion;
+      return {
+        nextQuestion: nextCombatQuestion,
+        nextNode: state.currentNode,
+        stayInRoom: true,
+        missionComplete: false
+      };
+    }
     const currentPosition = Math.max(0, indexes.indexOf(state.currentQuestion));
-    const nextCombatQuestion = indexes[(currentPosition + 1) % indexes.length] ?? state.currentQuestion;
+    const reserveQuestion = currentPosition === indexes.length - 1
+      ? appendFinalBossReserveQuestion(node)
+      : null;
+    const activeIndexes = reserveQuestion == null ? indexes : combatQuestionIndexes(node);
+    const nextCombatQuestion = reserveQuestion ?? activeIndexes[(currentPosition + 1) % activeIndexes.length] ?? state.currentQuestion;
     return {
       nextQuestion: nextCombatQuestion,
       nextNode: state.currentNode,
@@ -15691,7 +19109,7 @@ function prepareBossEntryFromReadiness(bossNodeIndex) {
   if (state.nodes[bossNodeIndex]?.type !== "boss") return false;
   state.bossReadyPending = false;
   state.bossReadyChecks.add(bossNodeIndex);
-  state.combatMountBlocked = false;
+  state.combatMountBlocked = state.bossPreCombatMountHoldNode === bossNodeIndex;
   state.combatStageEnteredNodes.delete(bossNodeIndex);
   state.retiredCombatNodes.delete(bossNodeIndex);
   resetBossIntroVideo();
@@ -15711,10 +19129,29 @@ function recoveryAmounts(tier = 1) {
   };
 }
 
+/** Revives every downed operator on aid-room resolution at 75% maximum HP. */
+function reviveAidRoomOperators() {
+  return state.players.filter((player) => player.incapacitated || Number(player.hp) <= 0).map((player) => {
+    const maxHp = Math.max(1, Number(player.maxHp) || 10);
+    player.hp = Math.max(1, Math.ceil(maxHp * 0.75));
+    player.incapacitated = false;
+    player.secondChanceCorrectResponses = 0;
+    delete player._secondChanceBracedReady;
+    delete player._possessionReleasedBracedReady;
+    return player;
+  });
+}
+
+function aidRoomReviveText(players = []) {
+  if (!players.length) return "";
+  const names = players.map((player) => player.name).join(", ");
+  return `${names} ${players.length === 1 ? "returns" : "return"} at 75% maximum health.`;
+}
+
 function recoveryQuestionText(node) {
   const { hp, medkits, ems } = recoveryAmounts(node?.tier);
-  const revive = state.players.some((player) => player.incapacitated)
-    ? "\n\nOne incapacitated player will be revived for free."
+  const revive = state.players.some((player) => player.incapacitated || Number(player.hp) <= 0)
+    ? "\n\nAll incapacitated operators will recover to 75% maximum health."
     : "";
   return `Choose one recovery option:\n\nA. Everyone active recovers ${hp} HP\nB. Gain ${medkits} Medkits\nC. Gain ${ems} EMS Device${ems > 1 ? "s" : ""}${revive}`;
 }
@@ -15784,40 +19221,24 @@ function resolveLocalRecovery(answer) {
     : nextQuestion?.area || roomName(nextNode || { type: "challenge" }, nextNodeIndex);
   state.resolved = true;
   const before = snapshotPlayers();
+  const activeBeforeRecovery = new Set(before.filter((player) => !player.incapacitated && Number(player.hp) > 0).map((player) => normalize(player.name)));
   const choice = String(answer).trim().toUpperCase();
   const { hp, medkits, ems } = recoveryAmounts(node.tier);
-  const down = state.players.find((player) => player.incapacitated);
-  if (down) {
-    down.incapacitated = false;
-    down.hp = 3;
-  }
 
   if (choice === "A") {
     state.players.forEach((player) => {
-      if (!player.incapacitated) healPlayer(player, hp);
+      if (activeBeforeRecovery.has(normalize(player.name))) healPlayer(player, hp);
     });
   } else if (choice === "B") {
     state.inventory.medkits += medkits;
   } else {
     state.inventory.ems += ems;
   }
+  const revivedPlayers = reviveAidRoomOperators();
 
   const playerEvents = changedPlayerEvents(before);
   const choiceText = choice === "A" ? `Everyone active recovers ${hp} HP` : choice === "B" ? `Gain ${medkits} Medkits` : `Gain ${ems} EMS Device${ems > 1 ? "s" : ""}`;
-  const reviveText = down ? `${down.name} is revived to 3 HP.` : "";
-  const prompt = [
-    "Act as the DM for a fast-paced survival study adventure.",
-    `Write ${narrationSentenceRange("5-10", "2-4")} sentences only.`,
-    "Describe the recovery choice, any free revive, then transition into the next area.",
-    "Do not include the multiple-choice question.",
-    `Keep the recovery window tense with one brief sign that ${state.threat} is still close.`,
-    `Recovery area: ${recoveryAreaName(node)}.`,
-    node.afterBoss ? "Aftermath requirement: show the physical aftermath of the confrontation they just survived, then make the recovery feel like a hard-won pause that pushes the mission forward." : "Aftermath requirement: this is a standard recovery window.",
-    `Choice: ${choiceText}. ${reviveText}`,
-    `Next area: ${nextAreaName}.`,
-    `Next question concept: ${nextQuestion?.question || "final route"}`
-  ].join("\n");
-
+  const reviveText = aidRoomReviveText(revivedPlayers);
   const finishRecovery = (text) => {
     stopTransmissionFeedback();
     const summary = [choiceText, reviveText].filter(Boolean).join(" ");
@@ -15831,14 +19252,14 @@ function resolveLocalRecovery(answer) {
     });
   };
 
-  setAnswerPendingText("Receiving recovery transmission...");
+  setAnswerPendingText(NARRATION_DEFAULTS.roomTransition);
   startPassiveTransmissionFeedback({ type: { label: "Recovery Event" }, playerEvents });
   if (!ENABLE_TRANSITION_NARRATION_GENERATION) {
     roomTransitionTraceEmit("MARK", "recovery departure LM skipped", { nextAreaName });
     window.setTimeout(() => finishRecovery(""), 0);
     return;
   }
-  requestOllama(prompt, { temperature: 0.72 })
+  Promise.resolve(NARRATION_DEFAULTS.roomTransition)
     .then((text) => {
       finishRecovery(cleanLocalNarration(text));
     })
@@ -16103,13 +19524,50 @@ function currentBossProgress() {
   };
 }
 
+function crossedBossPhasePrompt(node, hpBefore, hpAfter, maxHp) {
+  if (node?.type !== "boss" || hpAfter <= 0 || !maxHp) return "";
+  // Compare the snapshots on both sides of the player attack instead of
+  // polling boss health on a timer. This emits each threshold at the exact
+  // combat event that crossed it and avoids early visual phase changes.
+  const beforePercent = Math.max(0, Math.min(100, hpBefore / maxHp * 100));
+  const afterPercent = Math.max(0, Math.min(100, hpAfter / maxHp * 100));
+  const thresholds = bossUsesRedAssaultBehavior(node)
+    ? node.bossPhase === "final" ? [60, 30] : [50]
+    : bossUsesGreenPossessionBehavior(node)
+      ? node.bossPhase === "final" ? [60, 40] : [50]
+      : bossUsesYellowBallisticsBehavior(node)
+        ? node.bossPhase === "final" ? [75, 30] : [50]
+      : [];
+  const crossed = thresholds.filter((threshold) => beforePercent > threshold && afterPercent <= threshold);
+  if (!crossed.length) return "";
+  if (bossUsesRedAssaultBehavior(node) && node.bossPhase === "mid" && crossed.includes(50)) {
+    return "BossPhase 50% - Feral Rupture";
+  }
+  if (bossUsesGreenPossessionBehavior(node) && node.bossPhase === "mid" && crossed.includes(50)) {
+    return `BossPhase 50% — ${GREEN_MID_POSSESSION_PHASE_NAME}`;
+  }
+  if (bossUsesGreenPossessionBehavior(node) && node.bossPhase === "final") {
+    const threshold = Math.min(...crossed);
+    const phaseName = threshold === 40 ? GREEN_FINAL_MIND_ERASER_PHASE_NAME : GREEN_FINAL_SUMMON_PHASE_NAME;
+    return `BossPhase ${threshold}% — ${phaseName}`;
+  }
+  if (bossUsesYellowBallisticsBehavior(node) && node.bossPhase === "final") {
+    const threshold = Math.min(...crossed);
+    const phaseName = threshold === 30 ? YELLOW_FINAL_RAIN_PHASE_NAME : YELLOW_FINAL_OPFOR_PHASE_NAME;
+    return `BossPhase ${threshold}% — ${phaseName}`;
+  }
+  return `BossPhase ${Math.min(...crossed)}%`;
+}
+
 function bossPhasePromptLines(progress = currentBossProgress()) {
   if (!progress) return [];
   const finalEncounter = progress.phase === "final";
   const finalStep = progress.finalStep;
   const arena = bossAreaName(progress.node);
+  const bossIdentity = state.bossIdentities?.[finalEncounter ? "final" : "mid"];
   const planned = bossPhasePlanForProgress(progress);
   const planLines = planned ? [
+    `Planned opponent designation: ${planned.plan.enemy}. Use this concise designation naturally when useful, while preserving the persistent threat identity.`,
     `Planned phase name: ${planned.phase.name}.`,
     `Planned enemy action: ${planned.phase.enemyAction}.`,
     `Planned arena pressure: ${planned.phase.environmentPressure}.`,
@@ -16122,6 +19580,8 @@ function bossPhasePromptLines(progress = currentBossProgress()) {
   ] : [];
   return [
     `Boss continuity: this is phase ${progress.step} of ${progress.total} inside ${arena}; do not introduce a new room or rename the arena.`,
+    `Boss identity: ${bossIdentityForNode(progress.node)}${bossIdentity?.description ? `; ${bossIdentity.description}` : ""}. Use this identity consistently and do not rename the opponent.`,
+    bossNamingCueForNode(progress.node),
     finalEncounter
       ? `Enemy continuity: this is the mission's persistent threat made direct; the squad is actively fighting, blocking, containing, outrunning, or defending against ${state.threat}.`
       : `Enemy continuity: this is one major threat controlling the room; keep it as the same opponent or hazard across all phases of this encounter.`,
@@ -16159,7 +19619,7 @@ function preloadBossPhasePlan(payload) {
     label: "Boss phase plan sent",
     detail: `${bossAreaName(node)} / ${node.bossPhase || "mid"} / ${node.questionIndexes?.length || 0} phases`
   });
-  requestOllama(prompt, { temperature: 0.55, format: "json" })
+  Promise.resolve(JSON.stringify(fallbackBossPhasePlan(node, payload.areaName || bossAreaName(node))))
     .then((text) => {
       const plan = parseBossPhasePlan(text, node, payload.areaName || bossAreaName(node));
       state.bossPhasePlans[key] = plan;
@@ -16197,6 +19657,7 @@ function makeBossPhasePlanPrompt(node, nodeIndex, arenaName) {
   const encounterLabel = node.bossPhase === "final" ? "final boss" : "mid-boss";
   return [
     "Return valid JSON only. No markdown. No commentary. No analysis.",
+    narrationStyleBible(),
     `Create one hidden ${encounterLabel} phase plan for a classroom survival-study adventure.`,
     `Hard requirements: phases must contain exactly ${total} objects.`,
     `Exactly ${windUps} phase${windUps === 1 ? "" : "s"} must have windUp.enabled true.`,
@@ -16207,10 +19668,14 @@ function makeBossPhasePlanPrompt(node, nodeIndex, arenaName) {
     "Do not rename the arena in any phase.",
     "Do not use classroom skill names, tabletop terms, DCs, saves, rolls, checks, advantage, disadvantage, stacks, ability scores, spell slots, HP, hit points, question, answer, option, or quiz.",
     "studyActionStyle must describe only physical in-world actions, tools, repairs, defenses, attacks, containment moves, survival maneuvers, or diagnostics.",
+    "Build phases around changing range, cover, visibility, formation pressure, enemy adaptation, and class counterplay—not five variations of operating a console.",
     `Mission style: ${state.missionType}.`,
     `Environment: ${state.environment}.`,
     `Arena: ${arenaName}.`,
+    `Fixed opponent designation: ${bossIdentityForNode(node)}. Use this exact designation in the enemy field; do not invent or rename the boss.`,
     `Persistent threat: ${state.threat}; ${compactThreatProfileText()}.`,
+    bossNamingCueForNode(node),
+    `Operator roster, private planning context:\n${narrationRosterText()}`,
     `Encounter type: ${encounterLabel}.`,
     "JSON shape exactly:",
     "{\"arena\":\"\",\"enemy\":\"\",\"phases\":[{\"name\":\"\",\"enemyAction\":\"\",\"environmentPressure\":\"\",\"studyActionStyle\":\"\",\"successTone\":\"\",\"failureTone\":\"\",\"windUp\":{\"enabled\":false,\"telegraph\":\"\",\"preventionWindow\":\"\",\"emsResult\":\"\",\"actionResultStyle\":\"\",\"braceResult\":\"\"}}]}"
@@ -16245,7 +19710,7 @@ function normalizeBossPhasePlan(parsed, node, fallbackArena) {
   enforceBossWindUps(phases, desiredWindUps, node.bossPhase === "final");
   return {
     arena: cleanBossAreaName(parsed?.arena) || fallbackArena || bossAreaName(node),
-    enemy: cleanBriefingField(parsed?.enemy) || state.threat,
+    enemy: bossIdentityForNode(node),
     phases
   };
 }
@@ -16296,7 +19761,7 @@ function enforceBossWindUps(phases, desired, finalRequired) {
 }
 
 function fallbackBossPhasePlan(node, arena) {
-  return normalizeBossPhasePlan({ arena, enemy: state.threat, phases: [] }, node, arena);
+  return normalizeBossPhasePlan({ arena, enemy: bossIdentityForNode(node), phases: [] }, node, arena);
 }
 
 function fallbackBossPhase(index, total, node) {
@@ -16411,25 +19876,11 @@ function challengePresentation(question, index = 0) {
 }
 
 function localFallbackBlocks(correct, context, result, nextInfo, actionSeed) {
-  const knowledge = correct
-    ? `The diagnostic strip steadies around ${answerRevealText(context.question)}, confirming the repair path.`
-    : `Fault lights flare across the panel. The diagnostic strip identifies ${answerRevealText(context.question)} as the required correction.`;
-  const obstacleClose = closeObstacleFallback(context.activeObstacle, correct);
-  const transition = nextInfo.sameBossRoom
-    ? `The squad stays inside ${nextInfo.areaName} as alarms climb and the same enemy pressure shifts to a new angle.`
-    : "The squad clears the damaged threshold and follows the marked route deeper into the facility.";
+  const finalMissionEnd = /final mission result/i.test(String(nextInfo?.tag || nextInfo?.type?.label || ""));
   return {
-    impact: `${actionSeed} ${knowledge} ${obstacleClose} ${result.narration} ${result.loot || ""}`.trim(),
-    transition,
-    arrival: nextInfo.readyCheck
-      ? `The route opens onto ${nextInfo.areaName}, but the threshold beyond it is already shaking under hostile pressure. The squad has a few seconds to regroup before committing to the breach.`
-      : nextInfo.isRecovery
-      ? `The team reaches ${nextInfo.areaName}, where a brief recovery window opens behind a sealed bulkhead.`
-      : nextInfo.type?.boss
-      ? bossArrivalStaging(nextInfo)
-      : nextInfo.question
-      ? `The team reaches ${nextInfo.areaName}. ${lockedOperatorFallback(nextInfo)}${stageObstacleFallback(nextInfo.activeObstacle) || fallbackArrivalStaging(nextInfo)}`
-      : "The final lock opens, and the route to extraction shudders into view."
+    impact: NARRATION_DEFAULTS.afterQuestion,
+    transition: nextInfo.sameBossRoom ? "" : finalMissionEnd ? NARRATION_DEFAULTS.missionEnd : NARRATION_DEFAULTS.roomTransition,
+    arrival: ""
   };
 }
 
@@ -16686,7 +20137,214 @@ function conceptDeviceName(questionText) {
   return "damaged field assembly";
 }
 
+function narrationStyleBible() {
+  return [
+    "Voice: dark tactical cyberpunk horror, immediate and physical, written in clear third-person present tense.",
+    "Favor concrete motion, weapon handling, failing light, damaged architecture, hostile sound, and battlefield position over abstract mood.",
+    "Operators are trained specialists. Show competence under pressure; failures come from bad information, enemy adaptation, timing, or overwhelming conditions, not slapstick incompetence.",
+    "Refer to every operator by name or with singular they/them pronouns. Never infer or assign gender, and never use he, him, his, she, her, hers, man, or woman for an operator.",
+    "Use operator names and class tools when facts support them. Never invent an ability activation, injury, enemy, or item.",
+    "Keep sentences lean and varied. Avoid purple prose, heroic speeches, generic route language, and repeated references to panels, terminals, systems, or the squad moving deeper."
+  ].join("\n");
+}
+
+function classNarrationDoctrine(classId) {
+  const doctrines = {
+    soldier: "Soldier / Overdrive Rifle: disciplined firing lanes, target acquisition, recoil, suppression, and decisive shots.",
+    medic: "Medic / Surgical Carbine: controlled bursts paired with combat triage, injectors, trauma seals, revival, and protected extraction.",
+    scout: "Scout / Spectrum Longrifle: spectral targeting, rapid callouts, exposed weak points, threat prediction, and precision fire.",
+    enforcer: "Enforcer / Ballistic Bulwark: weaponized shield work, front-line control, intercepted attacks, impact bracing, and refusal to yield ground.",
+    engineer: "Engineer / Arc Driver: charged projectiles, bubbles, field repairs, signal disruption, and violent electrical interference.",
+    tactician: "Tactician / Adaptive Repeater: controlled fire paired with formation reads, concise commands, coordinated attacks, and guarded lanes."
+  };
+  return doctrines[String(classId || "").toLowerCase()] || "Operator: trained field specialist using only the equipment and actions listed in the facts.";
+}
+
+function narrationRosterText(players = state.players) {
+  return players.map((player) => {
+    const definition = combatSystem.classDefinition?.(player.classId) || {};
+    const items = (player.items || []).map((item) => item?.name).filter(Boolean);
+    return `${player.name}: ${definition.label || "Operator"}, ${definition.gear || "field gear"}${items.length ? `, carrying ${items.join(" and ")}` : ""}; ${classNarrationDoctrine(player.classId)}`;
+  }).join("\n");
+}
+
+function combatNarrationEventPacket(result = {}) {
+  const lines = [];
+  asArray(result.combatSupportEvents).forEach((event) => {
+    lines.push(`SUPPORT — ${event.source} uses ${event.label || event.kind}${event.target ? ` on ${event.target}` : ""}${event.amount ? `; effect magnitude ${event.amount}` : ""}.`);
+  });
+  asArray(result.attackResults).forEach((attack) => {
+    const definition = combatSystem.classDefinition?.(attack.player?.classId) || {};
+    lines.push(`OPERATOR ATTACK — ${attack.player?.name || "Operator"}, ${definition.label || "Operator"}, attacks ${attack.targetLabel || "the hostile line"} with ${definition.gear || "field weapon"}; ${attack.damage || 0} damage${attack.empowered ? "; empowered action" : ""}${attack.defeated?.length ? `; defeats ${attack.defeated.map((enemy) => enemy.label).join(", ")}` : ""}.`);
+  });
+  if (result.lockedSuppression) lines.push("SUPPRESSION — the locked operator's area attack prevents every hostile activation this exchange.");
+  asArray(result.enemyActions).forEach((action) => {
+    const enemy = action.enemy?.label || "Hostile";
+    if (action.disrupted) {
+      lines.push(`HOSTILE ACTION — ${enemy} attempts to activate but is disrupted before the attack lands.`);
+      return;
+    }
+    if (action.aoe || action.targets?.length > 1) lines.push(`HOSTILE TELEGRAPH — ${enemy} commits to an announced area attack against the formation.`);
+    asArray(action.targets).forEach((hit) => {
+      const defenses = [
+        hit.braced ? `braced; ${Math.round((hit.braceMitigation || 0) * 100)} percent mitigated` : "",
+        hit.blocked ? "attack blocked" : "",
+        hit.bubbleBlocked ? "protection bubble absorbs the hit" : "",
+        hit.redirected ? `fatal impact redirected to ${hit.redirected.target?.name || "the Enforcer"}` : "",
+        hit.kickStarted ? `${hit.kickStarted.source} triggers Kick Start Your Heart` : ""
+      ].filter(Boolean).join("; ");
+      lines.push(`HOSTILE IMPACT — ${enemy} attacks ${hit.target?.name || "an operator"}; ${hit.damage || 0} damage${defenses ? `; ${defenses}` : ""}.`);
+    });
+  });
+  asArray(result.postEnemySupportEvents).forEach((event) => {
+    lines.push(`AFTERMATH — ${event.source} resolves ${event.label || event.kind}${event.target ? ` on ${event.target}` : ""}${event.amount ? `; effect magnitude ${event.amount}` : ""}.`);
+  });
+  return lines.join("\n") || "No combat event packet was recorded; use only the supplied consequence facts.";
+}
+
+function combatNarrationFocus(result = {}, playerEvents = []) {
+  if (result.narrationFocus) return result.narrationFocus;
+  const attacks = asArray(result.attackResults).filter((attack) => attack?.player);
+  const killingAttacks = attacks.filter((attack) => asArray(attack.defeated).length);
+  const damagingAttacks = attacks.filter((attack) => Number(attack.damage) > 0);
+  const selectedAttack = killingAttacks.length
+    ? killingAttacks[0]
+    : damagingAttacks.length
+    ? damagingAttacks[Math.floor(state.rng() * damagingAttacks.length)]
+    : null;
+  const supportEvents = [...asArray(result.combatSupportEvents), ...asArray(result.postEnemySupportEvents)];
+  const ultimateEvents = supportEvents.filter((event) => event?.kind === "ultimate");
+  const ultimateKeys = new Set(ultimateEvents.map((event) => `${normalize(event.source)}:${normalize(event.label)}`));
+  const abilityEvents = supportEvents.filter((event) => event?.kind !== "ultimate" && !ultimateKeys.has(`${normalize(event.source)}:${normalize(event.label)}`));
+  const hostileHits = asArray(result.enemyActions).flatMap((action) => asArray(action.targets).map((hit) => ({ action, hit })));
+  hostileHits.forEach(({ hit }) => {
+    if (!hit.kickStarted) return;
+    ultimateEvents.push({ kind: "ultimate", source: hit.kickStarted.source, target: hit.target?.name || "downed operator", amount: 0, label: "Kick Start Your Heart" });
+  });
+  const downedByHit = hostileHits
+    .filter(({ hit }) => hit.downed)
+    .map(({ action, hit }) => ({
+      name: hit.target?.name || "operator",
+      source: action.enemy?.label || "hostile",
+      damage: Math.max(0, Number(hit.damage) || 0),
+      immediatelyRevived: Boolean(hit.kickStarted),
+      reviveSource: hit.kickStarted?.source || ""
+    }));
+  const recordedDown = asArray(result.roundStartPlayers).flatMap((before) => {
+    const after = state.players.find((player) => sameName(player.name, before.name));
+    if (!after?.incapacitated || before.incapacitated || downedByHit.some((event) => sameName(event.name, after.name))) return [];
+    return [{ name: after.name, source: "the resolved combat consequence", damage: Math.max(0, Number(before.hp) - Number(after.hp)), immediatelyRevived: false, reviveSource: "" }];
+  });
+  const eventDown = asArray(playerEvents).flatMap((event) => {
+    if (!event?.incapacitated || downedByHit.some((downed) => sameName(downed.name, event.name)) || recordedDown.some((downed) => sameName(downed.name, event.name))) return [];
+    return [{ name: event.name, source: event.cause || "the resolved combat consequence", damage: Math.max(0, Number(event.amount) || 0), immediatelyRevived: false, reviveSource: "" }];
+  });
+  const downedEvents = [...downedByHit, ...recordedDown, ...eventDown];
+  const damageByOperator = new Map();
+  hostileHits.forEach(({ action, hit }) => {
+    const name = hit.target?.name;
+    if (!name) return;
+    const current = damageByOperator.get(normalize(name)) || { name, damage: 0, hits: [] };
+    current.damage += Math.max(0, Number(hit.damage) || 0);
+    current.hits.push({ action, hit });
+    damageByOperator.set(normalize(name), current);
+  });
+  const priorityTarget = [...damageByOperator.values()].sort((a, b) => b.damage - a.damage)[0] || null;
+  result.narrationFocus = { selectedAttack, killingAttacks, ultimateEvents, abilityEvents, downedEvents, priorityTarget };
+  return result.narrationFocus;
+}
+
+function combatNarrationPriorityPacket(result = {}, playerEvents = []) {
+  const focus = combatNarrationFocus(result, playerEvents);
+  const lines = [];
+  focus.ultimateEvents.forEach((event) => {
+    lines.push(`PRIORITY 1 - ULTIMATE: ${event.source} activates ${event.label}; target ${event.target || event.source}; canonical effect ${event.kind}${event.amount ? ` ${event.amount}` : ""}. Give this a signature, unmistakable beat.`);
+  });
+  focus.abilityEvents.forEach((event) => {
+    lines.push(`PRIORITY 2 - ARMED ABILITY: ${event.source} activates ${event.label || event.kind}${event.target ? ` on ${event.target}` : ""}${event.amount ? `; magnitude ${event.amount}` : ""}. Narrate the named ability and its visible effect.`);
+  });
+  focus.downedEvents.forEach((event) => {
+    lines.push(`PRIORITY 3 - OPERATOR DOWNED: ${event.source} incapacitates ${event.name}${event.damage ? ` after ${event.damage} damage` : ""}. Show the exact physical moment ${event.name} goes down, but do not imply death.${event.immediatelyRevived ? ` ${event.reviveSource} immediately triggers Kick Start Your Heart afterward; narrate the collapse before the revival.` : ""}`);
+  });
+  focus.killingAttacks.forEach((attack) => {
+    const bossKill = asArray(attack.defeated).some((enemy) => enemy?.boss);
+    const activeSquad = activePlayers().map((player) => player.name).join(", ") || "the active squad";
+    lines.push(bossKill
+      ? `PRIORITY 4 - BOSS KILLING BLOW: the active squad (${activeSquad}) works together to create the final opening; ${attack.player.name} lands the decisive blow on ${attack.defeated.map((enemy) => enemy.label).join(", ")} with ${combatSystem.classDefinition?.(attack.player.classId)?.gear || "their weapon"}. Name ${attack.player.name} as the operator who finishes it and make the defeat vivid, physical, and final.`
+      : `PRIORITY 4 - KILLING BLOW: ${attack.player.name} dispatches ${attack.defeated.map((enemy) => enemy.label).join(", ")} with ${combatSystem.classDefinition?.(attack.player.classId)?.gear || "their weapon"}. Give the kill a vivid, specific physical finish.`);
+  });
+  if (!focus.killingAttacks.length && focus.selectedAttack) {
+    const attack = focus.selectedAttack;
+    lines.push(`PRIORITY 4 - OPERATOR ATTACK FOCUS: narrate ${attack.player.name}, the randomly selected damaging operator, attacking ${attack.targetLabel} with ${combatSystem.classDefinition?.(attack.player.classId)?.gear || "their weapon"}. Other routine operator attacks may remain off-camera.`);
+  }
+  if (focus.priorityTarget) {
+    const bossActions = focus.priorityTarget.hits.filter(({ action }) => action.enemy?.boss);
+    const selectedHits = bossActions.length ? bossActions : focus.priorityTarget.hits;
+    lines.push(`PRIORITY 5 - HOSTILE RETALIATION: focus the ${bossActions.length ? "boss's" : "hostile"} attack on ${focus.priorityTarget.name}, who takes the most total damage this exchange. Canonical impacts: ${selectedHits.map(({ action, hit }) => `${action.enemy?.label || "hostile"} deals ${hit.damage || 0}${hit.braced ? " after bracing" : ""}${hit.blocked ? " (blocked)" : ""}${hit.bubbleBlocked ? " (absorbed by bubble)" : ""}${hit.downed ? " (operator downed)" : ""}`).join("; ")}.`);
+  }
+  return lines.join("\n") || "No operator dealt damage, no ability was armed, and no hostile impact landed; narrate only the canonical disruption or movement facts.";
+}
+
+function makeLocalCombatResolutionPrompt({ correct, context, result, currentArea, nextInfo, statusLog, playerEvents = [], actionFacts }) {
+  const encounter = result.encounter || currentCombatEncounter();
+  const activeBoss = encounter?.enemies?.find((enemy) => enemy.boss);
+  const activeEnemies = encounter?.enemies?.filter((enemy) => !enemy.defeated).map((enemy) => `${enemy.label}: ${enemy.hp}/${enemy.maxHp} integrity`).join("; ") || "none";
+  const bossRule = context.type.boss ? bossPhasePromptLines({
+    node: state.nodes[state.currentNode], type: context.type, step: context.type.bossStep || 1,
+    total: context.type.bossTotal || 1, finalStep: Boolean(context.type.bossFinalStep), phase: context.type.bossPhase || "mid"
+  }).join("\n") : "";
+  const sameFight = Boolean(nextInfo.sameBossRoom || result.combat && !result.combatCleared);
+  const condensedElevenLabsCombat = sameFight && state.ttsProvider === "elevenlabs" && state.ttsElevenLabsCondensedCombat;
+  return [
+    "FINAL OUTPUT ONLY. Return valid JSON with exactly these string fields: impact, transition, arrival. No markdown or commentary.",
+    narrationStyleBible(),
+    activeBoss
+      ? `MANDATORY BOSS DESIGNATION: the active opponent is ${activeBoss.label}. Use the exact name ${activeBoss.label} at least once in impact. Do not call this opponent ${state.threat}, the persistent threat, the haunting, the entity, or another substitute instead.`
+      : "",
+    `Write the resolved exchange as tactical combat, not a repair scene or generic obstacle. Follow the narration priority chart; the full event packet remains canonical context but routine low-priority actions do not all need prose.`,
+    condensedElevenLabsCombat
+      ? "impact: 1-2 concise sentences covering only the highest-priority canonical events. Prefer an ultimate or armed ability, a downed operator or killing blow, and the most consequential hostile impact in that order; omit routine actions."
+      : `impact: ${narrationSentenceRange("4-7", "3-5")} sentences. Keep this a quick mid-combat beat centered on the prioritized operator, armed abilities, and the most consequential hostile impact.`,
+    condensedElevenLabsCombat
+      ? "transition: an empty string. arrival: an empty string. The complete mid-round narration must remain one or two sentences total."
+      : sameFight
+      ? "transition: 1 sentence that changes formation, cover, range, visibility, or enemy posture inside the same battlefield. Do not move to another room."
+      : "transition: 1-2 sentences showing the formation physically breaking contact and moving out of the cleared battlefield.",
+    condensedElevenLabsCombat
+      ? ""
+      : sameFight
+      ? "arrival: 1-2 sentences establishing the enemy's next posture and immediate pressure without resolving the next exchange."
+      : nextInfo.readyCheck
+      ? "arrival: 2-3 sentences staging the sealed threshold of the coming major confrontation; end with the operators needing to confirm readiness."
+      : nextInfo.isRecovery
+      ? "arrival: 2-3 sentences establishing a hard-won but unsafe recovery position."
+      : "arrival: 2-3 sentences establishing the next physical space and its unresolved danger without defaulting to another terminal or control panel.",
+    "Do not report damage numbers, percentages, HP, game turns, answers, questions, choices, rolls, or mechanics in the output.",
+    "Do not make successful operators miss, failed operators land clean attacks, blocked hits cause injury, or defeated enemies remain active.",
+    "Name every armed ability exactly when activated. Ultimates receive the strongest ability beat and must never be reduced to a background mention.",
+    "Every operator incapacitated during this exchange must be shown going down. Incapacitated means unable to continue fighting, not dead; never describe an operator as killed unless an explicit canonical fact says so.",
+    "Give narrative attention to the operators who act, defend, heal, disrupt, revive, or take damage. Do not force every roster member into every exchange.",
+    enemyNarrationNamingRule(),
+    bossRule,
+    `Battlefield: ${currentArea}.`,
+    `Encounter: ${context.type.boss ? `${context.type.bossPhase || "mid"} boss` : "normal hostile contact"}; combat round ${encounter?.round || 1}.`,
+    `Outcome: ${result.combatCleared ? "hostile contact cleared" : "hostile contact remains active"}.`,
+    `Active hostiles after exchange, private: ${activeEnemies}.`,
+    `Operator roster and combat language:\n${narrationRosterText()}`,
+    `Narration priority chart:\n${combatNarrationPriorityPacket(result, playerEvents)}`,
+    `Canonical event order:\n${combatNarrationEventPacket(result)}`,
+    `Study-action translation, private:\n${compactActionTranslationText(context, actionFacts)}`,
+    `Consequence facts, private: ${result.factSeed || "none"}.`,
+    statusLog ? `Status facts, private: ${statusLog}` : "Status facts, private: none.",
+    `Affected operators, private: ${playerEvents.length ? playerEvents.map((event) => `${event.name}: ${event.note}`).join("; ") : "none"}.`,
+    `Continuity: ${compactTurnHistoryText()}.`,
+    `Persistent threat: ${state.threat}; ${compactThreatProfileText()}.`,
+    `Next location: ${nextInfo.areaName}. Do not expose its study prompt.`
+  ].filter(Boolean).join("\n");
+}
+
 function makeLocalResolutionPrompt({ correct, context, result, currentArea, nextInfo, statusLog, playerEvents = [], actionFacts }) {
+  if (result.combat) return makeLocalCombatResolutionPrompt({ correct, context, result, currentArea, nextInfo, statusLog, playerEvents, actionFacts });
   const affected = playerEvents.length
     ? playerEvents.map((event) => `${event.name}: ${event.note}${event.cause ? `. Cause: ${event.cause}` : ""}`).join("; ")
     : "none";
@@ -16717,10 +20375,11 @@ function makeLocalResolutionPrompt({ correct, context, result, currentArea, next
     : `arrival: ${narrationSentenceRange("2-4", "2-3")} sentences; stage the next area and the specific obstacle blocking it. Avoid making every obstacle a terminal.`;
   return [
     "Fast survival-study DM. Return one JSON object only, no markdown, no commentary.",
+    narrationStyleBible(),
     "Use exactly these string fields: impact, transition, arrival.",
     "Narration must be player-facing survival fiction, not quiz/interface text.",
     "Never say: answer, question, option, choice, selected, submitted, correct, incorrect, quiz, multiple-choice, HP, hit points, dice, odds, hidden rules.",
-    "Translate private study values into physical field actions, procedures, repairs, diagnostics, calls, combat moves, or survival decisions.",
+    "This is an obstacle scene without an active combat group. Translate private study values into physical field actions, procedures, navigation, repairs, diagnostics, calls, or survival decisions.",
     `impact: ${narrationSentenceRange("2-4", "2-3")} sentences; show the performed action, reveal the required concept naturally, show success/failure consequence, and close the current obstacle.`,
     transitionRule,
     arrivalRule,
@@ -16753,6 +20412,7 @@ function makeLocalResolutionPrompt({ correct, context, result, currentArea, next
     statusLog ? `Status changes: ${statusLog}` : "Status changes: none.",
     `Recent continuity: ${compactTurnHistoryText()}.`,
     `Persistent threat: ${state.threat}; ${compactThreatProfileText()}.`,
+    `Operator roster and tactical identities:\n${narrationRosterText()}`,
     `Threat beat: ${compactThreatBeatInstruction(nextInfo)}`,
     `Next area: ${nextInfo.areaName}.`,
     nextObstacleDangerFrame(nextInfo),
@@ -16779,6 +20439,7 @@ function cleanLocalNarration(text) {
   if (typeof text !== "string") return "";
   return String(text || "")
     .replace(/^["'\s]+|["'\s]+$/g, "")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
     .replace(/^\s*(?:#{1,6}\s*)?(?:\*\*)?\s*(?:MISSION\s+LOG|MISSION\s+CHANNEL|OPERATION\s+LOG|FIELD\s+LOG|SITREP|TRANSMISSION)\s*(?:(?:\/\/|:|-|--)\s*)?(?:OPERATION\s+)?[A-Z0-9 '\-]+(?:\*\*)?\s*$/gim, "")
     .replace(/^\s*(Affected players|Pronoun guide|Team status(?: after consequence)?|Status changes|Current area|Next area|Next concept\/question|Consequence seed|Consequence facts|Loot facts|System problem resolved this turn|System task|Study prompt|Required concept|Current active obstacle(?: to close this turn)?|Next active obstacle(?: to stage, not resolve)?|Active obstacle continuity|Active obstacle|Obstacle behavior|Study concept connection, private only|Threat pressure|If the team succeeds|If the team fails|In-world action seed|Action facts|Private study item and action translation context|Private action translation map|Private procedure map|Private submitted value|Submitted action meaning|Required action meaning|Player action translations|Required knowledge to reveal naturally|Outcome|Outcome facts|Player action|Primary actor|Grounded action category|Action modifiers|Rare bypass transition requirement|Next-area staging facts|Locked-operator arrival requirement|Persistent threat|Threat archetype|Threat summary|Threat nature|Recurring signs|Threat tactics|Escalation pattern|Confrontation form|How the squad can plausibly fight or contain it|Generated manifestation|Generated recurring signs|Generated tactics|Generated escalation pattern|Generated confrontation form|Generated containment weakness|Continuity rule|Threat beat requirement)\s*:.*$/gim, "")
     .replace(/(?:^|(?<=[.!?])\s+)[^.?!]*(?:complete clean in-world actions|listed hazard|should be invented from the current room|generic control-post synchronization)[^.?!]*[.!?]\s*/gi, "")
@@ -16792,10 +20453,29 @@ function cleanLocalNarration(text) {
     .trim();
 }
 
-function parseLocalNarrationBlocks(text, playerEvents, fallbackBlocks, nextInfo) {
+function enforceActiveBossDesignation(text, designation = "") {
+  if (!designation || normalize(text).includes(normalize(designation))) return text;
+  const threat = String(state.threat || "").trim();
+  if (!threat) return text;
+  const pattern = new RegExp(`\\b(?:the\\s+)?${escapeRegExp(threat)}\\b`, "i");
+  return String(text || "").replace(pattern, (match) => {
+    const preserveArticle = /^the\s+/i.test(match) && !/^the\s+/i.test(designation);
+    return `${preserveArticle ? "the " : ""}${designation}`;
+  });
+}
+
+function enforceBossOpeningDesignation(text, designation = "") {
+  const cleaned = String(text || "").trim();
+  if (!cleaned || !designation || normalize(cleaned).includes(normalize(designation))) return cleaned;
+  const replaced = enforceActiveBossDesignation(cleaned, designation);
+  if (normalize(replaced).includes(normalize(designation))) return replaced;
+  return `${designation} reveals itself. ${replaced}`;
+}
+
+function parseLocalNarrationBlocks(text, playerEvents, fallbackBlocks, nextInfo, bossDesignation = "") {
   const parsed = parseLocalNarrationJson(text);
   return {
-    impact: safeLocalNarrationBlock(parsed.impact, playerEvents, fallbackBlocks.impact, nextInfo),
+    impact: enforceActiveBossDesignation(safeLocalNarrationBlock(parsed.impact, playerEvents, fallbackBlocks.impact, nextInfo), bossDesignation),
     transition: safeLocalNarrationBlock(parsed.transition, playerEvents, fallbackBlocks.transition, nextInfo),
     arrival: safeLocalNarrationBlock(parsed.arrival, [], fallbackBlocks.arrival, nextInfo)
   };
@@ -16805,7 +20485,7 @@ function ensureGeneratedHazardImpact(blocks, details) {
   if (!details.playerEvents?.length) return Promise.resolve(blocks);
   if (blocks.impact !== details.fallbackBlocks.impact) return Promise.resolve(blocks);
 
-  return requestOllama(makeHazardImpactPrompt(details), { temperature: 0.88 })
+  return Promise.resolve("")
     .then((text) => {
       const impact = safeLocalNarration(cleanLocalNarration(text), details.playerEvents, "");
       return impact ? { ...blocks, impact } : blocks;
@@ -16819,6 +20499,7 @@ function makeHazardImpactPrompt({ correct, context, result, currentArea, playerE
     .join("; ");
   return [
     `Write only one player-facing impact scene, ${narrationSentenceRange("3-5", "2-3")} complete sentences.`,
+    narrationStyleBible(),
     "Translate private study values into physical field action; never mention quiz/interface mechanics.",
     "Use only the listed hazard and affected-player facts. Do not add injuries, persistent conditions, supplies, rescues, or advantages.",
     "No HP, hit points, question, answer, correct, incorrect, option, choice, quiz, or multiple-choice.",
@@ -16835,7 +20516,8 @@ function makeHazardImpactPrompt({ correct, context, result, currentArea, playerE
     `Affected players: ${affected}.`,
     statusLog ? `Status changes: ${statusLog}.` : "Status changes: none.",
     `Team status after consequence: ${compactTeamStatusText(playerEvents)}.`,
-    `Threat: ${state.threat}; ${compactThreatProfileText()}.`
+    `Threat: ${state.threat}; ${compactThreatProfileText()}.`,
+    `Operator roster and tactical identities:\n${narrationRosterText()}`
   ].join("\n");
 }
 
@@ -16870,10 +20552,7 @@ function assembleLocalContinuation(blocks) {
 }
 
 function playerPronouns(name) {
-  const pronouns = {
-    lee: "he/him"
-  };
-  return pronouns[normalize(name)] || "they/them";
+  return "they/them";
 }
 
 function localTurnHistoryText() {
@@ -16881,13 +20560,14 @@ function localTurnHistoryText() {
   return state.turnHistory.slice(-3).join(" ");
 }
 
-function recordLocalTurnFact({ correct, context, currentArea, nextInfo, playerEvents }) {
+function recordLocalTurnFact({ correct, context, result, currentArea, nextInfo, playerEvents }) {
   const affected = playerEvents.length
     ? playerEvents.map((event) => `${event.name}: ${event.note}`).join("; ")
     : "no player changes";
-  state.turnHistory.push(
-    `[${currentArea}] ${correct ? "Route action succeeded" : "Route action failed"}; active obstacle handled: ${context.activeObstacle || "none"}; required correction: ${answerKnowledgeText(context.question)}; affected: ${affected}; next unresolved area: ${nextInfo.areaName}; next active obstacle: ${nextInfo.activeObstacle || "none"}.`
-  );
+  const resolvedBeat = result?.combat
+    ? `combat exchange: ${trimTextToLength(combatNarrationEventPacket(result).replace(/\s+/g, " "), 520)}; hostile contact ${result.combatCleared ? "cleared" : "still active"}`
+    : `${correct ? "route action succeeded" : "route action failed"}; active obstacle handled: ${context.activeObstacle || "none"}; required correction: ${answerKnowledgeText(context.question)}`;
+  state.turnHistory.push(`[${currentArea}] ${resolvedBeat}; affected: ${affected}; next unresolved area: ${nextInfo.areaName}; next active obstacle: ${nextInfo.activeObstacle || "none"}.`);
   state.turnHistory = state.turnHistory.slice(-3);
 }
 
@@ -16951,9 +20631,9 @@ function broadcastDmText() {
 
 function testOllama() {
   const result = document.getElementById("ollamaResult");
-  const prompt = "Write one tense sentence as a survival-horror study-adventure dungeon master. No extra commentary.";
+  const prompt = "Reply with exactly OK.";
   if (result) result.textContent = `Testing ${localDmProviderLabel()}...`;
-  requestOllama(prompt).then((text) => {
+  requestOllama(prompt, { maxTokens: 8 }).then((text) => {
     setOllamaResult(text || `${localDmProviderLabel()} returned an empty response.`);
   }).catch((error) => {
     setOllamaResult(`${localDmProviderLabel()} error: ${error.message}`, true);
@@ -16965,7 +20645,7 @@ function generateOllamaDmText() {
   const promptText = input?.value.trim();
   const prompt = promptText || makeOllamaPrompt();
   setOllamaResult("Generating local DM text...");
-  requestOllama(prompt).then((text) => {
+  requestOllama(prompt, { maxTokens: 480 }).then((text) => {
     setOllamaResult(text || `${localDmProviderLabel()} returned an empty response.`);
   }).catch((error) => {
     setOllamaResult(`${localDmProviderLabel()} error: ${error.message}`, true);
@@ -17000,7 +20680,7 @@ function requestOllamaNow(prompt, options = {}) {
   logDebugEvent({
     kind: "request",
     label: `#${requestId} sent`,
-    detail: `${localDmProviderLabel(provider)} / ${model} / no token cap / ${prompt.length} chars / ~${Math.ceil(prompt.length / 4)} input tokens`
+    detail: `${localDmProviderLabel(provider)} / ${model} / ${Number.isFinite(Number(options.maxTokens)) ? `${Math.max(1, Math.floor(Number(options.maxTokens)))} token cap` : "provider token default"} / ${prompt.length} chars / ~${Math.ceil(prompt.length / 4)} input tokens`
   });
   return sendLocalDmRequest({ endpoint, provider, model, prompt, options, requestId, startedAt })
     .catch((error) => {
@@ -17064,7 +20744,10 @@ function sendLocalDmRequest({ endpoint, provider, model, prompt, options, reques
       prompt,
       temperature: options.temperature || 0.75,
       format: options.format || undefined,
-      think: options.think ?? false
+      think: options.think ?? false,
+      maxTokens: Number.isFinite(Number(options.maxTokens))
+        ? Math.max(1, Math.floor(Number(options.maxTokens)))
+        : undefined
     })
   }, LOCAL_DM_REQUEST_TIMEOUT_MS)
     .then((response) => response.json().then((body) => ({ response, body })))
@@ -17186,8 +20869,6 @@ function roomTransitionTraceStart(reason, details = {}) {
     trace.expectedHeartbeatAt = heartbeatAt + ROOM_TRANSITION_TRACE_HEARTBEAT_MS;
     if (gapMs >= ROOM_TRANSITION_MAIN_THREAD_GAP_MS) {
       roomTransitionTraceEmit("MAIN_THREAD_GAP", "event-loop heartbeat delayed", { gapMs: Math.round(gapMs) }, { debugConsole: true });
-    } else {
-      roomTransitionTraceEmit("HEARTBEAT", "transition active", { gapMs: Math.round(gapMs) });
     }
   }, ROOM_TRANSITION_TRACE_HEARTBEAT_MS);
   trace.timeoutTimer = window.setTimeout(() => {
@@ -17358,13 +21039,87 @@ function makeOllamaPrompt() {
   ].join("\n");
 }
 
+function narrationDefaultForPayload(payload, part = "story") {
+  const tag = String(payload?.tag || payload?.type?.label || "");
+  const activeNode = state.nodes[state.currentNode];
+  const readinessContext = typeof payload?.readinessContext === "boolean"
+    ? payload.readinessContext
+    : activeNode?.type === "readiness";
+  const combatContext = typeof payload?.combatContext === "boolean"
+    ? payload.combatContext
+    : Boolean(payload?.combatResolutionGate || isCombatNode(activeNode));
+  const bossCombatContext = combatContext && activeNode?.type === "boss";
+  const bossEncounter = bossCombatContext ? currentCombatEncounter() : null;
+  const bossOpeningRound = Boolean(bossCombatContext && !bossEncounter?.lastRound && Math.max(0, Number(bossEncounter?.round) || 0) === 0);
+  const resolvedContext = typeof payload?.correct === "boolean" || payload?.advanceRoom || payload?.combatResolutionGate;
+  const finalBossDefeated = Boolean(
+    bossCombatContext
+    && activeNode?.bossPhase === "final"
+    && resolvedContext
+    && bossEncounter?.cleared
+  );
+  if (part === "continuation" && payload?.isRecovery) return NARRATION_DEFAULTS.aidRoomEntryTransition;
+  if (part === "continuation") return readinessContext ? NARRATION_DEFAULTS.bossEntryTransition : NARRATION_DEFAULTS.roomTransition;
+  if (finalBossDefeated) return NARRATION_DEFAULTS.bossEnd;
+  if (/final mission result|mission failure|mission complete/i.test(tag)) return NARRATION_DEFAULTS.missionResult;
+  if (payload?.teamReadyGate || /mission briefing|game intro/i.test(tag)) return NARRATION_DEFAULTS.gameIntro;
+  if (payload?.bossEntryTransition) return NARRATION_DEFAULTS.bossEntryTransition;
+  if (/recovery departure/i.test(tag)) return NARRATION_DEFAULTS.aidRoomExitTransition;
+  if (/room transition/i.test(tag)) return NARRATION_DEFAULTS.roomTransition;
+  if (/action\s+\d|action resolution/i.test(tag)) return NARRATION_DEFAULTS.actionResolution;
+  if (resolvedContext) {
+    if (readinessContext) return NARRATION_DEFAULTS.readyAfter;
+    if (bossCombatContext) return NARRATION_DEFAULTS.bossAfterRound;
+    return combatContext ? NARRATION_DEFAULTS.afterCombat : NARRATION_DEFAULTS.afterQuestion;
+  }
+  if (payload?.readyCheck || readinessContext || /readiness/i.test(tag)) return NARRATION_DEFAULTS.readyQuestion;
+  if (payload?.question || /opening|question|challenge|combat|boss|contact|confrontation/i.test(tag)) {
+    if (bossCombatContext) return bossOpeningRound ? NARRATION_DEFAULTS.bossPreCombat : NARRATION_DEFAULTS.bossPreRound;
+    return combatContext ? NARRATION_DEFAULTS.preCombat : NARRATION_DEFAULTS.preQuestion;
+  }
+  return NARRATION_DEFAULTS.systemUpdate;
+}
+
+function applyNarrationResetDefaults(payload) {
+  if (NARRATION_ENABLED || !payload || typeof payload !== "object") return payload;
+  const hasStory = Object.prototype.hasOwnProperty.call(payload, "story");
+  const hasText = Object.prototype.hasOwnProperty.call(payload, "text");
+  if (hasStory) payload.story = narrationDefaultForPayload(payload);
+  if (hasText) payload.text = narrationDefaultForPayload(payload);
+  if (payload.story === NARRATION_DEFAULTS.bossEnd) {
+    payload.finalMissionSequence = true;
+    payload.continuationStory = NARRATION_DEFAULTS.missionEnd;
+  } else if (payload.continuationStory) {
+    payload.continuationStory = narrationDefaultForPayload(payload, "continuation");
+  }
+  payload.speechText = "";
+  return payload;
+}
+
 function appendTranscript(feed) {
   const transcript = document.getElementById("chatTranscript");
   if (!transcript) return false;
 
   const payload = typeof feed === "string" ? { text: feed } : feed;
   normalizeFeedText(payload);
-  const finalResultLog = /final mission result/i.test(String(payload.tag || payload.type?.label || ""));
+  applyNarrationResetDefaults(payload);
+  const finalEndWaitingOnCombat = Boolean(
+    payload.story === NARRATION_DEFAULTS.bossEnd
+    && payload.combatResolutionGate
+    && !payload.combatResolutionGate.settled
+    && !payload.finalEndCombatWaitComplete
+  );
+  if (finalEndWaitingOnCombat) {
+    roomTransitionTraceEmit("WAIT", "boss end waiting for combat resolution");
+    waitForCombatResolutionGate(payload.combatResolutionGate, "boss end").then(() => {
+      payload.finalEndCombatWaitComplete = true;
+      appendTranscript(payload);
+    });
+    return true;
+  }
+  const finalResultLog = /final mission result/i.test(String(payload.tag || payload.type?.label || ""))
+    && payload.story !== NARRATION_DEFAULTS.bossEnd
+    && !payload.combatResolutionGate;
   if (finalResultLog) suppressCompletedFinalBossVisual();
   roomTransitionTraceEmit("MARK", "append transcript", {
     tag: payload.tag || "",
@@ -17380,10 +21135,8 @@ function appendTranscript(feed) {
     payload.advanceRoom
     && state.routeTransition?.to !== state.routeTransition?.from
   );
-  if (pendingRouteMove && !payload.continuationStory) {
-    const fromName = roomName(state.nodes[state.routeTransition.from] || { type: "challenge" }, state.routeTransition.from);
-    const toName = roomName(state.nodes[state.routeTransition.to] || { type: "challenge" }, state.routeTransition.to);
-    payload.continuationStory = `The squad clears ${fromName} and follows the secured route toward ${toName}. The next threshold reacts before the formation can settle.`;
+  if (pendingRouteMove && !payload.continuationStory && payload.story !== NARRATION_DEFAULTS.bossEnd) {
+    payload.continuationStory = NARRATION_DEFAULTS.roomTransition;
   }
   const hasContinuationGate = Boolean(payload.advanceRoom && payload.continuationStory);
   const deferQuestionUntilContinuation = hasContinuationGate && Boolean(payload.isRecovery);
@@ -17410,8 +21163,14 @@ function appendTranscript(feed) {
   }
   captureDeferredRouteTransition(payload, hasContinuationGate);
   if (payload.advanceRoom && state.transmissionPending) stopTransmissionFeedback();
-  const deferStatusPresentation = payload.deferStatusLog || Boolean(asArray(payload.players).length || asArray(payload.damage).length || payload.statusLog);
-  const effects = deferStatusPresentation ? [] : applyFeedState(payload);
+  // Combat presentation owns its status feed and appends each action at the
+  // exact animation timestamp. Do not replay the aggregate round summary after
+  // the mission-log typewriter completes, which previously replaced the live
+  // feed just as the combat screen was finishing.
+  const combatStatusHandledLive = Boolean(payload.combatResolutionGate);
+  const deferStatusPresentation = !combatStatusHandledLive
+    && (payload.deferStatusLog || Boolean(asArray(payload.players).length || asArray(payload.damage).length || payload.statusLog));
+  const effects = combatStatusHandledLive || deferStatusPresentation ? [] : applyFeedState(payload);
   const replaceTranscript = payload.replace !== false;
   if (replaceTranscript) clearTypewriters();
 
@@ -17533,6 +21292,10 @@ function completeTranscriptPresentation(entry, payload, presentationRunId, optio
     renderRecoveryGateForEntry(entry, payload);
     return;
   }
+  if (payload.story === NARRATION_DEFAULTS.bossEnd) {
+    renderFinalResultGate(entry);
+    return;
+  }
   finishTranscriptQuestionFlow(payload);
 }
 
@@ -17540,7 +21303,7 @@ function shouldShowOpeningVoiceLoader(payload) {
   return Boolean(
     payload?.teamReadyGate
     && state.ttsAutoLog
-    && ["piper", "kokoro"].includes(state.ttsProvider)
+    && ["piper", "kokoro", "elevenlabs"].includes(state.ttsProvider)
     && ttsCanSpeak()
   );
 }
@@ -17581,7 +21344,10 @@ function completeTranscriptAdvance(payload) {
       correct: Boolean(payload.correct)
     });
     if (payload.advanceRoom) {
-      state.combatMountBlocked = false;
+      if (payload.continuationStory === NARRATION_DEFAULTS.bossEntryTransition) {
+        state.bossPreCombatMountHoldNode = Number(payload.bossNodeIndex ?? state.routeTransition?.to);
+      }
+      state.combatMountBlocked = Number.isInteger(state.bossPreCombatMountHoldNode);
       advanceChatProgress(Boolean(payload.correct));
       const destination = state.nodes[state.currentNode];
       if (destination?.type === "boss" && !state.bossReadyChecks.has(state.currentNode)) {
@@ -17618,7 +21384,7 @@ function finishTranscriptQuestionFlow(payload) {
     const waitForRoom = state.actionDrivenMode
       ? preloadActionRoomOpening(currentQuestionInfo())
       : Promise.resolve();
-    waitForRoom.then(() => {
+    waitForRoom.then(() => renderPreQuestionStage(payload)).then(() => {
       queueMapQuestionReveal(() => {
         startEmergencyTimerForCurrentEncounter(currentQuestionInfo().type, { publish: false });
         publishCurrentPlayerPrompt({ renderOverlay: false });
@@ -17626,6 +21392,90 @@ function finishTranscriptQuestionFlow(payload) {
       });
     });
   }
+}
+
+function renderPreQuestionStage(payload = {}) {
+  const node = state.nodes[state.currentNode];
+  if (payload.preQuestionStageRendered) return Promise.resolve();
+  let stageTexts;
+  if (node?.type === "boss") {
+    const encounter = currentCombatEncounter();
+    const openingRound = !encounter?.lastRound && Math.max(0, Number(encounter?.round) || 0) === 0;
+    const yellowSniperOpening = Boolean(
+      openingRound
+      && !encounter?.yellowSniperScopeAnnounced
+      && ["mid", "final"].includes(node.bossPhase)
+      && bossUsesYellowBallisticsBehavior(node)
+    );
+    stageTexts = [
+      openingRound ? NARRATION_DEFAULTS.bossPreCombat : "",
+      yellowSniperOpening ? yellowSniperScopeOpeningPrompt(node) : "",
+      NARRATION_DEFAULTS.bossPreRound
+    ];
+  } else {
+    stageTexts = [node?.type === "readiness"
+      ? NARRATION_DEFAULTS.readyQuestion
+      : isCombatNode(node)
+        ? NARRATION_DEFAULTS.preCombat
+        : NARRATION_DEFAULTS.preQuestion];
+  }
+  stageTexts = stageTexts.filter((stageText, index, values) => stageText && stageText !== payload.story && values.indexOf(stageText) === index);
+  if (!stageTexts.length) return Promise.resolve();
+  const transcript = document.getElementById("chatTranscript");
+  const inner = transcript?.querySelector(".chat-transcript-scroll-inner") || transcript;
+  if (!inner) return Promise.resolve();
+  payload.preQuestionStageRendered = true;
+  return stageTexts.reduce((sequence, stageText) => sequence.then(() => {
+    const yellowSniperOpening = stageText === yellowSniperScopeOpeningPrompt(node);
+    if (yellowSniperOpening) activateYellowSniperScopeOpening(currentCombatEncounter(), node);
+    const stage = document.createElement("section");
+    stage.className = `transcript-entry question-setup-entry${yellowSniperOpening ? " boss-phase-prompt-entry" : ""}`;
+    const text = document.createElement("p");
+    text.className = "typewriter";
+    text.dataset.text = stageText;
+    stage.appendChild(text);
+    inner.appendChild(stage);
+    startMissionLogAutoScroll({ startAtBottom: true });
+    return typeText(text, stageText).then(() => {
+      if (stageText === NARRATION_DEFAULTS.bossPreCombat) return releaseAndWaitForBossIntro(state.currentNode);
+      if (/^BossPhase \d+%(?:\s+—.*)?$/.test(stageText)) {
+        return new Promise((resolve) => trackTypeTimer(resolve, BOSS_PHASE_PROMPT_DELAY_MS));
+      }
+      return undefined;
+    });
+  }), Promise.resolve());
+}
+
+function releaseAndWaitForBossIntro(nodeIndex) {
+  if (state.nodes[nodeIndex]?.type !== "boss") return Promise.resolve();
+  if (state.bossPreCombatMountHoldNode === nodeIndex) state.bossPreCombatMountHoldNode = null;
+  state.combatMountBlocked = false;
+  syncCombatStage();
+  const startedAt = Date.now();
+  return new Promise((resolve) => {
+    const check = () => {
+      if (state.currentNode !== nodeIndex) {
+        resolve();
+        return;
+      }
+      const stage = els.combatStage;
+      const mounted = state.combatStageEnteredNodes.has(nodeIndex) && stage && !stage.hidden;
+      const introActive = Boolean(stage?.classList.contains("entering")
+        || stage?.classList.contains("boss-intro-playing")
+        || stage?.classList.contains("boss-intro-handoff"));
+      if (mounted && !introActive) {
+        resolve();
+        return;
+      }
+      if (Date.now() - startedAt >= BOSS_INTRO_WATCHDOG_MS + 1000) {
+        recoverCombatPresentationGate("boss pre-round intro wait");
+        resolve();
+        return;
+      }
+      trackTypeTimer(check, 150);
+    };
+    check();
+  });
 }
 
 function renderMissionContinueGate(entry, payload) {
@@ -17854,6 +21704,7 @@ function renderActionRoomArrivalAfterTransition(entry, payload, runId) {
     entry.appendChild(arrival);
     startMissionLogAutoScroll({ startAtBottom: true });
     return typeText(story, story.dataset.text).then(() => {
+      payload.preQuestionStageRendered = true;
       recordSceneHistory({
         tag: info.tag,
         areaName: info.areaName,
@@ -17930,6 +21781,19 @@ function queueMapQuestionReveal(onReady, waitStartedAt = Date.now(), alertDelayM
         trackTypeTimer(() => {
           if (revealRunId === state.questionRevealRunId && !state.resolved) queueMapQuestionReveal(onReady, waitStartedAt, 0);
         }, 350);
+        return;
+      }
+    }
+    // Safety path for legacy/non-transcript presentation: target only after the
+    // combat intro gate above has completed, but still before the question alert.
+    if (currentNode?.type === "boss") {
+      const encounter = currentCombatEncounter();
+      const opening = activateYellowSniperScopeOpening(encounter, currentNode);
+      if (opening?.newlyActivated) {
+        appendBossPhasePromptToMissionLog(yellowSniperScopeOpeningPrompt());
+        trackTypeTimer(() => {
+          if (revealRunId === state.questionRevealRunId && !state.resolved) queueMapQuestionReveal(onReady, waitStartedAt, 0);
+        }, BOSS_PHASE_PROMPT_DELAY_MS);
         return;
       }
     }
@@ -18518,9 +22382,11 @@ function resolveChallenge(answer, options = {}) {
   const combatEntries = type.locked && operator
     ? [{ player: operator, correct, submittedAt: options.submittedAt || Date.now(), answer }]
     : activePlayers().map((player) => ({ player, correct, submittedAt: options.submittedAt || Date.now(), answer }));
+  recordQuestionRemediation(combatEntries);
   const result = isCombatNode(state.nodes[state.currentNode])
     ? applyCombatEncounter(combatEntries, type, operator, question)
     : applyEncounter(correct, type, operator);
+  advanceSecondChanceMode(combatEntries, result.eventNotes, result);
   const bossAnswer = Boolean(type.boss || currentBossProgress());
   state.resolved = true;
   const progression = projectedProgressAfterRound();
@@ -18765,6 +22631,7 @@ function escapeAttribute(value) {
 }
 
 function useMedkit(playerIndex) {
+  const before = snapshotPlayers();
   const player = state.players[playerIndex];
   if (suppliesAreLocked() || !player || state.inventory.medkits <= 0) return;
   playGameSfx("recovery");
@@ -18776,11 +22643,8 @@ function useMedkit(playerIndex) {
     healPlayer(player, 4);
   }
   renderStatus();
-
-  const note = document.createElement("p");
-  note.className = "success";
-  note.textContent = `${player.name} uses a Medkit and gets back in the fight.`;
-  els.encounterCard.appendChild(note);
+  displayDeferredActionStatus(changedPlayerEvents(before), `${player.name} uses a Medkit.`);
+  renderInventoryActions();
 
   const activeQuestion = state.encounter && !state.resolved ? state.encounter.question : null;
   if (activeQuestion) renderAnswerControls(activeQuestion);
@@ -18965,11 +22829,46 @@ function resolvePendingSecondWind(player, answeredCorrectly, eventNotes, consequ
   return false;
 }
 
+function advanceSecondChanceMode(entries = [], eventNotes = {}, result = null) {
+  if (!state.secondChanceEnabled) return [];
+  const revived = [];
+  for (const player of state.players.filter((entry) => entry.incapacitated || Number(entry.hp) <= 0)) {
+    const response = entries.find((entry) => entry.player && sameName(entry.player.name, player.name));
+    if (!response) continue;
+    if (!response.correct) {
+      player.secondChanceCorrectResponses = 0;
+      addEventNote(eventNotes, player.name, `${player.name}'s incorrect downed response resets their Second Chance death roll to 0/2.`);
+      continue;
+    }
+    player.secondChanceCorrectResponses = Math.max(0, Number(player.secondChanceCorrectResponses) || 0) + 1;
+    if (player.secondChanceCorrectResponses < 2) {
+      addEventNote(eventNotes, player.name, `${player.name}'s correct downed response advances their Second Chance death roll to ${player.secondChanceCorrectResponses}/2.`);
+      continue;
+    }
+    const restoredHp = Math.max(1, Math.ceil(Math.max(1, Number(player.maxHp) || 10) * 0.25));
+    player.hp = restoredHp;
+    player.incapacitated = false;
+    player.secondChanceCorrectResponses = 0;
+    player._secondChanceBracedReady = true;
+    addEventNote(eventNotes, player.name, `${player.name}'s Second Chance activates after two consecutive correct downed responses, restoring them at ${restoredHp} HP and braced for their first round back.`);
+    revived.push(player);
+  }
+  if (revived.length && result) {
+    const fact = revived.map((player) => `${player.name} returns through Second Chance at ${player.hp} HP and is braced for the next enemy phase`).join("; ");
+    result.factSeed = [result.factSeed, fact].filter(Boolean).join("; ");
+    result.incapacitated = state.players.some((player) => player.incapacitated)
+      ? `${state.players.filter((player) => player.incapacitated).map((player) => player.name).join(", ")} cannot answer until revived.`
+      : "";
+  }
+  return revived;
+}
+
 function applyDamage(player, amount) {
   const before = Math.max(0, Number(player?.hp) || 0);
   player.hp = Math.max(0, player.hp - amount);
   if (player.hp === 0) {
     player.incapacitated = true;
+    if (before > 0) player.secondChanceCorrectResponses = 0;
     tryEngineerKickStart(player, before);
   }
 }
@@ -18984,7 +22883,7 @@ function tryEngineerKickStart(target, hpBefore = 0) {
   ));
   if (!engineer) return false;
   const cooldown = levelSixAbilityCooldownState(engineer);
-  engineer.classCooldowns = { ...(engineer.classCooldowns || {}), [cooldown.key]: state.currentQuestion };
+  markQuestionCooldown(engineer, cooldown.key);
   engineer._levelSixAbilityTurnKey = currentAbilityTurnKey();
   const revivedHp = Math.max(1, Math.ceil(Math.max(1, Number(target.maxHp) || 10) * 0.25));
   target.hp = revivedHp;
@@ -18999,7 +22898,10 @@ function tryEngineerKickStart(target, hpBefore = 0) {
 }
 
 function healPlayer(player, amount) {
+  if (!player || player._greenPossessed) return 0;
+  const before = player.hp;
   player.hp = Math.min(Math.max(10, Number(player.maxHp) || 10), Math.max(0, player.hp + amount));
+  return Math.max(0, player.hp - before);
 }
 
 function targetsFor(type, operator) {
@@ -19031,6 +22933,10 @@ function halfTeamTargets() {
 
 function activePlayers() {
   return state.players.filter((player) => !player.incapacitated);
+}
+
+function answerEligiblePlayers() {
+  return state.players.filter((player) => !player.incapacitated || state.secondChanceEnabled);
 }
 
 function playerLowHealth(player) {
@@ -19548,8 +23454,8 @@ function renderRecovery(node) {
   clearTypewriters();
   resetStatusUpdates();
   const presentationRunId = beginLogPresentation();
-  const down = state.players.filter((player) => player.incapacitated);
-  const reviveLine = down.length ? " One incapacitated player may be revived for free when the team chooses a recovery option." : "";
+  const down = state.players.filter((player) => player.incapacitated || Number(player.hp) <= 0);
+  const reviveLine = down.length ? " Every incapacitated operator will recover to 75% maximum health when the team chooses a recovery option." : "";
   const tier = node.tier;
   const recoveryText = node.afterBoss
     ? `The team forces its way into an emergency shelter just beyond the wreckage of the confrontation. The door seals with a strained hydraulic cough, leaving scorched air, warped metal, and the distant pressure of ${state.threat} on the other side.${reviveLine} Choose one recovery action, then push the mission forward before the shelter gives out.`
@@ -19596,25 +23502,21 @@ function applyRecovery(kind, tier, entry = null, gate = null) {
   const recoveryNode = state.nodes[state.currentNode] || { type: "recovery", tier };
   const { hp, medkits, ems } = recoveryAmounts(tier);
   const before = snapshotPlayers();
+  const activeBeforeRecovery = new Set(before.filter((player) => !player.incapacitated && Number(player.hp) > 0).map((player) => normalize(player.name)));
   state.resolved = true;
   state.questionPresentationReady = false;
   state.answerPending = false;
 
-  const down = state.players.find((player) => player.incapacitated);
-  if (down) {
-    down.incapacitated = false;
-    down.hp = 3;
-  }
-
   if (kind === "hp") {
     state.players.forEach((player) => {
-      if (!player.incapacitated) healPlayer(player, hp);
+      if (activeBeforeRecovery.has(normalize(player.name))) healPlayer(player, hp);
     });
   } else if (kind === "medkits") {
     state.inventory.medkits += medkits;
   } else {
     state.inventory.ems += ems;
   }
+  const revivedPlayers = reviveAidRoomOperators();
 
   const events = changedPlayerEvents(before);
   renderStatus();
@@ -19623,7 +23525,7 @@ function applyRecovery(kind, tier, entry = null, gate = null) {
     button.disabled = true;
   });
   gate?.classList.add("resolving");
-  const summary = recoveryChoiceSummary(kind, tier, down);
+  const summary = recoveryChoiceSummary(kind, tier, revivedPlayers);
   appendRecoveryStatusUpdate(summary, entry);
   if (entry) renderRecoveryContinueGate(entry, summary, events, recoveryNode);
 }
@@ -19639,9 +23541,10 @@ function appendRecoveryStatusUpdate(summary, fallbackEntry) {
   appendStatusUpdateLog(log, fallbackEntry);
 }
 
-function recoveryChoiceSummary(kind, tier, revivedPlayer) {
+function recoveryChoiceSummary(kind, tier, revivedPlayers = []) {
   const { hp, medkits, ems } = recoveryAmounts(tier);
-  const reviveText = revivedPlayer ? ` ${revivedPlayer.name} is revived and cleared for movement.` : "";
+  const reviveSummary = aidRoomReviveText(revivedPlayers);
+  const reviveText = reviveSummary ? ` ${reviveSummary}` : "";
   if (kind === "hp") return `Recovery chosen: all active operators recover ${hp} HP.${reviveText}`;
   if (kind === "medkits") return `Recovery chosen: squad gains ${medkits} Medkits.${reviveText}`;
   return `Recovery chosen: squad gains ${ems} EMS Device${ems > 1 ? "s" : ""}.${reviveText}`;
@@ -19745,39 +23648,20 @@ function renderEnding() {
   }
 
   const endingText = `The final lock burns open and ${state.threat} collapses into a storm of fading signal. ${survivors.length ? `${survivors.map((player) => player.name).join(", ")} make it to the extraction marker while the facility shudders behind them.` : "No one reaches the extraction marker."}`;
-  const summaryText = `Correct Answers: ${correct} / ${state.questions.length}. Survivors: ${survivors.length} / ${state.players.length}. Remaining Supplies: ${state.inventory.medkits} Medkits, ${state.inventory.ems} EMS Devices.`;
-  const details = { ending, endingText, summaryText, survivors, correct, ratio };
+  const individualAccuracyText = state.players.map((player) => {
+    const accuracy = playerAnswerAccuracy(player);
+    return `${player.name}: ${accuracy.percent == null ? "--" : `${accuracy.percent}%`} (${accuracy.correct}/${accuracy.total})`;
+  }).join("; ");
+  const summaryText = `Correct Answers: ${correct} / ${state.questions.length}. Survivors: ${survivors.length} / ${state.players.length}. Remaining Supplies: ${state.inventory.medkits} Medkits, ${state.inventory.ems} EMS Devices. Individual Accuracy: ${individualAccuracyText}.`;
+  const details = { ending, endingText, summaryText, survivors, correct, ratio, individualAccuracyText };
 
   if (state.localDmMode) {
-    els.encounterCard.innerHTML = `
-      <h3 class="mission-room-heading">Mission Log</h3>
-      <div id="chatTranscript" class="chat-transcript">
-        <div class="chat-transcript-scroll-inner">
-          <section class="transcript-entry transmission-waiting">
-            <div class="log-tag">Final Mission Result</div>
-            <div class="transmission-display">
-              <div class="transmission-heading">
-                <strong>RECEIVING FINAL TRANSMISSION...</strong>
-                <span class="signal-bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-              </div>
-              <div class="transmission-waveform" aria-hidden="true">
-                <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
-              </div>
-            </div>
-          </section>
-        </div>
-      </div>
-    `;
-    els.answerControls.innerHTML = "";
-    typeQueuedText(els.encounterCard);
-    requestOllama(makeLocalEndingPrompt(details), { temperature: 0.86 })
-      .then((text) => renderEndingCard(details, cleanLocalNarration(text) || endingText))
-      .catch(() => renderEndingCard(details, endingText));
+    renderEndingCard(details, NARRATION_DEFAULTS.missionResult);
     renderStatus();
     return;
   }
 
-  renderEndingCard(details, endingText);
+  renderEndingCard(details, NARRATION_DEFAULTS.missionResult);
 }
 
 function makeLocalEndingPrompt({ ending, survivors, correct }) {
@@ -19785,6 +23669,7 @@ function makeLocalEndingPrompt({ ending, survivors, correct }) {
   const downDetails = down.map((player) => `${player.name}: down at mission end`).join("; ");
   return [
     `Write a cinematic player-facing closing scene in ${narrationSentenceRange("3-5", "2-3")} sentences.`,
+    narrationStyleBible(),
     "Use the facts below, but invent final imagery and action.",
     "No scores, questions, quizzes, answer mechanics, dice, odds, or hidden rules.",
     "Do not revive, injure, kill, or extract anyone contrary to the survivor facts.",
@@ -19798,6 +23683,7 @@ function makeLocalEndingPrompt({ ending, survivors, correct }) {
     down.length ? `Incapacitated operator condition notes: ${downDetails}.` : "",
     `Mission performance context: ${correct} successful restorations out of ${state.questions.length}.`,
     `Remaining supplies: ${state.inventory.medkits} Medkits and ${state.inventory.ems} EMS Devices.`,
+    `Operator roster and class identities:\n${narrationRosterText()}`,
     `Recent continuity: ${compactTurnHistoryText()}.`
   ].filter(Boolean).join("\n");
 }

@@ -494,6 +494,195 @@ body.mission-active .combat-stage.boss-fight::before {
   filter: none;
   mix-blend-mode: screen;
   animation: live-console-boss-eyes-idle 3s ease-in-out infinite;
+  will-change: opacity, transform;
+}
+
+body.mission-active .combat-stage.boss-fight.green-possession-active::before {
+  animation: green-possession-eyes-depart 1400ms cubic-bezier(.2, .72, .16, 1) both !important;
+}
+
+body.mission-active .combat-stage.boss-fight.green-possession-returning::before {
+  animation: green-possession-eyes-return 1600ms cubic-bezier(.16, .7, .2, 1) both !important;
+}
+
+body.mission-active .combat-stage.boss-fight.green-possession-active .combat-enemy-unit.boss {
+  position: absolute;
+  left: 50%;
+  width: min(78%, 46rem);
+  transform: translateX(-50%);
+  opacity: 0 !important;
+  pointer-events: none;
+  transition: opacity 1150ms ease;
+}
+
+body.mission-active .combat-stage.boss-fight .combat-enemy-formation[data-formation-count="2"] .combat-enemy-unit.boss {
+  flex: 1 1 62%;
+  width: 62%;
+}
+
+body.mission-active .combat-stage.boss-fight .combat-enemy-formation[data-formation-count="3"] .combat-enemy-unit.boss {
+  flex: 1 1 48%;
+  width: 48%;
+}
+
+body.mission-active .combat-stage.boss-fight .combat-enemy-formation[data-formation-count="2"] .combat-enemy-unit.summoned {
+  flex: 0 1 28%;
+  width: 28%;
+}
+
+body.mission-active .combat-stage.boss-fight .combat-enemy-formation[data-formation-count="3"] .combat-enemy-unit.summoned {
+  flex: 0 1 22%;
+  width: 22%;
+}
+
+body.mission-active .combat-stage.boss-fight.green-possession-active .combat-enemy-formation .combat-enemy-unit.summoned {
+  flex-basis: min(13.05rem, 31%);
+  width: min(13.05rem, 31%);
+}
+
+body.mission-active .combat-stage.boss-fight.green-possession-returning .combat-enemy-unit.boss {
+  animation: green-possession-hud-return 1450ms ease-out both;
+}
+
+/* OPFOR mirrors occupy a centered row while the yellow boss remains a full
+   backdrop. These late overrides beat the generic 2/3-enemy boss layouts. */
+body.mission-active .combat-stage.boss-fight.yellow-opfor-active .combat-enemy-formation {
+  width: min(98%, 72rem);
+  align-items: flex-start;
+  justify-content: space-evenly;
+  gap: 0;
+  padding-inline: 0.5rem;
+  padding-top: clamp(9rem, 28vh, 14rem);
+}
+
+body.mission-active .combat-stage.boss-fight.yellow-opfor-active .combat-enemy-formation .combat-enemy-unit.boss {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  flex: none;
+  width: 100%;
+}
+
+body.mission-active .combat-stage.boss-fight.yellow-opfor-active .combat-enemy-formation .combat-enemy-unit.opfor-mirror {
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 0 1 6.75rem;
+  width: min(6.75rem, 12%);
+  max-width: 6.75rem;
+}
+
+body.mission-active .combat-stage.boss-fight.yellow-opfor-active .combat-enemy-unit.opfor-mirror .combat-unit-sprite {
+  align-self: center;
+  margin-inline: auto;
+}
+
+body.mission-active .combat-enemy-unit.summoned.summoning {
+  animation: green-specter-summon 1050ms cubic-bezier(.16, .74, .2, 1) both;
+}
+
+@keyframes green-specter-summon {
+  0% { opacity: 0; transform: translateY(-18px) scale(.72); }
+  58% { opacity: .72; transform: translateY(3px) scale(1.06); }
+  100% { opacity: 1; transform: none; }
+}
+
+@keyframes green-possession-eyes-depart {
+  0% { opacity: .82; transform: scale(1); }
+  28% { opacity: .68; transform: scale(1.006); }
+  64% { opacity: .2; transform: scale(1.024); }
+  100% { opacity: 0; transform: scale(1.045); }
+}
+
+@keyframes green-possession-eyes-return {
+  0% { opacity: 0; transform: scale(1.045); }
+  36% { opacity: .12; transform: scale(1.032); }
+  72% { opacity: .46; transform: scale(1.012); }
+  100% { opacity: .68; transform: scale(1); }
+}
+
+@keyframes green-possession-hud-return {
+  0%, 30% { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+body.mission-active .combat-party-unit.possessed {
+  position: absolute;
+  left: 50%;
+  bottom: 150px;
+  z-index: 12;
+  border-color: #68ff9a;
+  box-shadow: 0 0 18px rgba(65, 255, 132, .42), inset 0 0 18px rgba(24, 112, 61, .22);
+  transform: translateX(calc(-50% + var(--possession-offset, 0px)));
+  animation: green-possession-levitate 2.4s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+body.mission-active .combat-party-unit.possessed::before {
+  content: "";
+  position: absolute;
+  inset: -13px;
+  z-index: -1;
+  border: 1px solid rgba(104, 255, 154, .52);
+  clip-path: polygon(0 18%, 18% 18%, 18% 0, 82% 0, 82% 18%, 100% 18%, 100% 82%, 82% 82%, 82% 100%, 18% 100%, 18% 82%, 0 82%);
+  animation: green-possession-frame 1.6s steps(2, end) infinite;
+}
+
+body.mission-active .combat-party-unit.possessed::after {
+  content: "POSSESSED";
+  position: absolute;
+  top: -9px;
+  right: 4px;
+  color: #8dffad;
+  background: #031008;
+  font: 700 8px Consolas, monospace;
+  letter-spacing: .1em;
+  padding: 1px 4px;
+}
+
+body.mission-active .combat-party-unit.possession-confused::after {
+  content: "?";
+  position: absolute;
+  top: -9px;
+  right: -6px;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  color: #061109;
+  border: 1px solid #b4ffca;
+  border-radius: 50%;
+  background: #68ff9a;
+  box-shadow: 0 0 10px rgba(104, 255, 154, .58);
+  font: 900 12px/1 Consolas, monospace;
+  animation: green-possession-confusion 1.8s steps(2, end) infinite;
+}
+
+@keyframes green-possession-confusion {
+  0%, 100% { opacity: .68; transform: translateY(0) rotate(-8deg); }
+  50% { opacity: 1; transform: translateY(-2px) rotate(8deg); }
+}
+
+@keyframes green-possession-levitate {
+  0%, 100% { transform: translateX(calc(-50% + var(--possession-offset, 0px))) translateY(0); }
+  50% { transform: translateX(calc(-50% + var(--possession-offset, 0px))) translateY(-9px); }
+}
+
+@keyframes green-possession-frame {
+  0%, 100% { opacity: .38; transform: scale(.96); }
+  50% { opacity: .9; transform: scale(1.04); }
+}
+
+body.mission-active .combat-party-unit.possession-released {
+  animation: green-possession-release 720ms ease-out both;
+}
+
+@keyframes green-possession-release {
+  0% { opacity: .2; transform: translateY(-42px) scale(.82); }
+  55% { opacity: 1; transform: translateY(4px) scale(1.06); }
+  100% { opacity: 1; transform: none; }
 }
 
 body.mission-active .combat-stage.entering.boss-fight::before {
@@ -519,6 +708,28 @@ body.mission-active .combat-boss-intro video {
   object-fit: contain;
   background: #000;
   filter: contrast(1.08) saturate(1.04);
+  pointer-events: none;
+}
+
+/* Chromium can briefly paint its native next/play affordance while a newly
+   loaded intro begins, even though this video is never user-controlled. */
+body.mission-active .combat-boss-intro video::-webkit-media-controls,
+body.mission-active .combat-boss-intro video::-webkit-media-controls-enclosure,
+body.mission-active .combat-boss-intro video::-webkit-media-controls-panel,
+body.mission-active .combat-boss-intro video::-webkit-media-controls-overlay-enclosure,
+body.mission-active .combat-boss-intro video::-webkit-media-controls-overlay-play-button,
+body.mission-active .combat-boss-intro video::-webkit-media-controls-start-playback-button,
+body.mission-active .combat-boss-intro video::-webkit-media-controls-play-button,
+body.mission-active .combat-boss-intro video::-webkit-media-controls-timeline,
+body.mission-active .combat-boss-intro video::-webkit-media-controls-current-time-display,
+body.mission-active .combat-boss-intro video::-webkit-media-controls-time-remaining-display,
+body.mission-active .combat-boss-intro video::-webkit-media-controls-mute-button,
+body.mission-active .combat-boss-intro video::-webkit-media-controls-volume-slider,
+body.mission-active .combat-boss-intro video::-webkit-media-controls-fullscreen-button,
+body.mission-active .combat-boss-intro video::-webkit-media-controls-picture-in-picture-button,
+body.mission-active .combat-boss-intro video::-webkit-media-controls-toggle-closed-captions-button {
+  display: none !important;
+  -webkit-appearance: none;
 }
 body.mission-active .combat-stage.boss-fight.boss-intro-playing::before {
   opacity: 0;
@@ -972,11 +1183,29 @@ body.mission-active .status-card .role-hex {
   font: 700 17px Consolas, monospace;
 }
 
+/* Ultimate cooldowns use the class emblem itself as a six-step charge meter.
+   This is a static gradient updated once per question, avoiding another
+   continuously animated effect on the dashboard. */
+body.mission-active .status-card .role-hex.player-class-icon.ultimate-recharging {
+  color: color-mix(in srgb, var(--role) var(--ultimate-charge, 0%), #737b80);
+  border-color: color-mix(in srgb, var(--role) var(--ultimate-charge, 0%), #555d62);
+  background: linear-gradient(
+    to top,
+    color-mix(in srgb, var(--role) 34%, #05090c) 0,
+    color-mix(in srgb, var(--role) 34%, #05090c) var(--ultimate-charge, 0%),
+    #171b1e var(--ultimate-charge, 0%),
+    #171b1e 100%
+  ) !important;
+  box-shadow: inset 0 0 10px rgba(0, 0, 0, .72);
+  transition: color .35s ease, border-color .35s ease, background .35s ease;
+}
+
 body.mission-active .roster-main { min-width: 0; }
 body.mission-active .roster-name { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 body.mission-active .roster-name strong { overflow: hidden; color: var(--role); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 body.mission-active .roster-name small { color: var(--console-gold); font: 9px Consolas, monospace; }
 body.mission-active .roster-vitals { display: flex; align-items: center; gap: 7px; margin-top: 3px; font: 9px Consolas, monospace; }
+body.mission-active .roster-accuracy { color: var(--console-cyan); letter-spacing: .04em; white-space: nowrap; }
 body.mission-active .state-pill { padding: 1px 7px; border-radius: 9px; background: #172126; }
 body.mission-active .ready-mark { position: relative; z-index: 4; display: grid; place-items: center; align-self: start; width: 19px; height: 19px; color: var(--console-green); border: 1px solid var(--console-green); border-radius: 50%; background: #061016; font-size: 12px; }
 body.mission-active .ready-mark.bad { color: var(--console-red); border-color: var(--console-red); }
@@ -1176,18 +1405,32 @@ body.mission-active .sim-tool-panel .aware-copy p { margin: 7px 0 0; color: #7f9
 body.mission-active .sim-tool-panel .auto-answer { grid-column: 3; display: grid; justify-items: end; color: var(--console-green); font: 10px Consolas, monospace; text-transform: uppercase; }
 body.mission-active .sim-tool-panel .auto-answer small { margin-top: 5px; color: #7f9198; font-size: 9px; text-transform: none; }
 
-body.mission-active .combat-party-formation { left: 10px; right: 10px; bottom: 10px; width: auto; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; transform: none; }
+body.mission-active .combat-party-formation {
+  left: 10px;
+  right: 10px;
+  bottom: 10px;
+  width: auto;
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
+  gap: 8px;
+  transform: none;
+}
 body.mission-active .combat-stage.boss-fight .combat-party-formation,
 body.mission-active .combat-stage.boss-fight.combat-question-open .combat-party-formation {
   left: 10px;
   right: 10px;
   bottom: 10px;
   width: auto;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
   gap: 8px;
   transform: none;
 }
 body.mission-active .combat-party-unit {
+  flex: 0 1 160px;
+  width: 160px;
   display: grid;
   grid-template-columns: 1fr;
   grid-template-rows: 44px auto auto 6px 22px;
@@ -1522,12 +1765,115 @@ body.mission-active .combat-stage.boss-fight.combat-question-open .combat-party-
   width: max-content;
   max-width: calc(100% - 20px);
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: center;
   align-items: flex-end;
   gap: 8px;
   transform: translateX(-50%);
 }
+
+body.mission-active .combat-enemy-formation {
+  flex-wrap: nowrap;
+  justify-content: center;
+}
+
+body.mission-active .map-question-choices.expanded-choice-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 8px;
+}
+
+body.mission-active .map-question-choices.expanded-choice-grid span {
+  display: flex;
+  align-items: center;
+  min-height: 0;
+  padding: 6px 8px;
+  font-size: calc(14px * var(--dashboard-text-scale, 1)) !important;
+  line-height: 1.2;
+}
+
+body.mission-active .map-question-choices.mind-eraser-shuffle {
+  animation: teacher-mind-eraser-flicker 240ms steps(2, end);
+}
+
+@keyframes teacher-mind-eraser-flicker {
+  0% { opacity: .48; transform: translateX(-2px); filter: hue-rotate(18deg); }
+  52% { opacity: .8; transform: translateX(2px); filter: hue-rotate(-14deg); }
+  100% { opacity: 1; transform: none; filter: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.mission-active .map-question-choices.mind-eraser-shuffle { animation: none; }
+}
+
+/* Mission runtime performance layer -------------------------------------
+   Keep the console texture while avoiding full-surface repaints and dozens
+   of independently composited ambient animations. Transient damage, answer,
+   transition, failure, possession, and boss effects remain event-driven. */
+body.mission-active::before,
+body.mission-active::after {
+  animation: none;
+}
+
+body.mission-active #missionMap {
+  animation: none;
+  will-change: auto;
+}
+
+body.mission-active .map-panel:not(.transmission-incorrect):not(.mission-failed) .map-static-overlay,
+body.mission-active .map-panel:not(.transmission-incorrect):not(.mission-failed) .map-static-overlay::before,
+body.mission-active .map-panel:not(.transmission-incorrect):not(.mission-failed) .map-static-overlay::after {
+  animation: none;
+  will-change: auto;
+}
+
+body.mission-active .map-panel:not(.transmission-incorrect):not(.mission-failed) .map-static-overlay {
+  mix-blend-mode: normal;
+  filter: none;
+}
+
+body.mission-active .map-signal-field::before {
+  animation: none;
+}
+
+body.mission-active .map-signal-field i:nth-child(n + 5) {
+  display: none;
+  animation: none;
+}
+
+body.mission-active .map-threat-frame::before,
+body.mission-active .map-threat-frame i,
+body.mission-active .heading-waveform,
+body.mission-active .deployment-waveform,
+body.mission-active .transmission-waveform,
+body.mission-active .player-ability-state.recharging {
+  animation: none;
+}
+
+body.mission-active .heading-waveform i {
+  animation: none;
+  height: 42%;
+}
+
+body.mission-active .heading-waveform i:nth-child(2n) { height: 76%; }
+body.mission-active .heading-waveform i:nth-child(3n) { height: 28%; }
+body.mission-active .heading-waveform i:nth-child(5n) { height: 92%; }
+
+body.mission-log-streaming .mission-log-heading .heading-waveform i {
+  animation: headingWaveformPulse .6s ease-in-out infinite alternate;
+}
+
+body.mission-active .deployment-waveform i,
+body.mission-active .transmission-waveform i {
+  animation: none;
+}
+
+body.mission-active .deployment-waveform i:nth-child(2n),
+body.mission-active .transmission-waveform i:nth-child(2n) { height: 64%; }
+body.mission-active .deployment-waveform i:nth-child(3n),
+body.mission-active .transmission-waveform i:nth-child(3n) { height: 30%; }
+body.mission-active .deployment-waveform i:nth-child(5n),
+body.mission-active .transmission-waveform i:nth-child(5n) { height: 86%; }
+
 body.mission-active .combat-party-unit {
   position: relative;
   display: grid;
@@ -1608,14 +1954,27 @@ body.mission-active .combat-party-unit.answer-wrong {
 /* Give the interference layer visible travel instead of only changing opacity. */
 body.mission-active .combat-stage-scanlines {
   background-size: 100% 8px;
-  animation:
-    combat-scanline-drift 3.2s linear infinite,
-    combat-screen-flicker 2.7s steps(1, end) infinite;
-  will-change: background-position, opacity;
+  animation: none;
+  will-change: auto;
 }
-@keyframes combat-scanline-drift {
-  from { background-position: 0 0; }
-  to { background-position: 0 48px; }
+
+body.mission-active .combat-stage:not(.entering)::after {
+  animation: none;
+}
+
+body.mission-active .combat-stage-header {
+  animation: none;
+}
+
+body.mission-active:has(.combat-stage:not([hidden])) .map-signal-field i {
+  animation: none;
+}
+
+body.mission-active .combat-stage.boss-fight:not(.entering):not(.boss-eyes-attacking):not(.boss-eyes-hit):not(.final-boss-defeated):not(.green-possession-active):not(.green-possession-returning)::before {
+  opacity: .76;
+  transform: none;
+  animation: none;
+  will-change: auto;
 }
 
 /* Resolve-feed entries arrive with their matching action rather than appearing
@@ -1630,6 +1989,15 @@ body.mission-active .combat-status-live-line.visible {
   transform: translateY(0);
 }
 
+body.mission-active .combat-status-round-heading {
+  margin: 0 0 5px;
+  color: var(--console-gold);
+  font-family: Consolas, monospace;
+  font-size: .54rem;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
 /* The compact roster submitted marker must pulse in place. The legacy badge
    animation translates centered pills and made this dot jump sideways. */
 body.mission-active .roster-card-badges .answer-submit-badge {
@@ -1642,13 +2010,82 @@ body.mission-active .roster-card-badges .answer-submit-badge {
   100% { opacity: 1; box-shadow: 0 0 7px rgba(86, 213, 155, .45); }
 }
 
+/* Yellow mid-boss presentation hook. Pre-question sniper and planted-C4
+   designations run one acquisition animation and then stay static; short attack
+   telegraphs can still pulse. This keeps targets readable for the whole answer
+   window without adding another continuous combat-screen animation. */
+body.mission-active .combat-party-unit.yellow-boss-targeted {
+  isolation: isolate;
+  z-index: 12;
+  border-color: #ffd84f !important;
+  box-shadow: 0 0 0 1px rgba(255, 216, 79, .45), 0 0 24px rgba(255, 191, 40, .4) !important;
+}
+body.mission-active .combat-party-unit.yellow-boss-targeted::before {
+  content: "";
+  position: absolute;
+  z-index: 4;
+  inset: -9px;
+  pointer-events: none;
+  border: 2px solid #ffd84f;
+  border-radius: 50%;
+  background:
+    linear-gradient(90deg, transparent 48%, rgba(255, 216, 79, .9) 49% 51%, transparent 52%),
+    linear-gradient(transparent 48%, rgba(255, 216, 79, .9) 49% 51%, transparent 52%);
+  filter: drop-shadow(0 0 5px rgba(255, 190, 32, .78));
+  animation: yellow-boss-target-lock .62s steps(2, end) infinite;
+}
+body.mission-active .combat-party-unit.yellow-boss-targeted::after {
+  content: attr(data-yellow-target);
+  position: absolute;
+  z-index: 5;
+  left: 50%;
+  bottom: calc(100% + 10px);
+  translate: -50% 0;
+  padding: 2px 5px;
+  border: 1px solid rgba(255, 216, 79, .72);
+  color: #fff1a6;
+  background: rgba(18, 12, 2, .94);
+  font: 800 8px/1 Consolas, monospace;
+  letter-spacing: .08em;
+  white-space: nowrap;
+}
+body.mission-active .combat-party-unit.yellow-boss-targeted.c4-armed::before {
+  border-color: #ff9e3d;
+  border-radius: 3px;
+  background: repeating-linear-gradient(135deg, rgba(255, 158, 61, .16) 0 5px, transparent 5px 10px);
+  filter: drop-shadow(0 0 6px rgba(255, 111, 32, .82));
+}
+body.mission-active .combat-party-unit.yellow-boss-targeted.sniper-designated::before {
+  animation: yellow-boss-target-acquire .72s ease-out both;
+}
+body.mission-active .combat-party-unit.yellow-boss-targeted.c4-designated::before {
+  animation: yellow-boss-target-acquire .72s ease-out both;
+}
+@keyframes yellow-boss-target-lock {
+  0%, 100% { opacity: .62; transform: scale(.94) rotate(0); }
+  50% { opacity: 1; transform: scale(1.04) rotate(4deg); }
+}
+@keyframes yellow-boss-target-acquire {
+  0% { opacity: 0; transform: scale(1.35) rotate(-8deg); }
+  65% { opacity: 1; transform: scale(.92) rotate(2deg); }
+  100% { opacity: .82; transform: scale(1) rotate(0); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   body.mission-active .combat-stage-scanlines,
   body.mission-active .combat-party-unit.answer-correct,
   body.mission-active .combat-party-unit.answer-wrong,
-  body.mission-active .roster-card-badges .answer-submit-badge {
+  body.mission-active .combat-party-unit.possessed,
+  body.mission-active .combat-party-unit.possessed::before,
+  body.mission-active .combat-party-unit.possession-confused::after,
+  body.mission-active .combat-party-unit.possession-released,
+  body.mission-active .combat-enemy-unit.summoned.summoning,
+  body.mission-active .roster-card-badges .answer-submit-badge,
+  body.mission-active .combat-party-unit.yellow-boss-targeted::before {
     animation: none !important;
   }
+  body.mission-active .combat-stage.boss-fight.green-possession-active::before { opacity: 0 !important; transform: none !important; }
+  body.mission-active .combat-stage.boss-fight.green-possession-returning::before { opacity: .68 !important; transform: none !important; }
 }
 
 /* Authoritative dashboard overrides: intentionally last in the stylesheet. */
@@ -1953,7 +2390,7 @@ body.mission-active .map-wrap {
 }
 
 body.mission-active:not(.situation-boss) #missionMap {
-  filter: saturate(.76) contrast(1.12) brightness(.84) drop-shadow(0 0 3px rgba(var(--atmo-primary), .18));
+  filter: saturate(.76) contrast(1.12) brightness(.84);
 }
 
 body.mission-active:not(.situation-boss) .map-static-overlay {

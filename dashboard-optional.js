@@ -248,12 +248,13 @@ function submitSimulatorAutoAnswer(participant, promptId, info, attempt = 0, acc
   const shouldBeCorrect = typeof accuracyDecision === "boolean"
     ? accuracyDecision
     : Math.random() * 100 < state.simulatorAutoAnswerAccuracy;
+  const simulatorPlayer = state.players.find((player) => sameName(player.name, participant.name)) || null;
   playerSessionApi.submitAnswer({
     roomCode: state.roomCode,
     playerId: participant.id,
     playerName: participant.name,
     promptId,
-    answer: simulatedAnswerFor(info.question, shouldBeCorrect)
+    answer: simulatedAnswerFor(info.question, shouldBeCorrect, simulatorPlayer)
   })
     .then((result) => {
       if (result?.ok) return playerSessionApi.fetchAnswers(state.roomCode, promptId);
@@ -310,7 +311,8 @@ function simulateDeviceAnswers(mode) {
   if (status) status.textContent = `Submitting ${participants.length} simulated answer${participants.length === 1 ? "" : "s"}...`;
   repairCurrentPromptPublication(promptId).then(() => Promise.all(participants.map((participant, index) => {
     const shouldBeCorrect = mode === "correct" || mode === "mixed" && index % 2 === 0;
-    return submitSimulatorAnswerWithRetry(participant, promptId, simulatedAnswerFor(info.question, shouldBeCorrect));
+    const simulatorPlayer = state.players.find((player) => sameName(player.name, participant.name)) || null;
+    return submitSimulatorAnswerWithRetry(participant, promptId, simulatedAnswerFor(info.question, shouldBeCorrect, simulatorPlayer));
   }))).then((results) => {
     const accepted = results.filter((result) => result?.ok).length;
     const rejected = results.length - accepted;
@@ -405,8 +407,12 @@ function renderItemRewardChoice() {
       <small>${escapeHtml(item.summary)}${item.risk ? " · RISK ITEM" : ""}</small>
     </button>
   `).join("");
-  if (currentItems.length >= 2) {
-    els.itemRewardChoices.insertAdjacentHTML("beforeend", `<label class="item-replace-select">Replace slot <select id="itemRewardReplaceSlot"><option value="0">${escapeHtml(currentItems[0].name)}</option><option value="1">${escapeHtml(currentItems[1].name)}</option></select></label>`);
+  const itemCapacity = Math.max(1, Math.floor(Number(combatSystem.ITEM_CAPACITY) || 1));
+  if (currentItems.length >= itemCapacity) {
+    const slotOptions = currentItems.slice(0, itemCapacity)
+      .map((item, index) => `<option value="${index}">${escapeHtml(item.name)}</option>`)
+      .join("");
+    els.itemRewardChoices.insertAdjacentHTML("beforeend", `<label class="item-replace-select">Replace slot <select id="itemRewardReplaceSlot">${slotOptions}</select></label>`);
   }
   els.itemRewardChoices.insertAdjacentHTML("beforeend", `<button class="item-reward-skip secondary" type="button" data-skip-reward>Leave cache</button>`);
   els.itemRewardContinueBtn.disabled = true;

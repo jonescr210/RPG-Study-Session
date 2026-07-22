@@ -1,8 +1,24 @@
+/*
+ * LOCAL NODE.JS SERVER / REST API
+ * ===============================
+ * Uses Node's built-in http, filesystem, compression, crypto, OS, and child
+ * process modules—there is no Express dependency. The server:
+ * - serves the teacher and player web applications with caching/compression;
+ * - stores the current room-code session and synchronizes player devices;
+ * - persists saved question sets, music presets, and optional DM feed files;
+ * - proxies local AI requests to Ollama or LM Studio;
+ * - proxies ElevenLabs streaming TTS and launches local Piper/Kokoro workers;
+ * - exposes health and trace endpoints used by preflight/debug tooling.
+ *
+ * Start with playerSession below for the shared network model, then read the
+ * http.createServer() route table to see every /api endpoint and its validation.
+ */
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const zlib = require("zlib");
+const crypto = require("crypto");
 const { spawn } = require("child_process");
 const sharedData = require("./shared-data.js");
 
@@ -25,6 +41,13 @@ const PLAYER_PROMPT_SERVER_ARM_MS = 900;
 const PLAYER_CLASS_IDS = ["soldier", "medic", "scout", "enforcer", "engineer", "tactician"];
 const EXTERNAL_REQUEST_TIMEOUT_MS = 60_000;
 const STATUS_REQUEST_TIMEOUT_MS = 10_000;
+const elevenLabsApiKey = String(process.env.ELEVENLABS_API_KEY || "").trim();
+const elevenLabsModel = String(process.env.ELEVENLABS_MODEL || "eleven_flash_v2_5").trim();
+const elevenLabsSpeechSessions = new Map();
+const elevenLabsVoicePreviews = new Map();
+const excludedElevenLabsVoiceNames = new Set([
+  "adam", "antoni", "arnold", "bella", "brian", "daniel", "domi", "elli", "josh", "rachel", "sam"
+]);
 const defaultPiperExePath = path.join(root, "tts", "piper", process.platform === "win32" ? "piper.exe" : "piper");
 const defaultPiperModelPath = path.join(root, "tts", "voices", "en_GB-northern_english_male-medium.onnx");
 const piperExePath = process.env.PIPER_EXE || defaultPiperExePath;
@@ -227,6 +250,9 @@ let currentFeed = readFeed();
 let currentAnswer = readAnswer();
 let questionSetStore = readQuestionSetStore();
 let musicPresetStore = readMusicPresetStore();
+// In-memory coordination record for one active classroom game. `revision`
+// changes whenever player-visible state changes, allowing clients to receive a
+// lightweight 204 response when their cached copy is already current.
 let playerSession = {
   roomCode: "",
   status: "setup",
@@ -661,6 +687,97 @@ function piperStatus() {
   };
 }
 
+function elevenLabsStatus() {
+  return {
+    available: Boolean(elevenLabsApiKey),
+    model: elevenLabsModel,
+    voiceName: "ElevenLabs Flash",
+    error: elevenLabsApiKey ? "" : "Set ELEVENLABS_API_KEY and restart the server"
+  };
+}
+
+async function fetchElevenLabsVoices() {
+  if (!elevenLabsApiKey) throw new Error("ElevenLabs API key is not configured");
+  const response = await fetch("https://api.elevenlabs.io/v2/voices?page_size=100", {
+    headers: { "xi-api-key": elevenLabsApiKey },
+    signal: AbortSignal.timeout(STATUS_REQUEST_TIMEOUT_MS)
+  });
+  if (!response.ok) {
+    const detail = sanitizeText(await response.text(), { maxLength: 500 });
+    throw new Error(detail || `ElevenLabs voice lookup failed with HTTP ${response.status}`);
+  }
+  const body = await response.json();
+  const voices = (Array.isArray(body.voices) ? body.voices : []).map((voice) => ({
+    id: sanitizeText(voice.voice_id, { maxLength: 100 }),
+    name: sanitizeText(voice.name, { maxLength: 100 }) || "ElevenLabs voice",
+    category: sanitizeText(voice.category, { maxLength: 60 }),
+    previewUrl: /^https:\/\//i.test(String(voice.preview_url || "")) ? String(voice.preview_url) : ""
+  })).filter((voice) => {
+    if (!voice.id) return false;
+    const canonicalName = voice.name.split(/\s+-\s+|:/, 1)[0].trim().toLowerCase();
+    return !excludedElevenLabsVoiceNames.has(canonicalName);
+  }).sort((left, right) => {
+    const categoryRank = (voice) => voice.category === "premade" ? 0 : voice.category === "generated" ? 1 : 2;
+    return categoryRank(left) - categoryRank(right) || left.name.localeCompare(right.name);
+  });
+  elevenLabsVoicePreviews.clear();
+  voices.forEach((voice) => {
+    if (voice.previewUrl) elevenLabsVoicePreviews.set(voice.id, voice.previewUrl);
+  });
+  return voices.map(({ previewUrl, ...voice }) => voice);
+}
+
+async function requestElevenLabsSpeech(text, options = {}) {
+  if (!elevenLabsApiKey) throw new Error("ElevenLabs API key is not configured");
+  const voiceId = sanitizeText(options.voiceId, { maxLength: 100 });
+  if (!voiceId) throw new Error("Select an ElevenLabs voice");
+  const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}/stream?output_format=mp3_44100_128`, {
+    method: "POST",
+    headers: {
+      "accept": "audio/mpeg",
+      "content-type": "application/json",
+      "xi-api-key": elevenLabsApiKey
+    },
+    body: JSON.stringify({
+      text,
+      model_id: elevenLabsModel,
+      voice_settings: {
+        stability: 0.55,
+        similarity_boost: 0.75,
+        style: 0,
+        use_speaker_boost: false,
+        speed: Math.max(0.75, Math.min(1.25, Number(options.rate) || 1))
+      }
+    }),
+    signal: AbortSignal.timeout(EXTERNAL_REQUEST_TIMEOUT_MS)
+  });
+  if (!response.ok || !response.body) {
+    const detail = sanitizeText(await response.text(), { maxLength: 700 });
+    throw new Error(detail || `ElevenLabs speech failed with HTTP ${response.status}`);
+  }
+  return response;
+}
+
+async function pipeElevenLabsSpeech(res, session) {
+  const startedAt = Date.now();
+  const upstream = await requestElevenLabsSpeech(session.text, session);
+  res.writeHead(200, {
+    "content-type": "audio/mpeg",
+    "cache-control": "no-store",
+    "transfer-encoding": "chunked"
+  });
+  const reader = upstream.body.getReader();
+  let audioBytes = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    audioBytes += value.byteLength;
+    if (!res.write(Buffer.from(value))) await new Promise((resolve) => res.once("drain", resolve));
+  }
+  serverTrace("tts.completed", { provider: "elevenlabs", durationMs: Date.now() - startedAt, textChars: session.text.length, audioBytes });
+  res.end();
+}
+
 function generatePiperSpeech(text, options = {}) {
   return new Promise((resolve, reject) => {
     const status = piperStatus();
@@ -907,6 +1024,8 @@ function prependWavSilence(buffer, silenceMs = 250) {
   }
 }
 
+// Central REST router. Each branch validates method/path and delegates to the
+// relevant session, storage, local-model, or speech service operation.
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
@@ -1551,9 +1670,59 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/tts/status" && req.method === "GET") {
-      const provider = url.searchParams.get("provider") === "kokoro" ? "kokoro" : "piper";
-      const status = provider === "kokoro" ? kokoroStatus() : piperStatus();
+      const requestedProvider = url.searchParams.get("provider");
+      const provider = ["kokoro", "elevenlabs"].includes(requestedProvider) ? requestedProvider : "piper";
+      const status = provider === "kokoro" ? kokoroStatus() : provider === "elevenlabs" ? elevenLabsStatus() : piperStatus();
       return sendJson(res, 200, { ok: true, provider, ...status });
+    }
+
+    if (url.pathname === "/api/tts/voices" && req.method === "GET") {
+      if (url.searchParams.get("provider") !== "elevenlabs") return sendJson(res, 400, { ok: false, error: "Unsupported voice provider" });
+      const voices = await fetchElevenLabsVoices();
+      return sendJson(res, 200, { ok: true, provider: "elevenlabs", voices });
+    }
+
+    if (url.pathname === "/api/tts/preview" && req.method === "GET") {
+      const voiceId = sanitizeText(url.searchParams.get("voiceId"), { maxLength: 100 });
+      if (!voiceId) return sendJson(res, 400, { ok: false, error: "Voice is required" });
+      if (!elevenLabsVoicePreviews.size) await fetchElevenLabsVoices();
+      const previewUrl = elevenLabsVoicePreviews.get(voiceId);
+      if (!previewUrl) return sendJson(res, 404, { ok: false, error: "Voice preview unavailable" });
+      const preview = await fetch(previewUrl, { signal: AbortSignal.timeout(STATUS_REQUEST_TIMEOUT_MS) });
+      if (!preview.ok) return sendJson(res, 502, { ok: false, error: `Voice preview failed with HTTP ${preview.status}` });
+      const audio = Buffer.from(await preview.arrayBuffer());
+      const upstreamContentType = preview.headers.get("content-type") || "";
+      res.writeHead(200, {
+        "Content-Type": upstreamContentType.startsWith("audio/") ? upstreamContentType : "audio/mpeg",
+        "Content-Length": audio.length,
+        "Cache-Control": "public, max-age=86400"
+      });
+      res.end(audio);
+      return;
+    }
+
+    if (url.pathname === "/api/tts/session" && req.method === "POST") {
+      const body = await readBody(req);
+      const parsed = body ? JSON.parse(body) : {};
+      if (parsed.provider !== "elevenlabs") return sendJson(res, 400, { ok: false, error: "Unsupported streaming provider" });
+      if (!elevenLabsApiKey) return sendJson(res, 503, { ok: false, error: "ElevenLabs API key is not configured" });
+      const text = sanitizeText(parsed.text, { maxLength: 2500 });
+      const voiceId = sanitizeText(parsed.voiceId, { maxLength: 100 });
+      if (!text || !voiceId) return sendJson(res, 400, { ok: false, error: "Text and voice are required" });
+      const token = crypto.randomUUID();
+      elevenLabsSpeechSessions.set(token, { text, voiceId, rate: parsed.rate, createdAt: Date.now() });
+      const expiry = setTimeout(() => elevenLabsSpeechSessions.delete(token), 60_000);
+      expiry.unref?.();
+      return sendJson(res, 200, { ok: true, streamUrl: `/api/tts/stream/${token}` });
+    }
+
+    if (url.pathname.startsWith("/api/tts/stream/") && req.method === "GET") {
+      const token = url.pathname.slice("/api/tts/stream/".length);
+      const session = elevenLabsSpeechSessions.get(token);
+      elevenLabsSpeechSessions.delete(token);
+      if (!session) return sendJson(res, 404, { ok: false, error: "Speech stream expired" });
+      await pipeElevenLabsSpeech(res, session);
+      return;
     }
 
     if (url.pathname === "/api/tts/speak" && req.method === "POST") {
@@ -1561,7 +1730,7 @@ const server = http.createServer(async (req, res) => {
       const parsed = body ? JSON.parse(body) : {};
       const text = sanitizeText(parsed.text, { maxLength: 2500 });
       if (!text) return sendJson(res, 400, { ok: false, error: "Missing text" });
-      const provider = parsed.provider === "kokoro" ? "kokoro" : "piper";
+      const provider = ["kokoro", "elevenlabs"].includes(parsed.provider) ? parsed.provider : "piper";
       const ttsStartedAt = Date.now();
       serverTrace("tts.started", {
         provider,
@@ -1569,6 +1738,10 @@ const server = http.createServer(async (req, res) => {
         rate: Number(parsed.rate) || 1,
         voiceId: parsed.voiceId ?? null
       });
+      if (provider === "elevenlabs") {
+        await pipeElevenLabsSpeech(res, { text, rate: parsed.rate, voiceId: parsed.voiceId });
+        return;
+      }
       const audio = provider === "kokoro"
         ? await generateKokoroSpeech(text, { rate: parsed.rate, voiceId: parsed.voiceId })
         : await generatePiperSpeech(text, { rate: parsed.rate });

@@ -1,3 +1,11 @@
+/*
+ * SHARED CONTENT AND SANITIZATION
+ * ===============================
+ * Data used on both teacher and player surfaces: simulator identities,
+ * profanity substitution, free-form action vocabularies, and text-cleaning
+ * helpers. The dual browser/CommonJS wrapper keeps identical sanitization rules
+ * available to the Node server without bundling or a framework runtime.
+ */
 (function exposeStudyAdventureShared(root, factory) {
   const shared = factory();
   if (typeof module !== "undefined" && module.exports) {

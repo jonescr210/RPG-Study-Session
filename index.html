@@ -1,12 +1,17 @@
 <!doctype html>
 <html lang="en">
+  <!--
+    Teacher application shell. IDs are deliberately stable because app.js uses
+    them as view mounts for setup, mission map, combat, logs, audio, and debug
+    controls. dashboard.css is generated; mission-console-live.css is the final
+    active-mission visual layer.
+  -->
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Study Adventure Mission Console</title>
-    <link rel="preload" as="image" href="assets/boss-swipe-sprite.webp?v=2" type="image/webp">
-  <link rel="stylesheet" href="dashboard.css?v=ui-split-1">
-  <link rel="stylesheet" href="mission-console-live.css?v=37">
+  <link rel="stylesheet" href="dashboard.css?v=playthrough-fixes-1">
+  <link rel="stylesheet" href="mission-console-live.css?v=ultimate-meter-1">
   </head>
   <body>
     <div class="app-shell">
@@ -70,10 +75,6 @@
                   Custom Environment
                   <input id="customTheme" type="text" placeholder="Optional variation within the selected theme">
                 </label>
-                <div class="environment-generator">
-                  <button id="generateEnvironmentBtn" class="secondary" type="button">Generate Environment + Boss</button>
-                  <p id="generatedEnvironmentNote" class="field-note">Let the local DM create a custom mission location and persistent enemy.</p>
-                </div>
               </section>
 
               <section class="setup-section">
@@ -143,13 +144,46 @@
                   </span>
                 </label>
                 <label id="bossTestPhaseField" class="setup-inline-field" hidden>
-                  Boss test target
+                  Boss rank
                   <select id="bossTestPhase">
                     <option value="mid">Mid boss — level 2/3 operators</option>
                     <option value="final" selected>Final boss — max-level operators</option>
                   </select>
-                  <span class="field-note">Mid assumes two prior combats; Final includes a simulated mid-boss Epic item.</span>
+                  <span class="field-note">Mid assumes two prior combats; Final starts with max-level operators.</span>
                 </label>
+                <label id="bossTestVisualField" class="setup-inline-field" hidden>
+                  Boss type
+                  <select id="bossTestVisual">
+                    <option value="blood-red">Red eyes — physical assault</option>
+                    <option value="spectral-green">Green eyes — spectral possession</option>
+                    <option value="signal-yellow">Yellow eyes</option>
+                    <option value="arc-blue">Blue eyes</option>
+                  </select>
+                  <span class="field-note">Forces the selected eye profile and its rank-specific behavior in the test encounter.</span>
+                </label>
+
+                <fieldset id="bossPoolField" class="boss-pool-field">
+                  <legend>Optional Boss Pool</legend>
+                  <div class="boss-pool-grid">
+                    <label class="toggle-field boss-pool-option">
+                      <input type="checkbox" data-boss-pool-id="blood-red" checked>
+                      <span>Red eyes<small>Physical assault</small></span>
+                    </label>
+                    <label class="toggle-field boss-pool-option">
+                      <input type="checkbox" data-boss-pool-id="spectral-green" checked>
+                      <span>Green eyes<small>Spectral possession</small></span>
+                    </label>
+                    <label class="toggle-field boss-pool-option">
+                      <input type="checkbox" data-boss-pool-id="signal-yellow" checked>
+                      <span>Yellow eyes<small>Ballistic tactics</small></span>
+                    </label>
+                    <label class="toggle-field boss-pool-option">
+                      <input type="checkbox" data-boss-pool-id="arc-blue" checked>
+                      <span>Blue eyes<small>Xenomorphic horror</small></span>
+                    </label>
+                  </div>
+                  <span id="bossPoolNote" class="field-note">Enabled bosses are randomly assigned to mid and final encounters. At least one must remain enabled.</span>
+                </fieldset>
 
                 <label class="toggle-field">
                   <input id="combatTestMode" type="checkbox">
@@ -231,7 +265,7 @@ Fill-in-the-blank format:
 
 Difficulty: Easy
 2. Write a sentence or prompt with a blank shown as ______.
-Correct Answer: Short answer
+Correct Answer: Term
 
 True/False format:
 
@@ -247,7 +281,7 @@ Place the correct answer on its own final line.
 Do not add explanations, headings, introductions, summaries, tables, or markdown formatting.
 Mix straightforward recall questions with application questions.
 Make about 70% multiple choice, 15% fill in the blank, and 15% true/false.
-Fill-in-the-blank answers should usually be 1-3 words.
+Every fill-in-the-blank answer must be a single word containing no more than 8 letters. Do not generate a fill-in-the-blank question when the correct answer exceeds this limit.
 Do not group questions under difficulty headings. Repeat the Difficulty line before every question.
 
 Generate [NUMBER] questions.</textarea>
@@ -314,6 +348,13 @@ Generate [NUMBER] questions.</textarea>
                     <small>Once per mission, the final active operator survives at 1 HP and must answer the next question correctly.</small>
                   </span>
                 </label>
+                <label class="toggle-field">
+                  <input id="secondChanceEnabled" type="checkbox">
+                  <span>
+                    Operator Second Chance
+                    <small>Downed operators keep answering and return at 25% health after two consecutive correct responses of their own, braced for their first round back.</small>
+                  </span>
+                </label>
                 <label id="teacherTextSizeGroup">
                   Teacher text size
                   <select id="teacherTextSize">
@@ -337,6 +378,7 @@ Generate [NUMBER] questions.</textarea>
                     Narrator provider
                     <select id="setupTtsProvider">
                       <option value="browser">Browser Voice</option>
+                      <option value="elevenlabs">ElevenLabs Streaming</option>
                       <option value="piper">Local Piper</option>
                       <option value="kokoro">Local Kokoro</option>
                     </select>
@@ -346,8 +388,16 @@ Generate [NUMBER] questions.</textarea>
                     <select id="setupTtsVoiceSelect">
                       <option value="">Loading voices...</option>
                     </select>
+                    <button id="setupTtsVoicePreviewBtn" class="secondary elevenlabs-preview-button" type="button" hidden>Preview</button>
                   </label>
                 </div>
+                <label class="check-row elevenlabs-condensed-toggle" hidden>
+                  <input id="setupElevenLabsCondensedCombat" type="checkbox">
+                  <span>
+                    Condensed combat narration
+                    <small>ElevenLabs only. Limits ongoing combat exchanges to one or two priority-focused sentences.</small>
+                  </span>
+                </label>
                 <label>
                   Game sound effects
                   <select id="sfxPreset">
@@ -515,7 +565,7 @@ Generate [NUMBER] questions.</textarea>
             <section id="combatStage" class="combat-stage" hidden aria-label="Combat visualization">
               <div class="combat-stage-wipe" aria-hidden="true"><i></i><i></i><i></i></div>
               <div id="combatBossIntro" class="combat-boss-intro" hidden aria-hidden="true">
-                <video id="combatBossIntroVideo" muted playsinline preload="metadata" disablepictureinpicture controlslist="nodownload noremoteplayback"
+                <video id="combatBossIntroVideo" muted playsinline preload="metadata" disablepictureinpicture disableremoteplayback tabindex="-1" aria-hidden="true" controlslist="nodownload noremoteplayback nofullscreen"
                   data-mid-src="assets/boss-eyes-intro-july17.mp4?v=1"
                   data-final-src="assets/boss-eyes-final-intro-60fps.mp4?v=1">
                 </video>
@@ -689,6 +739,7 @@ Generate [NUMBER] questions.</textarea>
                   Provider
                   <select id="ttsProvider">
                     <option value="browser">Browser Voice</option>
+                    <option value="elevenlabs">ElevenLabs Streaming</option>
                     <option value="piper">Local Piper</option>
                     <option value="kokoro">Local Kokoro</option>
                   </select>
@@ -696,6 +747,7 @@ Generate [NUMBER] questions.</textarea>
                 <label>
                   Voice
                   <select id="ttsVoiceSelect"></select>
+                  <button id="ttsVoicePreviewBtn" class="secondary elevenlabs-preview-button" type="button" hidden>Preview</button>
                 </label>
                 <label>
                   Speed
@@ -716,6 +768,7 @@ Generate [NUMBER] questions.</textarea>
               <div class="mission-audio-toggles">
                 <label><input id="ttsAutoLog" type="checkbox"> Auto-read log</label>
                 <label><input id="ttsAutoQuestion" type="checkbox"> Auto-read questions</label>
+                <label class="elevenlabs-condensed-toggle" hidden><input id="ttsElevenLabsCondensedCombat" type="checkbox"> Condensed combat narration</label>
               </div>
               <div class="mission-audio-background" id="backgroundMusicPanel" hidden>
                 <div class="mission-audio-heading">
@@ -828,8 +881,8 @@ Generate [NUMBER] questions.</textarea>
   <script src="local-dm-prompts.js?v=cleanup-2"></script>
   <script src="player-session.js?v=stall-guard-1"></script>
   <script src="action-rooms.js?v=cleanup-1"></script>
-  <script src="combat-system.js?v=enforcer-reserve-1"></script>
+  <script src="combat-system.js?v=item-reset-1"></script>
   <script src="tts-manager.js?v=audio-enabled-3"></script>
-  <script src="app.js?v=boss-ready-audio-11"></script>
+  <script src="app.js?v=playthrough-fixes-1"></script>
 </body>
 </html>

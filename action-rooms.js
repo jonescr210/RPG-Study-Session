@@ -1,3 +1,11 @@
+/*
+ * ACTION-ROOM DOMAIN MODULE
+ * =========================
+ * Defines non-quiz room archetypes and their fallback entities. These records
+ * give AI-judged free-form actions a bounded world model—objects, hazards,
+ * enemies, routes, and NPCs with explicit state—so results can be validated and
+ * applied without allowing generated prose to become authoritative game state.
+ */
 (function exposeStudyAdventureActionRooms(root, factory) {
   const actionRooms = factory();
   if (typeof module !== "undefined" && module.exports) {

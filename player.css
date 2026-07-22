@@ -6,19 +6,14 @@
   initial-value: 90;
 }
 
-body.mission-log-streaming .encounter::before {
-  position: absolute;
-  top: 0;
-  right: 0;
-  left: 0;
-  z-index: 5;
-  height: 2px;
-  content: "";
-  pointer-events: none;
-  opacity: 0.82;
-  background: linear-gradient(90deg, transparent, rgba(var(--atmo-primary), 0.96), rgba(var(--atmo-secondary), 0.8), transparent);
-  box-shadow: 0 0 14px rgba(var(--atmo-primary), 0.5);
-  animation: missionLogAcquisition 2.8s ease-in-out infinite;
+.player-choice-grid.mind-eraser-shuffle {
+  animation: mind-eraser-choice-flicker 240ms steps(2, end);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .player-choice-grid.mind-eraser-shuffle {
+    animation: none;
+  }
 }
 
 .player-signal-field,
@@ -205,24 +200,15 @@ body.mission-log-streaming .encounter::before {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .map-signal-field,
-  .map-signal-field::before,
-  .map-signal-field::after,
-  .map-signal-field i,
-  .map-threat-frame,
-  .map-threat-frame::before,
-  .map-threat-frame i,
-  body.mission-log-streaming .encounter::before,
-  body.situation-party-critical:not(.situation-failure) .play-panel,
   .player-signal-field::before,
-  .player-signal-field i,
-  .player-card::before,
-  .player-body.player-query-arrival .player-prompt,
-  .player-body.player-query-arrival .player-prompt::after,
-  .player-body.player-answer-confirmed .player-card,
-  .player-body.player-answer-confirmed .submitted-waiting::before,
-  .player-body.player-time-final .player-card,
-  .player-body.player-damage-shake .player-impact-overlay {
+.player-signal-field i,
+.player-card::before,
+.player-body.player-query-arrival .player-prompt,
+.player-body.player-query-arrival .player-prompt::after,
+.player-body.player-answer-confirmed .player-card,
+.player-body.player-answer-confirmed .submitted-waiting::before,
+.player-body.player-time-final .player-card,
+.player-body.player-damage-shake .player-impact-overlay {
     animation: none !important;
   }
 }
@@ -896,8 +882,8 @@ body {
   }
 
   .player-prompt-area,
-  .player-prompt,
-  .player-waiting {
+.player-prompt,
+.player-waiting {
     gap: 5px;
     min-height: 0;
   }
@@ -912,11 +898,11 @@ body {
   }
 
   .player-prompt > span,
-  .player-boss-alert,
-  .player-countdown-heading,
-  .player-action-form label,
-  .player-submit-status,
-  .field-note {
+.player-boss-alert,
+.player-countdown-heading,
+.player-action-form label,
+.player-submit-status,
+.field-note {
     font-size: 0.64rem;
   }
 
@@ -971,7 +957,7 @@ body {
   }
 
   .player-class-loadout,
-  .player-inventory-panel {
+.player-inventory-panel {
     gap: 3px;
     padding: 5px 6px;
   }
@@ -984,7 +970,7 @@ body {
   }
 
   .player-class-loadout-heading strong,
-  .player-inventory-panel > strong {
+.player-inventory-panel > strong {
     font-size: 0.64rem;
   }
 
@@ -1031,23 +1017,23 @@ body {
   }
 
   .player-fill-form,
-  .player-action-row {
+.player-action-row {
     grid-template-columns: 1fr;
   }
 
   .player-fill-form button,
-  .player-action-row button {
+.player-action-row button {
     width: 100%;
   }
 
   #missionCard > *,
-  #missionCard .player-vitals,
-  #missionCard .player-prompt-area,
-  #missionCard .player-loadout-area,
-  #missionCard .player-class-panel,
-  #missionCard .player-queued-action-panel,
-  #missionCard .player-prompt,
-  #missionCard .player-waiting {
+#missionCard .player-vitals,
+#missionCard .player-prompt-area,
+#missionCard .player-loadout-area,
+#missionCard .player-class-panel,
+#missionCard .player-queued-action-panel,
+#missionCard .player-prompt,
+#missionCard .player-waiting {
     position: static;
     z-index: auto;
     transform: none;
@@ -1063,13 +1049,13 @@ body {
   }
 
   .player-vitals,
-  .player-vitals-modern,
-  .player-prompt-area,
-  .player-prompt,
-  .player-waiting,
-  .player-loadout-area,
-  .player-queued-action-panel,
-  .player-class-panel {
+.player-vitals-modern,
+.player-prompt-area,
+.player-prompt,
+.player-waiting,
+.player-loadout-area,
+.player-queued-action-panel,
+.player-class-panel {
     width: 100%;
   }
 
@@ -1082,19 +1068,19 @@ body {
   }
 
   .player-prompt-area > .player-prompt,
-  .player-prompt-area > .player-waiting {
+.player-prompt-area > .player-waiting {
     display: grid;
   }
 
   .player-prompt [data-prompt-action],
-  .player-prompt .player-action-form,
-  .player-queued-action-panel .player-action-form,
-  .player-choice-grid,
-  .player-answer-controls,
-  .player-fill-form,
-  .player-action-row,
-  .player-class-action-row,
-  .player-inventory-actions {
+.player-prompt .player-action-form,
+.player-queued-action-panel .player-action-form,
+.player-choice-grid,
+.player-answer-controls,
+.player-fill-form,
+.player-action-row,
+.player-class-action-row,
+.player-inventory-actions {
     position: static;
     width: 100%;
     min-width: 0;
@@ -1102,20 +1088,20 @@ body {
   }
 
   .player-prompt > h2,
-  .player-prompt > p,
-  .player-prompt .player-submit-status,
-  .player-prompt .player-class-hint,
-  .player-prompt .player-countdown,
-  .player-vitals-modern small,
-  .player-inventory-row small {
+.player-prompt > p,
+.player-prompt .player-submit-status,
+.player-prompt .player-class-hint,
+.player-prompt .player-countdown,
+.player-vitals-modern small,
+.player-inventory-row small {
     overflow-wrap: anywhere;
     word-break: normal;
   }
 
   .playerChoiceBtn,
-  .player-fill-form button,
-  .player-action-row button,
-  .player-ability-btn {
+.player-fill-form button,
+.player-action-row button,
+.player-ability-btn {
     position: relative;
     z-index: 1;
   }
@@ -1134,12 +1120,6 @@ body {
   min-height: 20px;
   color: var(--muted);
   font-size: 0.9rem;
-}
-
-.operators-deployed-message.standby {
-  border-color: rgba(143, 227, 156, 0.18);
-  box-shadow: inset 0 0 16px rgba(0, 0, 0, 0.34);
-  text-shadow: none;
 }
 
 button,
@@ -1170,194 +1150,12 @@ button:disabled {
   opacity: 0.55;
 }
 
-button.danger {
-  color: var(--ink);
-  background: #4a211e;
-  border-color: #814039;
-}
-
-.topbar h1,
-.panel-header h2,
-.briefing h2 {
-  margin: 0;
-  letter-spacing: 0;
-}
-
 .eyebrow {
   margin: 0 0 4px;
   color: var(--accent-2);
   font-size: 0.78rem;
   font-weight: 800;
   text-transform: uppercase;
-}
-
-.topbar .eyebrow {
-  margin: 0;
-  font-size: 0.62rem;
-}
-
-.mission-utility-buttons button.active {
-  border-color: rgba(210, 168, 79, 0.66);
-  color: var(--accent);
-  background: rgba(210, 168, 79, 0.16);
-}
-
-.debug-console-row.error {
-  border-color: rgba(188, 81, 72, 0.52);
-}
-
-.debug-console-row.room {
-  border-color: rgba(210, 168, 79, 0.34);
-  background: rgba(26, 22, 12, 0.82);
-}
-
-.layout {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 16px;
-  align-items: start;
-}
-
-body.mission-active .topbar .eyebrow {
-  font-size: 0.56rem;
-}
-
-body.mission-active .layout {
-  min-height: 0;
-  height: 100%;
-  gap: 8px;
-  padding-top: 2px;
-  overflow: hidden;
-  align-items: stretch;
-  grid-template-columns: minmax(390px, 0.9fr) minmax(480px, 1.1fr);
-}
-
-.setup-panel,
-.map-panel,
-.play-panel,
-.briefing,
-.mission-log-heading,
-.status-update-panel,
-.encounter,
-.status-card,
-.inventory-card,
-.recovery-card {
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 8px;
-  background: rgba(17, 22, 26, 0.96);
-  box-shadow: var(--shadow);
-}
-
-body.mission-active .briefing,
-body.mission-active .status-card {
-  border-color: rgba(var(--atmo-primary), 0.28);
-  transition: border-color 0.7s ease, box-shadow 0.7s ease, background-color 0.7s ease;
-}
-
-body.mission-active .mission-log-heading,
-body.mission-active .status-update-panel,
-body.mission-active .encounter,
-body.mission-active .mission-progress,
-body.mission-active .last-answer-panel,
-body.mission-active .inventory-actions,
-body.mission-active .mission-utility-shell {
-  border-color: rgba(var(--atmo-primary), 0.3);
-  background:
-  linear-gradient(100deg, rgba(var(--atmo-primary), 0.075), transparent 42%),
-  linear-gradient(180deg, var(--surface-panel-top), var(--surface-panel-bottom));
-  box-shadow: inset 0 1px rgba(var(--atmo-secondary), 0.07), 0 8px 22px rgba(0, 0, 0, 0.22);
-}
-
-body.mission-active .status-card:not(.incapacitated):not(.low-health) {
-  border-color: rgba(var(--atmo-primary), 0.38);
-  border-left: 3px solid var(--player-color, var(--accent-2));
-  background:
-  linear-gradient(90deg, rgba(var(--atmo-primary), 0.14), transparent 46%),
-  linear-gradient(180deg, var(--surface-card-top), var(--surface-card-bottom));
-  box-shadow: inset 0 1px rgba(255, 255, 255, 0.035), inset 4px 0 rgba(var(--atmo-secondary), 0.025), 0 5px 15px rgba(0, 0, 0, 0.24);
-}
-
-body.dashboard-booting.dashboard-stage-center-top .map-main > .panel-header,
-body.dashboard-booting.dashboard-stage-center-screen .map-main > .map-wrap,
-body.dashboard-booting.dashboard-stage-center-initiative .map-main > .initiative-timeline,
-body.dashboard-booting.dashboard-stage-center-legend .map-main > .legend,
-body.dashboard-booting.dashboard-stage-center-simulator .map-main > .sim-tool-panel,
-body.dashboard-booting.dashboard-stage-center-controls .map-main > .map-control-dock,
-body.dashboard-booting.dashboard-stage-center-route .map-main > .route-telemetry,
-body.dashboard-booting.dashboard-stage-center-timer .map-main > .map-emergency-timer,
-body.dashboard-booting.dashboard-stage-left-progress .map-sidebar > .mission-progress,
-body.dashboard-booting.dashboard-stage-left-operators .map-sidebar > .status-grid,
-body.dashboard-booting.dashboard-stage-left-supplies .map-sidebar > .inventory-actions,
-body.dashboard-booting.dashboard-stage-left-devices .map-sidebar > .player-session-panel,
-body.dashboard-booting.dashboard-stage-right-log .play-panel > .briefing,
-body.dashboard-booting.dashboard-stage-right-log .play-panel > .mission-log-heading,
-body.dashboard-booting.dashboard-stage-right-encounter .play-panel > .encounter,
-body.dashboard-booting.dashboard-stage-right-status .play-panel > .status-update-panel,
-body.dashboard-booting.dashboard-stage-right-tools .play-panel > .play-control-dock,
-body.dashboard-booting.dashboard-stage-right-tools .play-panel > .mission-utility-shell {
-  visibility: visible;
-  opacity: 1;
-  filter: blur(0);
-  transform: translateY(0) scale(1);
-  transition-delay: 0s;
-  animation: dashboardElementOnline 0.82s cubic-bezier(0.16, 0.76, 0.24, 1) both;
-}
-
-body.dashboard-booting .encounter .placeholder-transmission {
-  visibility: hidden;
-  opacity: 0;
-}
-
-body.dashboard-online .encounter .placeholder-transmission {
-  animation: dashboardTransmissionOnline 0.72s 0.2s ease-out both;
-}
-
-body.mission-active .eyebrow {
-  margin-bottom: 2px;
-  font-size: 0.64rem;
-}
-
-.environment-generator .field-note {
-  flex: 1 1 220px;
-  margin: 0;
-  color: #9cd6d2;
-}
-
-.field-note.input-warning {
-  color: #f1a191;
-  font-weight: 700;
-}
-
-.launch-status.error {
-  color: var(--danger);
-}
-
-.system-check-row.ok {
-  border-color: rgba(91, 149, 102, 0.38);
-  background: rgba(18, 48, 28, 0.28);
-}
-
-.system-check-row.ok strong {
-  color: #8fe39c;
-}
-
-.system-check-row.warn,
-.system-check-row.checking {
-  border-color: rgba(210, 168, 79, 0.34);
-  background: rgba(46, 36, 16, 0.24);
-}
-
-.system-check-row.warn strong,
-.system-check-row.checking strong {
-  color: var(--accent);
-}
-
-.panel-header p,
-.briefing p,
-details p {
-  margin: 6px 0 0;
-  color: var(--muted);
-  line-height: 1.45;
 }
 
 label {
@@ -1419,262 +1217,11 @@ textarea {
   line-height: 1.35;
 }
 
-.map-emergency-timer.critical {
-  border-color: rgba(188, 81, 72, 0.68);
-  color: #ef8c83;
-  background: rgba(72, 25, 23, 0.52);
-}
-
-.map-emergency-timer.final-seconds {
-  animation: emergencyPulse 0.7s ease-in-out infinite;
-}
-
-.map-emergency-timer.paused {
-  animation: none;
-  opacity: 0.68;
-}
-
-body.mission-active .briefing,
-body.mission-active .mission-log-heading,
-body.mission-active .status-update-panel,
-body.mission-active .encounter {
-  min-height: 0;
-  padding: 9px 10px;
-}
-
-body.mission-active .briefing {
-  display: none;
-}
-
-body.mission-active .briefing:not(.briefing-collapsed) {
-  max-height: none;
-}
-
-body.mission-active .encounter {
-  position: relative;
-  display: grid;
-  grid-template-rows: minmax(0, 1fr);
-  align-content: start;
-  overflow-y: hidden;
-  overflow-x: hidden;
-  scrollbar-width: none;
-  font-size: 0.88rem;
-  animation: missionLogFadeIn 0.52s ease-out both;
-}
-
-body.mission-active .encounter::-webkit-scrollbar {
-  display: none;
-}
-
-body.mission-active .encounter::after {
-  display: none;
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  height: 18px;
-  background: linear-gradient(180deg, rgba(17, 22, 26, 0), rgba(17, 22, 26, 0.96));
-  content: "";
-  opacity: 0.72;
-  pointer-events: none;
-}
-
-body.mission-active .encounter h3 {
-  margin-bottom: 5px;
-  font-size: 0.96rem;
-  line-height: 1.1;
-}
-
-body.mission-active .encounter p {
-  margin: 5px 0;
-  line-height: 1.34;
-}
-
-.node-dot.current {
-  background: var(--accent);
-}
-
-.node-dot.cleared {
-  background: var(--cleared);
-}
-
-.node-dot.correct {
-  background: var(--correct);
-}
-
-.node-dot.boss {
-  background: var(--boss);
-}
-
-.node-dot.combat {
-  background: #d74435;
-}
-
-.map-node.combat {
-  fill: #b92d28;
-  stroke: #ff8a71;
-  filter: drop-shadow(0 0 7px rgba(255, 78, 58, 0.65));
-}
-
-.briefing,
-.encounter {
-  padding: 16px;
-}
-
-.briefing {
-  font-size: 0.94rem;
-}
-
-.second-wind-badge.pending {
-  border-color: rgba(255, 202, 87, 0.82);
-  color: #ffe19a;
-  background: rgba(100, 67, 18, 0.7);
-  box-shadow: 0 0 14px rgba(255, 196, 69, 0.34);
-  animation: secondWindPendingPulse 1.05s ease-in-out infinite;
-}
-
-body.mission-active .status-card.ems-protected:not(.incapacitated) {
-  outline: 1px solid rgba(111, 243, 235, 0.58);
-  outline-offset: -3px;
-  box-shadow: inset 0 0 20px rgba(65, 213, 208, 0.1), 0 0 16px rgba(65, 213, 208, 0.2);
-}
-
-.last-answer-panel.accepted {
-  border-color: rgba(91, 149, 102, 0.62);
-}
-
-.last-answer-panel.rejected {
-  border-color: rgba(188, 81, 72, 0.68);
-}
-
-.last-answer-panel.feedback-flash.accepted {
-  animation: acceptedFeedback 0.9s ease-out;
-}
-
-.last-answer-panel.feedback-flash.rejected {
-  animation: rejectedFeedback 0.9s ease-out;
-}
-
-.last-answer-panel.rejected .last-answer-heading strong {
-  color: var(--incorrect);
-}
-
-.answer-result-badge.correct {
-  color: #79c986;
-  background: rgba(91, 149, 102, 0.16);
-}
-
-.answer-result-badge.wrong {
-  color: #e07a72;
-  background: rgba(188, 81, 72, 0.16);
-}
-
-.status-impact-float.damage {
-  color: #ff8175;
-}
-
-.status-impact-float.heal {
-  color: #8fe39c;
-}
-
-.reset-confirm-dialog .eyebrow,
-.reset-confirm-dialog h2,
-.reset-confirm-dialog p,
-.reset-confirm-actions {
-  position: relative;
-  z-index: 1;
-}
-
-.reset-confirm-dialog > p:not(.eyebrow) {
-  margin: 0;
-  color: #d9c6c3;
-  line-height: 1.5;
-}
-
-.device-submit-state.submitted {
-  color: #9df4b1;
-  background: rgba(41, 160, 83, 0.16);
-  border-color: rgba(94, 222, 129, 0.34);
-}
-
-.device-submit-state.pending {
-  color: #d8c37a;
-  background: rgba(222, 191, 111, 0.12);
-  border-color: rgba(222, 191, 111, 0.28);
-}
-
-.status-card.incapacitated {
-  border-color: rgba(200, 90, 74, 0.75);
-  background: rgba(76, 28, 25, 0.96);
-  box-shadow: inset 0 0 0 1px rgba(255, 211, 205, 0.14), 0 0 18px rgba(200, 90, 74, 0.28);
-  animation: none;
-}
-
-.status-card.low-health:not(.incapacitated) {
-  border-color: rgba(200, 90, 74, 0.72);
-  animation: lowHealthPulse 1.25s ease-in-out infinite;
-}
-
-.status-card.action-turn-order:not(.incapacitated) {
-  border-color: color-mix(in srgb, var(--player-color) 58%, rgba(255, 204, 87, 0.34));
-  box-shadow:
-  0 0 0 1px color-mix(in srgb, var(--player-color) 36%, transparent),
-  0 0 calc(12px + (7 - min(var(--turn-rank), 6)) * 2px) color-mix(in srgb, var(--player-color) 22%, transparent);
-}
-
-.status-card.action-turn-next:not(.incapacitated) {
-  box-shadow:
-  0 0 0 1px rgba(255, 204, 87, 0.72),
-  0 0 22px color-mix(in srgb, var(--player-color) 46%, rgba(255, 204, 87, 0.32));
-}
-
-.encounter h3 {
-  margin: 0 0 10px;
-  font-size: 1.02rem;
-}
-
-.encounter p {
-  margin: 8px 0;
-  line-height: 1.48;
-}
-
-.choices {
-  display: grid;
-  gap: 8px;
-  margin-top: 10px;
-}
-
-body.mission-active .choices {
-  gap: 5px;
-  margin-top: 7px;
-}
-
-.mission-continue-gate.resolving {
-  opacity: 0.58;
-}
-
-.transmission-waiting.rejected {
-  border-left-color: var(--incorrect);
-}
-
-.transmission-waiting.boss {
-  border-left-color: var(--boss);
-  box-shadow: inset 0 0 0 1px rgba(166, 104, 167, 0.18), 0 0 22px rgba(166, 104, 167, 0.14);
-}
-
-.transmission-waiting.rejected .transmission-heading {
-  color: #ef8c83;
-}
-
 .signal-bars {
   display: flex;
   gap: 3px;
   align-items: flex-end;
   height: 18px;
-}
-
-body.mission-active .signal-bars {
-  height: 14px;
 }
 
 .signal-bars i {
@@ -1700,335 +1247,11 @@ body.mission-active .signal-bars {
   animation-delay: 0.42s;
 }
 
-.transmission-waiting.rejected .transmission-waveform i {
-  background: var(--incorrect);
-}
-
-.transmission-waiting.boss .transmission-waveform i {
-  background: var(--boss);
-  animation-duration: 0.64s;
-}
-
-.ollama-result.error {
-  color: #ffd3cd;
-  border-color: rgba(200, 90, 74, 0.55);
-}
-
-.emergency-countdown.critical {
-  border-color: rgba(188, 81, 72, 0.72);
-  background: rgba(72, 25, 23, 0.52);
-}
-
-.emergency-countdown.critical .emergency-countdown-heading {
-  color: #ef8c83;
-}
-
-.emergency-countdown.critical .emergency-countdown-fill {
-  background: var(--incorrect);
-}
-
-.emergency-countdown.final-seconds {
-  animation: emergencyPulse 0.7s ease-in-out infinite;
-}
-
-.emergency-countdown.paused {
-  animation: none;
-  opacity: 0.72;
-}
-
-.answer-submit-state.pending {
-  color: var(--accent);
-  font-weight: 800;
-}
-
-.critical {
-  color: #ffd3cd;
-  font-weight: 800;
-}
-
-.warning {
-  color: #f0ce7a;
-  font-weight: 800;
-}
-
-.route-line.cleared {
-  stroke: #7f8b79;
-}
-
-.route-line.active {
-  stroke: var(--accent-2);
-}
-
-.map-node.base {
-  fill: var(--node);
-}
-
-.map-node.current {
-  fill: var(--accent);
-  filter: drop-shadow(0 0 12px rgba(217, 184, 95, 0.8));
-}
-
-.map-node.cleared {
-  fill: var(--cleared);
-}
-
-.map-node.correct {
-  fill: var(--correct);
-  filter: drop-shadow(0 0 8px rgba(95, 166, 106, 0.42));
-}
-
-.map-node.boss {
-  fill: var(--boss);
-}
-
-@media (min-width: 1181px) {
-  body.mission-active .layout {
-    grid-template-columns: minmax(250px, 0.52fr) minmax(560px, 1.42fr) minmax(360px, 0.78fr);
-    grid-template-areas: "mission-map mission-map mission-log";
-    gap: 8px;
-  }
-
-  body.mission-active .encounter {
-    min-height: 0;
-  }
-}
-
-@media (max-width: 1180px) {
-  .layout {
-    grid-template-columns: 1fr 1fr;
-  }
-
-  body.mission-active .layout {
-    grid-template-columns: 1fr 1fr;
-  }
-}
-
-@media (max-width: 820px) {
-  .layout {
-    grid-template-columns: 1fr;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  body.mission-active::before,
-  body.mission-active::after,
-  body.mission-active .map-panel::before,
-  body.mission-active .play-panel::before,
-  .map-wrap::before,
-  .map-hud-corners i,
-  body.mission-active .map-static-overlay,
-  body.mission-active #missionMap,
-  .map-boss-eyes,
-  .map-boss-eyes::before,
-  .status-grid.ems-field-active::after,
-  .map-panel.ems-field-active .map-hud-corners i,
-  .ems-field-status,
-  .second-wind-badge.pending,
-  .map-question-card::before,
-  .map-question-choices span,
-  .heading-waveform i,
-  body.dashboard-booting.dashboard-stage-shell .map-panel,
-  body.dashboard-booting.dashboard-stage-shell .play-panel,
-  body.dashboard-booting .map-main > *,
-  body.dashboard-booting .map-sidebar > *,
-  body.dashboard-booting .play-panel > *,
-  body.dashboard-booting.dashboard-stage-left-operators .status-grid .status-card,
-  body.dashboard-map-boot .map-wrap,
-  body.dashboard-map-boot .map-static-overlay,
-  body.dashboard-stage-map-lock #missionMap,
-  body.dashboard-online .map-panel,
-  body.dashboard-online .play-panel,
-  body.dashboard-online .encounter .placeholder-transmission,
-  .map-panel.mission-failed .map-wrap,
-  .map-panel.mission-failed .map-static-overlay,
-  .map-panel.mission-failed .map-failure-overlay,
-  .map-panel.mission-failed .map-failure-overlay::before,
-  .map-panel.mission-failed .map-failure-overlay::after,
-  .map-panel.mission-failed .map-failure-skull,
-  .map-panel.mission-failed .map-failure-short,
-  body.boss-damage-impact:not(.situation-failure) .map-panel.live-console-dashboard,
-  .map-panel.boss-damage-impact .map-wrap,
-  .setup-transition-lock span,
-  body.dashboard-exiting .app-shell,
-  body.dashboard-returning .setup-panel,
-  .deployment-noise,
-  .deployment-scanline,
-  .deployment-sweep,
-  .deployment-target-lock,
-  .deployment-target-lock::before,
-  .deployment-coordinate-stream,
-  .deployment-system-lights i,
-  .status-card-locked-out > *,
-  .status-card-locked-out::after {
-    animation: none !important;
-  }
-}
-
 .player-class-panel {
   margin: 1rem 0;
   padding: 0.9rem;
   border: 1px solid rgba(88, 211, 255, 0.28);
   background: rgba(4, 17, 27, 0.78);
-}
-
-.combat-enemy-unit:not(.boss) {
-  width: min(13.05rem, 31%);
-  animation: none;
-}
-
-.combat-enemy-unit.medium .combat-unit-sprite {
-  color: #f2a54d;
-  transform: scale(1.08);
-}
-
-.combat-enemy-unit.heavy .combat-unit-sprite {
-  color: #d84f67;
-  transform: scale(1.18);
-}
-
-.combat-enemy-unit.boss .combat-unit-sprite {
-  color: #ff3f99;
-  transform: scale(1.35);
-  animation: combat-boss-pulse 1.8s infinite;
-}
-
-.combat-stage.boss-fight .combat-enemy-unit.boss {
-  height: 100%;
-  width: 100%;
-  padding: 0;
-  transform: none;
-  animation: none;
-}
-
-.combat-enemy-unit.boss .combat-boss-eyes-target {
-  position: absolute;
-  top: 2.8rem;
-  left: 0;
-  width: 100%;
-  height: clamp(9rem, 27vh, 14rem);
-  aspect-ratio: auto;
-  transform: none;
-  border: 0;
-  background: none;
-  filter: none;
-  animation: none;
-}
-
-.combat-stage.boss-fight .combat-enemy-unit.boss > strong {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.combat-stage.boss-fight .combat-enemy-unit.boss > .combat-unit-hp {
-  position: absolute;
-  top: 1.15rem;
-  left: 10%;
-  width: 80%;
-  margin: 0;
-}
-
-.combat-stage.boss-fight .combat-enemy-unit.boss > small {
-  position: absolute;
-  top: 1.78rem;
-  left: 0;
-  width: 100%;
-}
-
-.combat-stage.entering.boss-fight .combat-enemy-unit.boss {
-  animation: combat-boss-hud-arrival 0.52s ease-out 3.34s both;
-}
-
-.combat-party-unit.healing {
-  border-color: #8ff0a4;
-  box-shadow: 0 0 24px rgba(110, 240, 137, 0.72), inset 0 0 20px rgba(110, 240, 137, 0.2);
-  animation: combat-heal-pulse 0.62s ease;
-}
-
-.combat-party-unit.empowered {
-  z-index: 9;
-  border-color: #ffe477;
-  box-shadow: 0 0 22px rgba(255,210,74,0.68), inset 0 0 20px rgba(255,210,74,0.2);
-  animation: party-attack-lunge 0.44s ease, empowered-ability-pulse 0.55s ease;
-}
-
-.combat-enemy-unit.hit, .combat-party-unit.hit {
-  animation: combat-hit-shake 0.58s ease;
-  filter: brightness(2.2);
-}
-
-.combat-stage.boss-fight .combat-enemy-unit.boss.hit {
-  animation: none;
-  transform: none;
-  filter: none;
-}
-
-.combat-enemy-unit.defeated {
-  opacity: 0.16;
-  filter: grayscale(1);
-  transform: translateY(1.2rem) rotate(7deg);
-}
-
-.combat-claw-impact.blocked {
-  --swipe-overlay-tone: hue-rotate(148deg) saturate(0.72) brightness(1.35) drop-shadow(0 0 0.55rem rgba(59, 220, 255, 0.95));
-}
-
-.combat-damage-float.block {
-  color: #85edff;
-  text-shadow: 0 2px 0 #000, 0 0 8px #43d8ff;
-}
-
-.combat-damage-float.damage {
-  white-space: pre-line;
-  line-height: 1.05;
-}
-
-.combat-damage-float.xp {
-  top: 48%;
-  color: #ffe477;
-  font-size: clamp(0.68rem, 1.35vw, 0.94rem);
-  text-shadow: 0 2px 0 #000, 0 0 11px rgba(255,196,55,0.9);
-  animation: combat-xp-settle 1.35s ease-out both;
-}
-
-.combat-damage-float.level {
-  color: #fff4b2;
-  font-size: clamp(0.86rem, 2vw, 1.35rem);
-  text-shadow: 0 2px 0 #000, 0 0 15px #ffb62e;
-}
-
-@media (max-width: 700px) {
-  .combat-enemy-unit.boss .combat-boss-eyes-target {
-    width: 100%;
-    height: clamp(7rem, 23vh, 11rem);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .combat-stage.entering .combat-stage-wipe i,
-  .combat-party-unit.attacking,
-  .combat-party-unit.ability-casting,
-  .combat-party-unit.healing,
-  .combat-party-unit.empowered,
-  .combat-party-unit.soldier-double-attack,
-  .combat-bubble,
-  .combat-enemy-unit.attacking,
-  .combat-enemy-unit.boss-swiping,
-  .combat-boss-swipe-trail,
-  .combat-claw-impact,
-  .combat-enemy-unit.hit,
-  .combat-party-unit.hit,
-  .combat-party-unit.blocking,
-  .combat-damage-float {
-    animation-duration: 0.01ms !important;
-  }
-}
-
-.combat-status-card.boss .combat-health-track i {
-  background: linear-gradient(90deg, #6f164f, #ff3b87);
 }
 
 .player-class-hint {
@@ -2041,7 +1264,6 @@ body.mission-active .signal-bars {
 }
 
 .player-class-heading,
-.player-class-btn,
 .playerClassBtn {
   display: flex;
 }
@@ -2091,35 +1313,30 @@ body.mission-active .signal-bars {
   }
 }
 
-.item-reward-card:hover, .item-reward-card.selected {
-  border-color: var(--item-color, #9eeeff);
-  box-shadow: 0 0 0 1px var(--item-color, #9eeeff), 0 0 18px color-mix(in srgb, var(--item-color, #9eeeff) 20%, transparent);
+.rarity-common {
+  --item-color: #d7e0e5;
+}
+
+.rarity-uncommon {
+  --item-color: #63e38b;
+}
+
+.rarity-rare {
+  --item-color: #62b8ff;
+}
+
+.rarity-epic {
+  --item-color: #c794ff;
+}
+
+.rarity-legendary {
+  --item-color: #ffcf63;
 }
 
 .player-ability-reserve {
   color: #86e8ff;
   font-size: 0.46rem;
   letter-spacing: 0.04em;
-}
-
-.player-ability-state.recharging {
-  color: #ffb875;
-  animation: ability-recharge-pulse 1.6s ease-in-out infinite;
-}
-
-.player-item-dot.has-ability {
-  cursor: pointer;
-  box-shadow: 0 0 0 1px #0a1115, 0 0 9px color-mix(in srgb, var(--item-color, #d7e0e5) 75%, transparent);
-}
-
-.player-item-dot.has-ability.ready:hover, .player-item-dot.has-ability.ready:focus-visible {
-  transform: scale(1.3);
-  outline: 2px solid color-mix(in srgb, var(--item-color, #d7e0e5) 74%, white);
-}
-
-.player-item-dot.recharging {
-  opacity: 0.4;
-  filter: grayscale(0.7);
 }
 
 .player-vitals > :not(.player-vitals-modern) {
@@ -2220,7 +1437,8 @@ body.mission-active .signal-bars {
   overflow-wrap: anywhere;
 }
 
-.player-class-loadout, .player-inventory-panel {
+.player-class-loadout,
+.player-inventory-panel {
   display: grid;
   gap: 5px;
   min-width: 0;
@@ -2242,7 +1460,8 @@ body.mission-active .signal-bars {
   min-width: 0;
 }
 
-.player-class-loadout-heading strong, .player-inventory-panel > strong {
+.player-class-loadout-heading strong,
+.player-inventory-panel > strong {
   min-width: 0;
   margin: 0;
   color: var(--player-class-color, #9eeeff);
@@ -2282,81 +1501,25 @@ body.mission-active .signal-bars {
   min-width: 0;
 }
 
-.player-revive-action {
-  display: grid;
-  gap: 6px;
-  padding: 8px;
-  border: 1px solid rgba(99, 227, 139, 0.34);
-  border-radius: 6px;
-  background: rgba(9, 38, 25, 0.58);
-}
-
-.player-revive-action > strong { color: #8ff0ad; }
-.player-revive-action > small { color: rgba(220, 245, 229, 0.72); }
-
-.tactician-protocol-button {
-  display: grid;
-  grid-template-columns: auto 1fr;
+.player-tactician-protocol-picker {
+  display: inline-flex;
   align-items: center;
-  gap: 1px 6px;
-  width: 100%;
-  min-height: 42px;
-  padding: 6px 8px;
-  border: 1px solid rgba(126, 213, 255, 0.45);
-  border-radius: 6px;
-  color: #e9fbff;
-  background: linear-gradient(135deg, rgba(25, 84, 105, 0.9), rgba(7, 26, 38, 0.92));
-  text-align: left;
-  cursor: pointer;
-}
-
-.tactician-protocol-button span {
-  grid-row: 1 / span 2;
-  display: grid;
-  place-items: center;
-  width: 1.45rem;
-  height: 1.45rem;
-  border: 1px solid currentColor;
-  border-radius: 50%;
-  color: #9eeeff;
-  font-size: .48rem;
-  font-weight: 900;
-  writing-mode: vertical-rl;
-}
-
-.tactician-protocol-button strong {
-  font-size: .7rem;
-  letter-spacing: .12em;
-}
-
-.tactician-protocol-button small {
-  color: #a9c9d4;
-  font-size: .55rem;
-  letter-spacing: .05em;
+  gap: .35rem;
+  color: var(--player-muted, #8ea3b5);
+  font-size: .68rem;
+  letter-spacing: .07em;
   text-transform: uppercase;
 }
 
-.tactician-protocol-button.protocol-guard {
-  border-color: rgba(255, 212, 112, 0.64);
-  background: linear-gradient(135deg, rgba(100, 76, 25, 0.9), rgba(37, 28, 12, 0.92));
-}
-
-.tactician-protocol-button.protocol-guard span {
-  color: #ffd56f;
-}
-
-.tactician-protocol-button.protocol-support {
-  border-color: rgba(110, 242, 171, 0.6);
-  background: linear-gradient(135deg, rgba(23, 94, 72, 0.9), rgba(8, 37, 31, 0.92));
-}
-
-.tactician-protocol-button.protocol-support span {
-  color: #7cf0b4;
-}
-
-.tactician-protocol-button:disabled {
-  opacity: .42;
-  cursor: default;
+.player-tactician-protocol-picker select {
+  min-width: 6.2rem;
+  padding: .45rem .55rem;
+  border: 1px solid color-mix(in srgb, var(--player-class-color, #9eeeff) 48%, #1d2934);
+  border-radius: .35rem;
+  background: #081119;
+  color: #e7f7fb;
+  font: inherit;
+  text-transform: none;
 }
 
 .player-ability-btn {
@@ -2377,7 +1540,7 @@ body.mission-active .signal-bars {
   cursor: default;
 }
 
-.player-class-action-row .player-ability-btn, .player-class-action-row .player-ability-target {
+.player-class-action-row .player-ability-btn {
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
@@ -2559,14 +1722,15 @@ body.mission-active .signal-bars {
   min-width: 0;
 }
 
-.player-inventory-actions .player-ability-btn, .player-inventory-actions .player-ability-target {
+.player-inventory-actions .player-ability-btn {
   width: 100%;
   min-width: 0;
   max-width: none;
   box-sizing: border-box;
 }
 
-.player-inventory-row strong, .player-inventory-row small {
+.player-inventory-row strong,
+.player-inventory-row small {
   display: block;
   min-width: 0;
   overflow-wrap: anywhere;
@@ -2601,7 +1765,8 @@ body.mission-active .signal-bars {
   box-shadow: 0 0 9px color-mix(in srgb, var(--item-color, #d7e0e5) 78%, transparent);
 }
 
-.player-item-notice, .player-ability-notice {
+.player-item-notice,
+.player-ability-notice {
   padding: 6px 7px;
   border-radius: 5px;
   font-size: 0.64rem;
@@ -2666,7 +1831,8 @@ body.mission-active .signal-bars {
     gap: 4px;
   }
 
-  .player-class-loadout, .player-inventory-panel {
+  .player-class-loadout,
+.player-inventory-panel {
     gap: 3px;
     padding: 5px 6px;
   }
@@ -2678,7 +1844,8 @@ body.mission-active .signal-bars {
     line-height: 1.12;
   }
 
-  .player-class-loadout-heading strong, .player-inventory-panel > strong {
+  .player-class-loadout-heading strong,
+.player-inventory-panel > strong {
     font-size: 0.64rem;
   }
 
@@ -2788,9 +1955,9 @@ body.mission-active .signal-bars {
   }
 
   .player-action-form input,
-  .player-action-form button,
-  .player-fill-form input,
-  .player-fill-form button {
+.player-action-form button,
+.player-fill-form input,
+.player-fill-form button {
     min-height: 30px;
     padding: 4px 6px;
     font-size: 0.66rem;
@@ -2900,13 +2067,13 @@ body.mission-active .signal-bars {
   }
 
   #missionCard > .player-topline,
-  #missionCard > #playerIdentity,
-  #missionCard > #playerVitals,
-  #missionCard > #playerClassPanel,
-  #missionCard > #playerPromptArea,
-  #missionCard > #playerAnswerFeedbackPanel,
-  #missionCard > .player-haptics-toggle,
-  #missionCard > .player-haptics-note {
+#missionCard > #playerIdentity,
+#missionCard > #playerVitals,
+#missionCard > #playerClassPanel,
+#missionCard > #playerPromptArea,
+#missionCard > #playerAnswerFeedbackPanel,
+#missionCard > .player-haptics-toggle,
+#missionCard > .player-haptics-note {
     grid-column: 1 / -1;
   }
 
@@ -3018,7 +2185,7 @@ body.mission-active .signal-bars {
   }
 
   .player-loadout-area,
-  .player-queued-action-panel {
+.player-queued-action-panel {
     grid-column: 1;
   }
 }
@@ -3030,12 +2197,12 @@ body.mission-active .signal-bars {
   }
 
   .player-loadout-section-heading,
-  .player-action-heading {
+.player-action-heading {
     font-size: 0.68rem;
   }
 
   .player-class-loadout,
-  .player-inventory-panel {
+.player-inventory-panel {
     padding: 6px;
   }
 
@@ -3053,8 +2220,8 @@ body.mission-active .signal-bars {
   }
 
   .player-queued-action-panel .player-action-row input,
-  .player-queued-action-panel .player-action-row button,
-  .player-queued-action-panel .player-auto-action-btn {
+.player-queued-action-panel .player-action-row button,
+.player-queued-action-panel .player-auto-action-btn {
     min-height: 32px;
   }
 
@@ -3232,7 +2399,7 @@ body.mission-active .signal-bars {
   }
 
   .player-body .player-shell,
-  .player-body .player-card {
+.player-body .player-card {
     width: 100%;
     min-width: 0;
     max-width: 100%;
@@ -3250,8 +2417,8 @@ body.mission-active .signal-bars {
   }
 
   .player-body input,
-  .player-body select,
-  .player-body textarea {
+.player-body select,
+.player-body textarea {
     font-size: 16px !important;
   }
 }
@@ -3285,8 +2452,7 @@ body.mission-active .signal-bars {
     animation-duration: 10s;
   }
 
-  .player-vitals.low:not(.damage-flash),
-  .status-card.low-health:not(.hit-pulse):not(.heal-pulse) {
+  .player-vitals.low:not(.damage-flash) {
     animation: none;
   }
 }
@@ -3297,105 +2463,8 @@ body.mission-active .signal-bars {
   animation-play-state: paused !important;
 }
 
-[hidden],
-[hidden] *,
-.deployment-overlay:not(.deployment-visible) *,
-.combat-stage[hidden] *,
-.reset-confirm-overlay[hidden] *,
-.join-lobby[hidden] * {
+[hidden] {
   animation-play-state: paused !important;
-}
-
-body:not(.mission-active) .map-signal-field::before,
-body:not(.mission-active) .map-signal-field i,
-body:not(.mission-active) .map-threat-frame::before,
-body:not(.mission-active) .map-threat-frame i,
-body:not(.mission-active) .mission-log-heading .heading-waveform i,
-body:not(.mission-active) .status-update-heading .heading-waveform i,
-body:not(.mission-active) .transmission-waveform i,
-body:not(.mission-active) .signal-bars i,
-body:not(.mission-active) .map-failure-short {
-  animation: none !important;
-}
-
-@media (min-width: 1180px) {
-  body.mission-active .layout {
-    grid-template-columns: minmax(238px, 0.27fr) minmax(560px, 1.52fr) minmax(300px, 0.46fr);
-    grid-template-rows: minmax(0, 1fr);
-    gap: 8px;
-  }
-
-  body.mission-active .play-panel > .encounter {
-    grid-column: 3;
-    grid-row: 2;
-    min-height: 0;
-    overflow: auto;
-    margin: 0;
-  }
-
-  body.mission-active .play-panel > .briefing {
-    display: none;
-  }
-}
-
-.initiative-timeline-heading .eyebrow {
-  margin: 0;
-  color: var(--accent);
-  font-size: 0.58rem;
-  letter-spacing: 0.12em;
-}
-
-.initiative-actor.current {
-  border-color: var(--initiative-color);
-  background: color-mix(in srgb, var(--initiative-color) 15%, rgba(17, 22, 26, 0.94));
-  box-shadow: 0 0 14px color-mix(in srgb, var(--initiative-color) 18%, transparent);
-  transform: translateY(-1px);
-}
-
-.initiative-actor.submitted {
-  opacity: 0.82;
-}
-
-.initiative-actor.enemy {
-  background: rgba(184, 50, 50, 0.08);
-}
-
-body.mission-active .eyebrow,
-body.console-visual-test .eyebrow {
-  color: var(--accent-2);
-  font-family: Consolas, "Courier New", monospace;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-}
-
-body.mission-active .map-main > .panel-header,
-body.mission-active .map-wrap,
-body.mission-active .initiative-timeline,
-body.mission-active .mission-progress,
-body.mission-active .status-card,
-body.mission-active .inventory-actions,
-body.mission-active .player-session-panel,
-body.mission-active .play-panel > .mission-log-heading,
-body.mission-active .play-panel > .encounter,
-body.mission-active .play-panel > .status-update-panel,
-body.mission-active .play-panel > .mission-utility-shell,
-body.console-visual-test .map-main > .panel-header,
-body.console-visual-test .map-wrap,
-body.console-visual-test .initiative-timeline,
-body.console-visual-test .mission-progress,
-body.console-visual-test .status-card,
-body.console-visual-test .inventory-actions,
-body.console-visual-test .player-session-panel,
-body.console-visual-test .play-panel > .mission-log-heading,
-body.console-visual-test .play-panel > .encounter,
-body.console-visual-test .play-panel > .status-update-panel,
-body.console-visual-test .play-panel > .mission-utility-shell {
-  border-radius: 4px;
-  border-color: rgba(53, 199, 216, 0.27);
-  background:
-  linear-gradient(135deg, rgba(16, 83, 99, 0.09), transparent 38%),
-  linear-gradient(180deg, rgba(8, 18, 24, 0.98), rgba(3, 8, 12, 0.98));
-  box-shadow: inset 0 1px rgba(188, 238, 242, 0.055), inset 0 0 28px rgba(20, 126, 148, 0.035), 0 10px 24px rgba(0, 0, 0, 0.3);
 }
 
 .player-body,
@@ -3716,10 +2785,46 @@ body.console-visual-test .play-panel > .mission-utility-shell {
   transition: background-color 1.35s ease, border-color 1.35s ease, box-shadow 1.35s ease, color .45s ease;
 }
 
-@keyframes missionLogAcquisition {
-  0%, 100% { transform: translateX(-78%); opacity: 0; }
-  42%, 58% { opacity: 0.85; }
-  100% { transform: translateX(78%); }
+@media (max-width: 700px), (hover: none) and (pointer: coarse) {
+  .player-body .player-signal-field {
+    opacity: .18;
+  }
+
+  .player-body .player-signal-field::before,
+.player-body .player-signal-field i,
+.player-body .player-card::before {
+    animation: none;
+  }
+
+  .player-body .player-signal-field i {
+    display: none;
+    box-shadow: none;
+  }
+
+  .player-body .player-card,
+.player-body.player-boss-active .player-card {
+    box-shadow: 0 10px 28px rgba(0, 0, 0, .58), inset 0 0 18px rgba(var(--player-theme-rgb), .025);
+  }
+
+  .player-body.player-time-final .player-card,
+.player-body .player-vitals.low,
+.player-body .player-prompt.boss-prompt,
+.player-body .player-class-loadout-heading b.recharging,
+.player-body .player-class-loadout-heading b.optimistic-arming,
+.player-body .signal-bars i {
+    animation: none;
+  }
+
+  .player-body.player-time-final .player-card {
+    border-color: rgba(224, 70, 56, .78);
+    box-shadow: 0 0 0 1px rgba(224, 70, 56, .22), 0 10px 28px rgba(0, 0, 0, .62);
+  }
+}
+
+@keyframes mind-eraser-choice-flicker {
+  0% { opacity: .45; transform: translateX(-2px); }
+  50% { opacity: .78; transform: translateX(2px); }
+  100% { opacity: 1; transform: none; }
 }
 
 @keyframes playerSignalScan {
@@ -3807,36 +2912,16 @@ body.console-visual-test .play-panel > .mission-utility-shell {
   24% {
   transform: translateX(7px) scale(1.02);
   }
-  
+
   42% {
   background: rgba(92, 37, 32, 0.98);
   box-shadow: 0 0 0 12px rgba(200, 90, 74, 0);
   transform: translateX(0);
   }
-  
+
   100% {
   background: rgba(24, 32, 38, 0.96);
   box-shadow: var(--shadow);
-  }
-}
-
-@keyframes emergencyPulse {
-  50% {
-  box-shadow: 0 0 20px rgba(188, 81, 72, 0.42);
-  }
-}
-
-@keyframes acceptedFeedback {
-  0% {
-  background: rgba(41, 82, 49, 0.86);
-  box-shadow: 0 0 18px rgba(91, 149, 102, 0.52);
-  }
-}
-
-@keyframes rejectedFeedback {
-  0% {
-  background: rgba(82, 31, 28, 0.9);
-  box-shadow: 0 0 18px rgba(188, 81, 72, 0.58);
   }
 }
 
@@ -3844,18 +2929,6 @@ body.console-visual-test .play-panel > .mission-utility-shell {
   to {
   opacity: 0.38;
   transform: scaleY(0.52);
-  }
-}
-
-@keyframes secondWindPendingPulse {
-  0%, 100% {
-  opacity: 0.66;
-  filter: brightness(0.86);
-  }
-  
-  50% {
-  opacity: 1;
-  filter: brightness(1.25);
   }
 }
 
@@ -3878,99 +2951,6 @@ body.console-visual-test .play-panel > .mission-utility-shell {
   20%, 40%, 60%, 80% {
   transform: translate3d(7px, 0, 0) rotate(0.35deg);
   }
-}
-
-@keyframes dashboardElementOnline {
-  0% {
-  opacity: 0;
-  clip-path: inset(0 0 100% 0);
-  filter: blur(7px) brightness(2.2);
-  transform: translateY(14px) scale(0.985);
-  }
-  
-  32% {
-  opacity: 0.88;
-  clip-path: inset(0 0 28% 0);
-  filter: blur(2px) brightness(1.5);
-  }
-  
-  58% {
-  opacity: 1;
-  clip-path: inset(0);
-  filter: blur(0) brightness(1.18);
-  transform: translateY(-2px) scale(1.004);
-  }
-  
-  100% {
-  opacity: 1;
-  clip-path: inset(0);
-  filter: blur(0) brightness(1);
-  transform: translateY(0) scale(1);
-  }
-}
-
-@keyframes dashboardTransmissionOnline {
-  0% {
-  opacity: 0;
-  filter: blur(4px) brightness(1.8);
-  transform: translateY(8px);
-  }
-
-  55% {
-  opacity: 1;
-  filter: blur(0) brightness(1.24);
-  }
-
-  100% {
-  opacity: 1;
-  filter: brightness(1);
-  transform: translateY(0);
-  }
-}
-
-@keyframes missionLogFadeIn {
-  from {
-  opacity: 0;
-  transform: translateY(8px);
-  }
-
-  to {
-  opacity: 1;
-  transform: translateY(0);
-  }
-}
-
-@keyframes combat-boss-pulse {
-  50% { filter: drop-shadow(0 0 22px rgba(255, 45, 143, 0.95)); }
-}
-
-@keyframes combat-boss-hud-arrival {
-  from { opacity: 0; filter: blur(5px) brightness(1.8); }
-  to { opacity: 1; filter: none; }
-}
-
-@keyframes party-attack-lunge {
-  50% { transform: translate(38%, -20%) scale(1.12); filter: brightness(1.8); }
-}
-
-@keyframes combat-heal-pulse {
-  0%, 100% { filter: brightness(1); } 42% { filter: brightness(1.75) saturate(1.3); }
-}
-
-@keyframes empowered-ability-pulse {
-  0%, 100% { filter: brightness(1); }
-  35% { filter: brightness(1.9) saturate(1.25); box-shadow: 0 0 30px rgba(255,210,74,0.9), inset 0 0 24px rgba(255,210,74,0.35); }
-  70% { filter: brightness(1.25); }
-}
-
-@keyframes combat-hit-shake {
-  20%, 70% { transform: translateX(-7px); } 45%, 90% { transform: translateX(7px); }
-}
-
-@keyframes combat-xp-settle {
-  0% { opacity: 0; transform: translate(-50%, -0.65rem) scale(0.86); }
-  22%, 76% { opacity: 1; transform: translate(-50%, 0) scale(1); }
-  100% { opacity: 0; transform: translate(-50%, 0.25rem) scale(1); }
 }
 
 @keyframes ability-recharge-pulse {

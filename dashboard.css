@@ -6,6 +6,12 @@
   initial-value: 90;
 }
 
+@keyframes mind-eraser-choice-flicker {
+  0% { opacity: .45; transform: translateX(-2px); }
+  50% { opacity: .78; transform: translateX(2px); }
+  100% { opacity: 1; transform: none; }
+}
+
 .map-signal-field,
 .map-threat-frame {
   position: absolute;
@@ -5645,7 +5651,7 @@ body.reset-confirm-open {
   background: rgba(24, 32, 38, 0.96);
   box-shadow: var(--shadow);
   }
-  
+
   50% {
   background: rgba(76, 28, 25, 0.9);
   box-shadow: 0 0 22px rgba(200, 90, 74, 0.48);
@@ -5659,21 +5665,21 @@ body.reset-confirm-open {
   box-shadow: 0 0 0 0 rgba(200, 90, 74, 0.9), 0 0 22px rgba(200, 90, 74, 0.7);
   transform: translateX(0) scale(1);
   }
-  
+
   12% {
   transform: translateX(-7px) scale(1.02);
   }
-  
+
   24% {
   transform: translateX(7px) scale(1.02);
   }
-  
+
   42% {
   background: rgba(92, 37, 32, 0.98);
   box-shadow: 0 0 0 12px rgba(200, 90, 74, 0);
   transform: translateX(0);
   }
-  
+
   100% {
   background: rgba(24, 32, 38, 0.96);
   box-shadow: var(--shadow);
@@ -5686,7 +5692,7 @@ body.reset-confirm-open {
   border-color: rgba(169, 219, 156, 0.95);
   box-shadow: 0 0 0 0 rgba(169, 219, 156, 0.72), 0 0 20px rgba(169, 219, 156, 0.5);
   }
-  
+
   70% {
   box-shadow: 0 0 0 12px rgba(169, 219, 156, 0);
   }
@@ -5697,17 +5703,17 @@ body.reset-confirm-open {
   opacity: 0;
   transform: translateY(8px) scale(0.78);
   }
-  
+
   18% {
   opacity: 1;
   transform: translateY(-2px) scale(1.18);
   }
-  
+
   68% {
   opacity: 1;
   transform: translateY(-12px) scale(1);
   }
-  
+
   100% {
   opacity: 0;
   transform: translateY(-28px) scale(0.92);
@@ -5718,7 +5724,7 @@ body.reset-confirm-open {
   from {
   transform: translateY(0);
   }
-  
+
   to {
   transform: translateY(calc(var(--status-scroll-distance, 0px) * -1));
   }
@@ -5730,20 +5736,20 @@ body.reset-confirm-open {
   transform: scale(0.68);
   filter: blur(3px);
   }
-  
+
   21%,
   64% {
   opacity: 1;
   transform: scale(1.05);
   filter: blur(0);
   }
-  
+
   42%,
   82% {
   opacity: 0.48;
   transform: scale(0.94);
   }
-  
+
   100% {
   opacity: 0;
   transform: scale(1.12);
@@ -5757,7 +5763,7 @@ body.reset-confirm-open {
   transform: translateY(10px) scale(0.97);
   filter: blur(3px);
   }
-  
+
   100% {
   opacity: 1;
   transform: translateY(0) scale(1);
@@ -5769,7 +5775,7 @@ body.reset-confirm-open {
   from {
   opacity: 0;
   }
-  
+
   to {
   opacity: 1;
   }
@@ -5786,7 +5792,7 @@ body.reset-confirm-open {
   100% {
   transform: translate(0);
   }
-  
+
   50% {
   transform: translate(3px, -2px);
   }
@@ -5915,15 +5921,15 @@ body.reset-confirm-open {
   transform: translateX(0) scale(1);
   box-shadow: 0 0 0 1px rgba(107, 241, 232, 0.66), 0 0 36px rgba(107, 241, 232, 0.5);
   }
-  
+
   18% {
   transform: translateX(-2px) scale(1.018);
   }
-  
+
   36% {
   transform: translateX(3px) scale(1.012);
   }
-  
+
   70% {
   transform: translateX(0) scale(1);
   }
@@ -5956,12 +5962,12 @@ body.reset-confirm-open {
   transform: scale(0.72);
   opacity: 0;
   }
-  
+
   28% {
   transform: scale(1.12);
   opacity: 1;
   }
-  
+
   100% {
   transform: scale(1);
   opacity: 1;
@@ -6005,11 +6011,11 @@ body.reset-confirm-open {
   opacity: 0;
   transform: scale(0.94);
   }
-  
+
   28% {
   opacity: 1;
   }
-  
+
   100% {
   opacity: 0;
   box-shadow: 0 0 24px rgba(90, 167, 164, 0.42);
@@ -6033,7 +6039,7 @@ body.reset-confirm-open {
   opacity: 0.66;
   filter: brightness(0.86);
   }
-  
+
   50% {
   opacity: 1;
   filter: brightness(1.25);
@@ -6301,7 +6307,7 @@ body.boss-damage-impact:not(.situation-failure) .map-panel.live-console-dashboar
   50% {
   transform: translateX(305%);
   }
-  
+
   100% {
   transform: translateX(0);
   }
@@ -6324,7 +6330,7 @@ body.boss-damage-impact:not(.situation-failure) .map-panel.live-console-dashboar
   opacity: 0;
   transform: scale(0.42);
   }
-  
+
   100% {
   opacity: 1;
   transform: scale(1);
@@ -6338,7 +6344,7 @@ body.boss-damage-impact:not(.situation-failure) .map-panel.live-console-dashboar
   opacity: 0.12;
   transform: scale(0.8);
   }
-  
+
   80% {
   opacity: 1;
   transform: scale(1.45);
@@ -6350,7 +6356,7 @@ body.boss-damage-impact:not(.situation-failure) .map-panel.live-console-dashboar
   opacity: 0;
   transform: translateX(12px);
   }
-  
+
   to {
   opacity: 1;
   transform: translateX(0);
@@ -6362,7 +6368,7 @@ body.boss-damage-impact:not(.situation-failure) .map-panel.live-console-dashboar
   opacity: 0;
   transform: scale(0.96);
   }
-  
+
   to {
   opacity: 1;
   transform: scale(1);
@@ -6375,21 +6381,21 @@ body.boss-damage-impact:not(.situation-failure) .map-panel.live-console-dashboar
   box-shadow: inset 0 0 80px rgba(0, 0, 0, 0.96), 0 24px 56px rgba(0, 0, 0, 0.68);
   filter: brightness(0.2);
   }
-  
+
   34% {
   border-color: rgba(90, 167, 164, 0.42);
   box-shadow: inset 0 0 58px rgba(0, 0, 0, 0.78), 0 0 0 1px rgba(90, 167, 164, 0.18), 0 0 32px rgba(90, 167, 164, 0.12);
   filter: brightness(1.22);
   }
-  
+
   43% {
   filter: brightness(0.52);
   }
-  
+
   58% {
   filter: brightness(1.08);
   }
-  
+
   100% {
   border-color: rgba(90, 167, 164, 0.16);
   box-shadow: inset 0 0 46px rgba(0, 0, 0, 0.62), 0 18px 48px rgba(0, 0, 0, 0.5);
@@ -6404,20 +6410,20 @@ body.boss-damage-impact:not(.situation-failure) .map-panel.live-console-dashboar
   filter: blur(7px) brightness(2.2);
   transform: translateY(14px) scale(0.985);
   }
-  
+
   32% {
   opacity: 0.88;
   clip-path: inset(0 0 28% 0);
   filter: blur(2px) brightness(1.5);
   }
-  
+
   58% {
   opacity: 1;
   clip-path: inset(0);
   filter: blur(0) brightness(1.18);
   transform: translateY(-2px) scale(1.004);
   }
-  
+
   100% {
   opacity: 1;
   clip-path: inset(0);
@@ -6433,7 +6439,7 @@ body.boss-damage-impact:not(.situation-failure) .map-panel.live-console-dashboar
   filter: blur(6px) brightness(0.45);
   transform: translateX(-28px) scale(0.91) skewX(-2deg);
   }
-  
+
   42% {
   opacity: 1;
   border-color: var(--player-color);
@@ -6441,12 +6447,12 @@ body.boss-damage-impact:not(.situation-failure) .map-panel.live-console-dashboar
   transform: translateX(4px) scale(1.025) skewX(0);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--player-color) 42%, transparent), 0 0 26px color-mix(in srgb, var(--player-color) 30%, transparent);
   }
-  
+
   72% {
   filter: brightness(0.88);
   transform: translateX(-1px) scale(0.995);
   }
-  
+
   100% {
   opacity: 1;
   filter: blur(0) brightness(1);
@@ -6460,26 +6466,26 @@ body.boss-damage-impact:not(.situation-failure) .map-panel.live-console-dashboar
   filter: brightness(4) contrast(2.4);
   transform: scaleX(0.04) scaleY(0.006);
   }
-  
+
   18% {
   opacity: 1;
   transform: scaleX(0.84) scaleY(0.018);
   }
-  
+
   34% {
   filter: brightness(2.6) contrast(1.8);
   transform: scaleX(1) scaleY(0.035);
   }
-  
+
   58% {
   filter: brightness(1.45) contrast(1.32);
   transform: scaleX(1) scaleY(1.025);
   }
-  
+
   74% {
   transform: scaleX(1) scaleY(0.985);
   }
-  
+
   100% {
   opacity: 1;
   filter: brightness(1) contrast(1);
@@ -6501,12 +6507,12 @@ body.boss-damage-impact:not(.situation-failure) .map-panel.live-console-dashboar
   filter: blur(5px) brightness(2.2);
   transform: scale(1.035);
   }
-  
+
   55% {
   opacity: 1;
   filter: blur(0) brightness(1.45);
   }
-  
+
   100% {
   opacity: 1;
   filter: brightness(1);
@@ -6519,7 +6525,7 @@ body.boss-damage-impact:not(.situation-failure) .map-panel.live-console-dashboar
   border-color: rgba(90, 167, 164, 0.82);
   box-shadow: 0 0 0 1px rgba(90, 167, 164, 0.42), 0 0 38px rgba(90, 167, 164, 0.28), inset 0 0 28px rgba(90, 167, 164, 0.08);
   }
-  
+
   100% {
   border-color: rgba(90, 167, 164, 0.2);
   box-shadow: 0 18px 48px rgba(0, 0, 0, 0.46), inset 0 0 34px rgba(90, 167, 164, 0.025);
@@ -6532,12 +6538,12 @@ body.boss-damage-impact:not(.situation-failure) .map-panel.live-console-dashboar
   filter: blur(4px) brightness(1.8);
   transform: translateY(8px);
   }
-  
+
   55% {
   opacity: 1;
   filter: blur(0) brightness(1.24);
   }
-  
+
   100% {
   opacity: 1;
   filter: brightness(1);
@@ -6551,17 +6557,17 @@ body.boss-damage-impact:not(.situation-failure) .map-panel.live-console-dashboar
   filter: brightness(3.4) contrast(2.2);
   transform: none;
   }
-  
+
   32% {
   opacity: 1;
   transform: none;
   }
-  
+
   58% {
   filter: brightness(0.55) contrast(2.4);
   transform: none;
   }
-  
+
   100% {
   opacity: 1;
   filter: brightness(1) contrast(1.15);
@@ -6595,13 +6601,13 @@ body.boss-damage-impact:not(.situation-failure) .map-panel.live-console-dashboar
   filter: blur(0.4px) brightness(0.82);
   transform: scale(0.9);
   }
-  
+
   46% {
   opacity: 1;
   filter: blur(0) brightness(1.28);
   transform: scale(1.08);
   }
-  
+
   54% {
   transform: translateX(3px) scale(1.03);
   }
@@ -6623,13 +6629,13 @@ body.boss-damage-impact:not(.situation-failure) .map-panel.live-console-dashboar
   opacity: 0.08;
   transform: scale(0.35);
   }
-  
+
   20%,
   26% {
   opacity: 1;
   transform: scale(1.35) rotate(12deg);
   }
-  
+
   43%,
   47% {
   opacity: 0.86;
@@ -6666,7 +6672,7 @@ body.boss-damage-impact:not(.situation-failure) .map-panel.live-console-dashboar
   opacity: 0;
   transform: translateY(8px);
   }
-  
+
   to {
   opacity: 1;
   transform: translateY(0);
@@ -6678,7 +6684,7 @@ body.boss-damage-impact:not(.situation-failure) .map-panel.live-console-dashboar
   opacity: 0;
   transform: translateY(10px);
   }
-  
+
   to {
   opacity: 1;
   transform: translateY(0);
@@ -6690,7 +6696,7 @@ body.boss-damage-impact:not(.situation-failure) .map-panel.live-console-dashboar
   100% {
   opacity: 1;
   }
-  
+
   50% {
   opacity: 0.25;
   }
@@ -8179,6 +8185,89 @@ body.mission-active .player-dm-controls {
   animation: none;
 }
 
+.combat-enemy-unit.opfor-mirror {
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 0 1 6.75rem;
+  width: min(6.75rem, 12%);
+  min-width: 0;
+  max-width: 6.75rem;
+  padding: 0.315rem;
+  border: 1px solid color-mix(in srgb, var(--mirror-color, #ffd85a) 58%, transparent);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--mirror-color, #ffd85a) 13%, rgba(2, 5, 8, 0.92)), rgba(2, 5, 8, 0.94));
+  box-shadow: 0 0 14px color-mix(in srgb, var(--mirror-color, #ffd85a) 24%, transparent);
+}
+
+.combat-enemy-unit.opfor-mirror.opfor-ability-armed {
+  outline: 1px dashed color-mix(in srgb, var(--mirror-color, #ffd85a) 82%, #fff);
+  outline-offset: 2px;
+  box-shadow: 0 0 18px color-mix(in srgb, var(--mirror-color, #ffd85a) 38%, transparent);
+}
+
+.combat-enemy-unit.opfor-mirror.opfor-phase-active {
+  outline: 1px solid color-mix(in srgb, var(--mirror-color, #ffd85a) 92%, #fff);
+  outline-offset: 2px;
+  box-shadow: 0 0 22px color-mix(in srgb, var(--mirror-color, #ffd85a) 54%, transparent), inset 0 0 14px color-mix(in srgb, var(--mirror-color, #ffd85a) 15%, transparent);
+}
+
+.combat-enemy-unit.opfor-mirror .combat-unit-sprite {
+  align-self: center;
+  margin-inline: auto;
+  width: clamp(2.1rem, 3.75vw, 3.3rem);
+  color: var(--mirror-color, #ffd85a);
+  filter: drop-shadow(0 0 9px color-mix(in srgb, var(--mirror-color, #ffd85a) 72%, transparent));
+  transform: none !important;
+}
+
+.combat-enemy-unit.opfor-mirror strong,
+.combat-enemy-unit.opfor-mirror small,
+.combat-enemy-unit.opfor-mirror .combat-unit-hp {
+  width: 100%;
+}
+
+.combat-enemy-unit.opfor-mirror strong {
+  font-size: clamp(0.5rem, 1vw, 0.66rem);
+}
+
+.combat-enemy-unit.opfor-mirror small {
+  font-size: 0.52rem;
+}
+
+.combat-enemy-unit.opfor-mirror.opfor-answer-correct {
+  border-color: #48f58a;
+  background: linear-gradient(180deg, rgba(19, 92, 52, 0.72), rgba(2, 12, 8, 0.95));
+  box-shadow: 0 0 15px rgba(72, 245, 138, 0.38);
+}
+
+.combat-enemy-unit.opfor-mirror.opfor-answer-incorrect {
+  border-color: #ff5151;
+  background: linear-gradient(180deg, rgba(103, 22, 26, 0.76), rgba(16, 3, 5, 0.95));
+  box-shadow: 0 0 15px rgba(255, 81, 81, 0.4);
+}
+
+.combat-enemy-unit.opfor-mirror[data-opfor-result]::after {
+  content: attr(data-opfor-result);
+  position: absolute;
+  top: 0.18rem;
+  right: 0.22rem;
+  color: #effff5;
+  font-size: 0.44rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.combat-enemy-unit.opfor-mirror.opfor-empowered {
+  animation: opfor-empower-hit 0.72s ease-out both;
+}
+
+@keyframes opfor-empower-hit {
+  0% { filter: brightness(1); box-shadow: 0 0 10px transparent; }
+  35% { filter: brightness(1.75); box-shadow: 0 0 28px var(--mirror-color, #ffd85a); }
+  100% { filter: brightness(1); box-shadow: 0 0 14px color-mix(in srgb, var(--mirror-color, #ffd85a) 24%, transparent); }
+}
+
 .combat-unit-sprite {
   position: relative;
   display: grid;
@@ -8237,6 +8326,21 @@ body.mission-active .player-dm-controls {
   padding: 0;
   transform: none;
   animation: none;
+}
+
+.combat-stage.boss-fight.yellow-opfor-active .combat-enemy-formation {
+  align-items: flex-start;
+  justify-content: space-evenly;
+  gap: 0;
+  width: min(98%, 72rem);
+  padding-inline: 0.5rem;
+  padding-top: clamp(9rem, 28vh, 14rem);
+}
+
+.combat-stage.boss-fight.yellow-opfor-active .combat-enemy-unit.boss {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
 }
 
 .combat-enemy-unit.boss .combat-boss-eyes-target {
@@ -8669,6 +8773,18 @@ html.app-tab-hidden .combat-stage-header {
   border-color: #ffe477; box-shadow: 0 0 22px rgba(255, 210, 74, 0.68), inset 0 0 18px rgba(255, 210, 74, 0.18);
 }
 
+.combat-enemy-unit.opfor-mirror.ability-casting {
+  z-index: 10; border-color: #bfefff; box-shadow: 0 0 24px rgba(106, 231, 255, 0.78), inset 0 0 18px rgba(106, 231, 255, 0.2); animation: combat-ability-cast 0.7s ease !important;
+}
+
+.combat-enemy-unit.opfor-mirror.healing {
+  border-color: #8ff0a4; box-shadow: 0 0 24px rgba(110, 240, 137, 0.76), inset 0 0 20px rgba(110, 240, 137, 0.22); animation: combat-heal-pulse 0.7s ease !important;
+}
+
+.combat-enemy-unit.opfor-mirror.ability-targeted {
+  border-color: #ffe477; box-shadow: 0 0 22px rgba(255, 210, 74, 0.72), inset 0 0 18px rgba(255, 210, 74, 0.2);
+}
+
 .combat-party-unit.redirect-source {
   border-color: #ff7474; box-shadow: 0 0 28px rgba(255, 62, 54, 0.78), inset 0 0 20px rgba(255, 62, 54, 0.22); animation: redirect-source-pull 0.82s ease both;
 }
@@ -8705,6 +8821,11 @@ html.app-tab-hidden .combat-stage-header {
   z-index: 8; animation: enemy-attack-lunge 0.68s ease;
 }
 
+.combat-enemy-unit.opfor-mirror.attacking,
+.combat-enemy-unit.opfor-mirror.attacking.opfor-empowered {
+  z-index: 11; animation: opfor-mirror-attack-lunge 0.72s cubic-bezier(.18,.76,.24,1) !important;
+}
+
 .combat-enemy-unit.boss-swiping {
   z-index: 9; animation: none; transform: none;
 }
@@ -8721,6 +8842,14 @@ html.app-tab-hidden .combat-stage-header {
   animation: combat-block-flash 0.42s ease;
 }
 
+.combat-enemy-unit.blocking {
+  animation: combat-block-flash 0.42s ease;
+}
+
+.combat-party-unit.stunned {
+  animation: combat-stunned-shake 0.58s ease !important; filter: brightness(1.7) saturate(0.35);
+}
+
 .combat-enemy-unit.stunned {
   animation: combat-stunned-shake 0.58s ease !important; filter: brightness(1.7) saturate(0.35);
 }
@@ -8731,6 +8860,13 @@ html.app-tab-hidden .combat-stage-header {
 
 @keyframes party-attack-lunge {
   50% { transform: translate(38%, -20%) scale(1.12); filter: brightness(1.8); }
+}
+
+@keyframes opfor-mirror-attack-lunge {
+  0% { transform: translate(0, 0) scale(1); filter: brightness(1); }
+  42% { transform: translate(-10%, 34%) scale(1.13); filter: brightness(1.9) saturate(1.25); }
+  72% { transform: translate(-5%, 16%) scale(1.06); filter: brightness(1.35); }
+  100% { transform: translate(0, 0) scale(1); filter: brightness(1); }
 }
 
 @keyframes combat-ability-cast {
@@ -9393,50 +9529,6 @@ button.player-ability-label:disabled {
 
 .tactician-protocol-picker select {
   min-width: 4.8rem; padding: .2rem .3rem; border: 1px solid color-mix(in srgb, var(--player-color, #9eeeff) 45%, #1d2934); border-radius: .3rem; background: #0b1219; color: #d8ecf4; font: inherit; letter-spacing: .02em; text-transform: none;
-}
-
-.tactician-protocol-button {
-  display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 1px 6px; width: 100%; min-height: 42px; padding: 6px 8px; border: 1px solid rgba(126, 213, 255, 0.45); border-radius: 6px; color: #e9fbff; background: linear-gradient(135deg, rgba(25, 84, 105, 0.9), rgba(7, 26, 38, 0.92)); text-align: left; cursor: pointer;
-}
-
-.tactician-protocol-button span {
-  grid-row: 1 / span 2; display: grid; place-items: center; width: 1.45rem; height: 1.45rem; border: 1px solid currentColor; border-radius: 50%; color: #9eeeff; font-size: .48rem; font-weight: 900; writing-mode: vertical-rl;
-}
-
-.tactician-protocol-button strong {
-  font-size: .7rem; letter-spacing: .12em;
-}
-
-.tactician-protocol-button small {
-  color: #a9c9d4; font-size: .55rem; letter-spacing: .05em; text-transform: uppercase;
-}
-
-.tactician-protocol-button.protocol-guard {
-  border-color: rgba(255, 212, 112, 0.64); background: linear-gradient(135deg, rgba(100, 76, 25, 0.9), rgba(37, 28, 12, 0.92));
-}
-
-.tactician-protocol-button.protocol-guard span {
-  color: #ffd56f;
-}
-
-.tactician-protocol-button.protocol-support {
-  border-color: rgba(110, 242, 171, 0.6); background: linear-gradient(135deg, rgba(23, 94, 72, 0.9), rgba(8, 37, 31, 0.92));
-}
-
-.tactician-protocol-button.protocol-support span {
-  color: #7cf0b4;
-}
-
-.tactician-protocol-button:disabled {
-  opacity: .42; cursor: default;
-}
-
-.player-ability-target {
-  width: 100%; min-width: 0; max-width: none; box-sizing: border-box; padding: 6px 7px; border: 1px solid rgba(255, 216, 131, 0.45); border-radius: 4px; color: #ffe7a4; background: rgba(33, 25, 10, 0.82); font-size: 0.66rem;
-}
-
-.player-target-field {
-  display: grid; grid-template-columns: minmax(0, 1fr); gap: 3px; min-width: 0; color: #d9c584; font-size: 0.57rem; letter-spacing: 0.04em; text-transform: uppercase;
 }
 
 .player-ability-targeted {

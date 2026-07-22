@@ -1,3 +1,11 @@
+/*
+ * PLAYER SESSION API CLIENT
+ * =========================
+ * Small reusable wrapper around the game's REST endpoints. It builds safe LAN
+ * or public join URLs, applies request timeouts, publishes teacher snapshots,
+ * and submits player joins, answers, and actions. app.js may extend/override its
+ * local API object with these functions when this module is loaded.
+ */
 (function exposeStudyAdventurePlayerSession(root, factory) {
   const playerSession = factory();
   if (typeof module !== "undefined" && module.exports) {

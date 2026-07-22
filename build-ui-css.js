@@ -1,9 +1,22 @@
+/*
+ * UI CSS BUILD STEP
+ * =================
+ * Reads authoritative styles.css and statically separates selectors/keyframes
+ * into dashboard.css and player.css based on the DOM/classes referenced by each
+ * runtime. This custom Node build step keeps the phone payload smaller without
+ * adding a CSS framework or production bundler. Run: node build-ui-css.js
+ */
 const fs = require("fs");
 const path = require("path");
 
 const root = __dirname;
 const sourcePath = path.join(root, "styles.css");
-const playerSources = ["player.html", "player.js", "combat-system.js", "shared-data.js"]
+// Only files that actually create player-page DOM belong in this lookup.
+// combat-system.js and shared-data.js contain gameplay words such as
+// "encounter" and "combat-stage" but never mount those dashboard elements on
+// player.html. Including them made unrelated dashboard selectors look live and
+// inflated the phone stylesheet substantially.
+const playerSources = ["player.html", "player.js"]
   .map((file) => fs.readFileSync(path.join(root, file), "utf8"))
   .join("\n");
 const dashboardSources = ["index.html", "app.js", "dashboard-optional.js", "mission-console-live.css"]
@@ -154,6 +167,46 @@ function selectorTokens(selector) {
   return [...selector.matchAll(/([.#])([A-Za-z_][A-Za-z0-9_-]*)/g)].map((match) => ({ kind: match[1], name: match[2] }));
 }
 
+function collectPlayerDomTokens(source) {
+  const tokens = new Set();
+  for (const match of source.matchAll(/\b(?:class|id)\s*=\s*["'`]([^"'`>]*)/g)) {
+    for (const token of match[1].match(/[A-Za-z_][A-Za-z0-9_-]*/g) || []) tokens.add(token);
+  }
+  for (const match of source.matchAll(/\bgetElementById\(\s*["'`]([^"'`]+)["'`]/g)) tokens.add(match[1]);
+  for (const match of source.matchAll(/\b(?:querySelectorAll?|closest|matches)\(\s*["'`]([^"'`]+)["'`]/g)) {
+    for (const token of selectorTokens(match[1])) tokens.add(token.name);
+  }
+  for (const match of source.matchAll(/\bclassList\.(?:add|remove|toggle|contains)\(([^)]*)\)/g)) {
+    for (const value of match[1].matchAll(/["'`]([A-Za-z_][A-Za-z0-9_-]*)["'`]/g)) tokens.add(value[1]);
+  }
+  return tokens;
+}
+
+const playerDomTokens = collectPlayerDomTokens(playerSources);
+
+const playerSharedSelectorTokens = new Set([
+  "eyebrow",
+  "field-note",
+  "signal-bars",
+  "missionCard",
+  "rarity-common",
+  "rarity-uncommon",
+  "rarity-rare",
+  "rarity-epic",
+  "rarity-legendary"
+]);
+
+function isPlayerSelectorToken(token) {
+  return playerDomTokens.has(token.name) && /^player(?:-|[A-Z]|$)/.test(token.name);
+}
+
+function selectorTargetsPlayerDom(selector) {
+  const tokens = selectorTokens(selector);
+  const playerNamedTokens = tokens.filter((token) => /^player(?:-|[A-Z]|$)/.test(token.name));
+  if (playerNamedTokens.length) return playerNamedTokens.every(isPlayerSelectorToken);
+  return Boolean(tokens.length) && tokens.every((token) => playerSharedSelectorTokens.has(token.name));
+}
+
 function isGlobalPlayerSelector(selector) {
   const clean = selector.trim();
   if (!clean) return false;
@@ -165,8 +218,14 @@ function isGlobalPlayerSelector(selector) {
 function isPlayerRelevantSelector(selectorText) {
   return splitSelectors(selectorText).some((selector) => {
     if (isGlobalPlayerSelector(selector)) return true;
-    return selectorTokens(selector).some((token) => sourceUsesToken(token.name));
+    return selectorTargetsPlayerDom(selector);
   });
+}
+
+function playerRelevantSelectorText(selectorText) {
+  return splitSelectors(selectorText)
+    .filter((selector) => isGlobalPlayerSelector(selector) || selectorTargetsPlayerDom(selector))
+    .join(",\n");
 }
 
 function isPlayerOnlySelector(selectorText) {
@@ -233,7 +292,10 @@ function filterPlayerNodes(nodes) {
       const children = filterPlayerNodes(node.children);
       return children.length ? [{ ...node, children }] : [];
     }
-    if (node.type === "rule") return isPlayerRelevantSelector(node.header) ? [{ ...node }] : [];
+    if (node.type === "rule") {
+      if (!isPlayerRelevantSelector(node.header)) return [];
+      return [{ ...node, header: playerRelevantSelectorText(node.header) }];
+    }
     if (node.type === "statement" || node.type === "at-rule") return [{ ...node }];
     return [];
   });
@@ -269,7 +331,7 @@ function serializeNodes(nodes, indent = "") {
   return nodes.map((node) => {
     if (node.type === "statement") return `${indent}${node.header};`;
     if (node.type === "container") return `${indent}${node.header} {\n${serializeNodes(node.children, `${indent}  `)}\n${indent}}`;
-    const body = node.body.trim().split("\n").map((line) => `${indent}  ${line.trim()}`).join("\n");
+    const body = node.body.trim().split("\n").map((line) => line.trim() ? `${indent}  ${line.trim()}` : "").join("\n");
     return `${indent}${node.header} {\n${body}\n${indent}}`;
   }).join("\n\n");
 }

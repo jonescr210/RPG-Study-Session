@@ -1,14 +1,36 @@
+/*
+ * PLAYER DEVICE CLIENT
+ * ====================
+ * Runs on player.html, usually on a phone. It joins a room-code session, polls
+ * revisioned state from the Node server, renders only changed UI regions, sends
+ * answers/actions/ability choices, and provides optional vibration feedback.
+ *
+ * Suggested reading path:
+ * - playerState: local identity, network, prompt, timer, and render-cache data.
+ * - pollSession(): adaptive synchronization loop with retry backoff.
+ * - renderSession(): top-level state-to-screen dispatcher.
+ * - renderPrompt(): answer controls and per-question interaction.
+ * - renderVitals(): HP, class, inventory, cooldown, and condition display.
+ * - submitAnswer()/action handlers: outbound REST mutations.
+ *
+ * Performance rule: polling slows when idle or resolving, and render signatures
+ * prevent rebuilding unchanged DOM—important for heat and battery use on phones.
+ */
 const sharedData = window.StudyAdventureShared || {};
 const combatSystem = window.StudyAdventureCombat || {};
+const ITEM_CAPACITY = Math.max(1, Math.floor(Number(combatSystem.ITEM_CAPACITY) || 1));
 const profanitySubstitutions = sharedData.profanitySubstitutions || [];
 const PLAYER_NETWORK_TIMEOUT_MS = 8_000;
 // Keep the player device responsive without keeping the radio and CPU awake
 // several times per second. Actions still call pollSession() immediately so
 // input feedback does not wait for the slower background cadence.
-const PLAYER_SESSION_POLL_MS = 750;
-const PLAYER_SESSION_HIDDEN_POLL_MS = 3_000;
-const PLAYER_PROMPT_TIMER_MS = 250;
-const PLAYER_ACTION_COOLDOWN_TIMER_MS = 500;
+const PLAYER_SESSION_POLL_MS = 1_500;
+const PLAYER_SESSION_IDLE_POLL_MS = 3_000;
+const PLAYER_SESSION_RESOLVING_POLL_MS = 2_250;
+const PLAYER_SESSION_MAX_RETRY_MS = 8_000;
+const PLAYER_PROMPT_TIMER_MS = 500;
+const PLAYER_ACTION_COOLDOWN_TIMER_MS = 1_000;
+const playerReducedEffectsQuery = window.matchMedia?.("(max-width: 700px), (hover: none) and (pointer: coarse)") || null;
 
 function fetchWithTimeout(resource, options = {}, timeoutMs = PLAYER_NETWORK_TIMEOUT_MS) {
   const controller = new AbortController();
@@ -17,6 +39,8 @@ function fetchWithTimeout(resource, options = {}, timeoutMs = PLAYER_NETWORK_TIM
     .finally(() => window.clearTimeout(timer));
 }
 
+// Local client state. Server-owned gameplay data is rendered from the latest
+// session payload; this object tracks device identity and UI/network bookkeeping.
 const playerState = {
   roomCode: localStorage.getItem("studyAdventureRoomCode") || "",
   playerId: localStorage.getItem("studyAdventurePlayerId") || "",
@@ -30,18 +54,22 @@ const playerState = {
   sessionRevision: 0,
   pollTimer: null,
   pollInFlight: false,
+  pollFailures: 0,
+  sessionStatus: "",
+  promptAccepting: false,
   sessionRecoveryInFlight: false,
   promptTimer: null,
+  promptTimerElements: null,
+  answerShuffleTimer: null,
   actionCooldownTimer: null,
   renderedPromptSignature: "",
+  headerRenderSignature: "",
   waitingMessage: "",
   lastVitals: null,
   vitalsRenderSignature: "",
   classSelectionSignature: "",
-  lastItemNotice: "",
   localActionCooldownUntil: 0,
   pendingAbilityPromptId: "",
-  pendingAbilityAction: "",
   hapticsSupported: "vibrate" in navigator && typeof navigator.vibrate === "function",
   hapticsEnabled: localStorage.getItem("studyAdventureHaptics") === "true",
   lastTimerBuzzKey: "",
@@ -171,12 +199,29 @@ function startPolling() {
 
 function scheduleSessionPoll() {
   if (playerState.pollTimer) window.clearTimeout(playerState.pollTimer);
+  playerState.pollTimer = null;
+  // visibilitychange performs an immediate refresh when the player returns.
+  // Do not wake a backgrounded phone merely to discover that it is still hidden.
+  if (document.hidden) return;
   playerState.pollTimer = window.setTimeout(() => {
     playerState.pollTimer = null;
     pollSession();
-  }, document.hidden ? PLAYER_SESSION_HIDDEN_POLL_MS : PLAYER_SESSION_POLL_MS);
+  }, playerSessionPollDelay());
 }
 
+function playerSessionPollDelay() {
+  if (playerState.pollFailures > 0) {
+    return Math.min(
+      PLAYER_SESSION_MAX_RETRY_MS,
+      PLAYER_SESSION_POLL_MS * (2 ** Math.min(playerState.pollFailures, 3))
+    );
+  }
+  if (["lobby", "briefing", "ended"].includes(playerState.sessionStatus)) return PLAYER_SESSION_IDLE_POLL_MS;
+  if (!playerState.promptAccepting) return PLAYER_SESSION_RESOLVING_POLL_MS;
+  return PLAYER_SESSION_POLL_MS;
+}
+
+/** Fetches only newer session revisions and schedules the next adaptive poll. */
 function pollSession() {
   if (playerState.pollInFlight) return;
   if (document.hidden) {
@@ -186,12 +231,20 @@ function pollSession() {
   playerState.pollInFlight = true;
   const playerId = encodeURIComponent(playerState.playerId || "");
   fetchWithTimeout(`/api/player-session?playerId=${playerId}&sinceRevision=${encodeURIComponent(Math.max(0, Number(playerState.sessionRevision) || 0))}&ts=${Date.now()}`, { cache: "no-store" })
-    .then((response) => response.status === 204 ? { unchanged: true } : response.ok ? response.json() : null)
+    .then((response) => {
+      if (response.status === 204) return { unchanged: true };
+      if (!response.ok) throw new Error(`Session request failed (${response.status})`);
+      return response.json();
+    })
     .then((session) => {
+      playerState.pollFailures = 0;
       if (!session || session.unchanged) return;
       renderSession(session);
     })
-    .catch(() => renderWaiting("Connection lost. Waiting for Mission Control."))
+    .catch(() => {
+      playerState.pollFailures += 1;
+      renderWaiting("Connection lost. Waiting for Mission Control.");
+    })
     .finally(() => {
       playerState.pollInFlight = false;
       scheduleSessionPoll();
@@ -202,14 +255,19 @@ document.addEventListener("visibilitychange", () => {
   document.body.classList.toggle("player-page-hidden", document.hidden);
   if (document.hidden) {
     stopPromptTimer();
+    stopAnswerShuffle();
+    playerState.renderedPromptSignature = "";
     stopActionCooldownTimer();
     return;
   }
   pollSession();
 });
 
+/** Applies one server snapshot to the minimum set of player UI regions. */
 function renderSession(session) {
   playerState.sessionRevision = Math.max(playerState.sessionRevision, Number(session.revision) || 0);
+  playerState.sessionStatus = String(session.status || "");
+  playerState.promptAccepting = Boolean(session.prompt?.accepting && !session.prompt?.arming);
   if (session.roomCode && session.roomCode !== playerState.roomCode) {
     renderWaiting("This device is joined to a different room code.");
     return;
@@ -218,8 +276,12 @@ function renderSession(session) {
     recoverMissingPlayerSession(session);
     return;
   }
-  playerEls.playerMissionTitle.textContent = session.title || "Awaiting Mission";
-  playerEls.playerRoomBadge.textContent = playerState.roomCode;
+  const headerSignature = `${session.title || "Awaiting Mission"}\u0000${playerState.roomCode}`;
+  if (headerSignature !== playerState.headerRenderSignature) {
+    playerState.headerRenderSignature = headerSignature;
+    playerEls.playerMissionTitle.textContent = session.title || "Awaiting Mission";
+    playerEls.playerRoomBadge.textContent = playerState.roomCode;
+  }
   renderVitals(session);
   renderClassSelection(session);
   renderQueuedActionPanel(session);
@@ -233,7 +295,7 @@ function renderSession(session) {
     renderWaiting("Mission briefing in progress.");
     return;
   }
-  if (playerState.lastVitals?.incapacitated) {
+  if (playerState.lastVitals?.incapacitated && !playerState.lastVitals?.secondChanceActive) {
     renderWaiting("You are incapacitated and cannot answer until revived.");
     return;
   }
@@ -344,6 +406,7 @@ function renderWaiting(message) {
   if (playerState.waitingMessage === message) return;
   playerState.waitingMessage = message;
   stopPromptTimer();
+  stopAnswerShuffle();
   stopActionCooldownTimer();
   const activePrompt = playerEls.playerPromptArea.querySelector(".player-prompt");
   if (activePrompt) {
@@ -422,8 +485,6 @@ function syncPlayerAtmosphere(session = {}, prompt = null) {
   if (bossThemeActive) document.body.dataset.bossVisual = bossVisualId;
   else delete document.body.dataset.bossVisual;
   document.body.classList.toggle("player-emergency-active", prompt?.timer?.kind === "emergency");
-  document.body.classList.toggle("player-action-active", Boolean(prompt?.actionOnly));
-  document.body.classList.toggle("player-briefing-active", session.status === "briefing" || session.status === "lobby");
   document.body.classList.toggle("player-resolving", resolving);
 }
 
@@ -478,11 +539,11 @@ function renderQueuedActionPanel(session = {}) {
         ? `Action recharging: ${formatCooldown(cooldown.remainingMs)} remaining.`
         : "Queue an action before or after answering. It will not count as an answer.";
   const signature = JSON.stringify({ available, queued: queued?.id || "", enabled, incapacitated, statusText });
-  panel.hidden = false;
-  panel.classList.toggle("player-action-unavailable", !available);
   if (playerState.queuedActionSignature === signature) return;
   playerState.queuedActionSignature = signature;
   playerState.queuedActionId = queued?.id || "";
+  panel.hidden = false;
+  panel.classList.toggle("player-action-unavailable", !available);
   panel.innerHTML = `
     <form id="playerQueuedActionForm" class="player-action-form player-queued-action-form">
       <strong class="player-action-heading">Player Action</strong>
@@ -520,8 +581,13 @@ function renderPrompt(prompt, enabled, note, session = {}) {
   const alreadySubmitted = playerState.submittedPromptId === prompt.id;
   const actionSubmitted = playerState.submittedActionPromptId === prompt.id;
   const incapacitated = Boolean(playerState.lastVitals?.incapacitated);
+  const deathRollActive = Boolean(incapacitated && playerState.lastVitals?.secondChanceActive);
+  const possessionConfused = Boolean(playerState.lastVitals?.possessionConfused);
+  const visibleChoices = possessionConfused && Array.isArray(prompt.infectionChoices) && prompt.infectionChoices.length === 8
+    ? prompt.infectionChoices
+    : prompt.choices;
   const promptArmed = Date.now() >= playerState.promptArmedAt;
-  const controlsEnabled = enabled && promptArmed && !alreadySubmitted && !incapacitated;
+  const controlsEnabled = enabled && promptArmed && !alreadySubmitted && (!incapacitated || deathRollActive);
   const answerMode = promptAnswerMode(prompt);
   const actionCooldown = actionCooldownInfo(session);
   const actionBaseEnabled = Boolean(prompt.allowPlayerActions && prompt.accepting && promptArmed && (prompt.actionOnly || !actionSubmitted) && !incapacitated);
@@ -546,8 +612,10 @@ function renderPrompt(prompt, enabled, note, session = {}) {
     classHint: prompt.classHint,
     mode: prompt.mode,
     question: prompt.question,
-    choices: prompt.choices,
-    // Countdown seconds are updated by the local 200ms timer. Keep them out
+    choices: visibleChoices,
+    possessionConfused,
+    shuffleAnswersEveryMs: Number(prompt.shuffleAnswersEveryMs) || 0,
+    // Countdown seconds are updated by the local timer. Keep them out
     // of the render signature so polling does not rebuild answer controls.
     timer: prompt.timer ? {
       deadline: prompt.timer.deadline,
@@ -561,7 +629,7 @@ function renderPrompt(prompt, enabled, note, session = {}) {
   const choices = prompt.actionOnly
     ? ""
     : prompt.mode === "multiple"
-    ? `<div class="player-choice-grid">${prompt.choices.map((choice) => `<button class="playerChoiceBtn" type="button" data-answer="${choice.key}" data-prompt-id="${escapeAttribute(prompt.id)}" ${controlsEnabled ? "" : "disabled"}>${choice.key}<span>${escapeHtml(choice.text)}</span></button>`).join("")}</div>`
+    ? `<div class="player-choice-grid${possessionConfused ? " possession-confused" : ""}">${visibleChoices.map((choice) => `<button class="playerChoiceBtn" type="button" data-answer="${choice.key}" data-prompt-id="${escapeAttribute(prompt.id)}" ${controlsEnabled ? "" : "disabled"}>${choice.key}<span>${escapeHtml(choice.text)}</span></button>`).join("")}</div>`
     : `<form id="playerFillForm" class="player-fill-form" data-prompt-id="${escapeAttribute(prompt.id)}"><input id="playerFillInput" type="text" placeholder="Type your answer" ${controlsEnabled ? "" : "disabled"}><button type="submit" ${controlsEnabled ? "" : "disabled"}>Submit</button></form>`;
   const actionForm = prompt.allowPlayerActions && prompt.actionOnly ? `
     <form id="playerActionForm" class="player-action-form" data-action-base-enabled="${actionBaseEnabled ? "true" : "false"}" data-action-only="${prompt.actionOnly ? "true" : "false"}" data-cooldown-until="${actionCooldown.cooldownUntil}" data-cooldown-ms="${actionCooldown.cooldownMs}">
@@ -629,7 +697,7 @@ function renderPrompt(prompt, enabled, note, session = {}) {
       : alreadySubmitted
         ? "Answer submitted. Awaiting Mission Control."
         : incapacitated
-          ? "You are incapacitated and cannot answer until revived."
+          ? deathRollActive ? `Second Chance death roll: ${Number(playerState.lastVitals?.secondChanceCorrectResponses) || 0}/2 consecutive correct.` : "You are incapacitated and cannot answer until revived."
           : !promptArmed
             ? "Prompt locking in..."
             : note || "Submit your answer when ready.";
@@ -641,6 +709,7 @@ function renderPrompt(prompt, enabled, note, session = {}) {
     if (isNewPrompt && prompt.timer) vibratePlayer(prompt.timer.kind === "emergency" ? "emergency-start" : "timer-start");
     if (isNewPrompt) triggerPlayerQueryArrival(prompt);
     startPromptTimer(prompt.timer);
+    startAnswerShuffle(prompt);
     startActionCooldownTimer();
     return;
   }
@@ -660,7 +729,7 @@ function renderPrompt(prompt, enabled, note, session = {}) {
       <div data-prompt-timer>${timerHtml}</div>
       <p data-prompt-question>${escapeHtml(prompt.question || "")}</p>
       <div id="playerAnswerControls" class="player-answer-controls" ${answerMode === "action" ? "hidden" : ""}>${choices}</div>
-      <div id="playerSubmitStatus" class="player-submit-status">${alreadySubmitted ? "Answer submitted. Awaiting Mission Control." : incapacitated ? "You are incapacitated and cannot answer until revived." : !promptArmed ? "Prompt locking in..." : note ? escapeHtml(note) : prompt.actionOnly ? "Choose an action when ready." : "Submit your answer when ready."}</div>
+      <div id="playerSubmitStatus" class="player-submit-status">${alreadySubmitted ? "Answer submitted. Awaiting Mission Control." : incapacitated ? deathRollActive ? `Second Chance death roll: ${Number(playerState.lastVitals?.secondChanceCorrectResponses) || 0}/2 consecutive correct.` : "You are incapacitated and cannot answer until revived." : !promptArmed ? "Prompt locking in..." : note ? escapeHtml(note) : prompt.actionOnly ? "Choose an action when ready." : "Submit your answer when ready."}</div>
       <div data-prompt-action>${actionForm}</div>
     </section>
   `;
@@ -668,7 +737,42 @@ function renderPrompt(prompt, enabled, note, session = {}) {
   if (isNewPrompt && prompt.timer) vibratePlayer(prompt.timer.kind === "emergency" ? "emergency-start" : "timer-start");
   if (isNewPrompt) triggerPlayerQueryArrival(prompt);
   startPromptTimer(prompt.timer);
+  startAnswerShuffle(prompt);
   startActionCooldownTimer();
+}
+
+function startAnswerShuffle(prompt = {}) {
+  stopAnswerShuffle();
+  const intervalMs = Math.max(0, Number(prompt.shuffleAnswersEveryMs) || 0);
+  if (!intervalMs || prompt.mode !== "multiple") return;
+  const grid = playerEls.playerPromptArea.querySelector(".player-choice-grid");
+  if (!grid) return;
+  const shuffleControls = () => {
+    if (!grid.isConnected) {
+      stopAnswerShuffle();
+      return;
+    }
+    if (grid.closest(".player-prompt-paused")) return;
+    const buttons = [...grid.querySelectorAll(".playerChoiceBtn")];
+    for (let index = buttons.length - 1; index > 0; index -= 1) {
+      const swapIndex = Math.floor(Math.random() * (index + 1));
+      [buttons[index], buttons[swapIndex]] = [buttons[swapIndex], buttons[index]];
+    }
+    const fragment = document.createDocumentFragment();
+    buttons.forEach((button) => fragment.appendChild(button));
+    grid.appendChild(fragment);
+    if (!playerReducedEffectsQuery?.matches) {
+      grid.classList.remove("mind-eraser-shuffle");
+      void grid.offsetWidth;
+      grid.classList.add("mind-eraser-shuffle");
+    }
+  };
+  playerState.answerShuffleTimer = window.setInterval(shuffleControls, Math.max(500, intervalMs));
+}
+
+function stopAnswerShuffle() {
+  if (playerState.answerShuffleTimer) window.clearInterval(playerState.answerShuffleTimer);
+  playerState.answerShuffleTimer = null;
 }
 
 function actionCooldownInfo(session = {}) {
@@ -696,6 +800,13 @@ function playerActionStatusText(actionSubmitted, incapacitated, cooldown) {
 function startPromptTimer(timer) {
   stopPromptTimer();
   if (!timer) return;
+  const card = playerEls.playerPromptArea.querySelector(".player-countdown");
+  playerState.promptTimerElements = card ? {
+    card,
+    value: card.querySelector("#playerCountdownValue"),
+    fill: card.querySelector("#playerCountdownFill"),
+    label: card.querySelector(".player-countdown-heading span")
+  } : null;
   const tick = () => updatePromptTimer(timer);
   tick();
   playerState.promptTimer = window.setInterval(tick, PLAYER_PROMPT_TIMER_MS);
@@ -704,6 +815,7 @@ function startPromptTimer(timer) {
 function stopPromptTimer() {
   if (playerState.promptTimer) window.clearInterval(playerState.promptTimer);
   playerState.promptTimer = null;
+  playerState.promptTimerElements = null;
   document.body.classList.remove("player-time-critical", "player-time-final");
 }
 
@@ -758,18 +870,17 @@ function formatCooldown(ms) {
 }
 
 function updatePromptTimer(timer) {
-  const value = document.getElementById("playerCountdownValue");
-  const fill = document.getElementById("playerCountdownFill");
-  const card = document.querySelector(".player-countdown");
-  if (!value || !fill || !card) {
+  const elements = playerState.promptTimerElements;
+  const { value, fill, card, label } = elements || {};
+  if (!value || !fill || !card?.isConnected) {
     stopPromptTimer();
     return;
   }
   const seconds = timerSeconds(timer);
   const duration = Math.max(1, Number(timer.durationMs) || 30000);
   const remaining = Math.max(0, seconds * 1000);
-  const label = card.querySelector(".player-countdown-heading span");
-  if (label) label.textContent = timer.starting ? "Prompt opening..." : timer.label || "Challenge Window";
+  const labelText = timer.starting ? "Prompt opening..." : timer.label || "Challenge Window";
+  if (label && label.textContent !== labelText) label.textContent = labelText;
   value.textContent = seconds.toFixed(1);
   fill.style.width = `${Math.max(0, Math.min(100, (remaining / duration) * 100))}%`;
   card.classList.toggle("critical", seconds <= 5);
@@ -797,12 +908,18 @@ const playerClassGlyphs = { soldier: "\u2736", medic: "+", scout: "\u224b", enfo
 
 function playerItemAbility(item) {
   if (!item) return null;
-  if (item.ability && typeof item.ability === "object") return item.ability;
-  const stat = Object.keys(item.bonuses || {})[0] || "";
+  const listedReduction = Math.max(0, Number(item.bonuses?.damageReduction) || 0);
+  if (item.ability && typeof item.ability === "object") {
+    if (item.ability.effect !== "guard") return item.ability;
+    const amount = Math.max(1, Number(item.ability.amount) || listedReduction || 4);
+    return { ...item.ability, amount, description: `Reduce the next incoming hit by ${amount}.` };
+  }
   if (!item.rarity || !["rare", "epic", "legendary"].includes(item.rarity)) return null;
+  const stat = listedReduction > 0 ? "damageReduction" : Object.keys(item.bonuses || {})[0] || "";
+  const guardAmount = Math.max(4, listedReduction);
   const abilities = {
     damage: { id: "overdrive", label: "Overdrive", description: "Next correct combat answer gains +4 damage.", effect: "damage", cooldown: 3 },
-    damageReduction: { id: "guard-matrix", label: "Guard Matrix", description: "Reduce the next incoming hit by 4.", effect: "guard", cooldown: 3 },
+    damageReduction: { id: "guard-matrix", label: "Guard Matrix", description: `Reduce the next incoming hit by ${guardAmount}.`, effect: "guard", amount: guardAmount, cooldown: 3 },
     healing: { id: "field-patch", label: "Field Patch", description: "Restore 4 HP to a selected operator.", effect: "heal", cooldown: 3 },
     hintPower: { id: "signal-burst", label: "Signal Burst", description: "Reveal an extra clue on the current question.", effect: "hint", cooldown: 5 },
     disruption: { id: "pulse-jammer", label: "Pulse Jammer", description: "Disrupt one enemy activation this round.", effect: "disrupt", cooldown: 4 },
@@ -835,6 +952,16 @@ function playerCombatCooldownRemaining(marker, cadence, nodeIndex, currentRound)
   const lastRound = Number(marker.round);
   if (!Number.isFinite(lastRound)) return 0;
   return Math.max(0, Math.max(0, Number(cadence) || 0) - (Math.max(0, Number(currentRound) || 0) - lastRound));
+}
+
+function playerQuestionCooldownRemaining(marker, cadence, prompt = {}) {
+  const currentCount = Math.max(0, Number(prompt.questionCount) || 0);
+  if (marker && typeof marker === "object" && Number.isFinite(Number(marker.questionCount))) {
+    return Math.max(0, cadence - (currentCount - Number(marker.questionCount)));
+  }
+  const legacyIndex = Number(marker);
+  if (!Number.isFinite(legacyIndex)) return 0;
+  return Math.max(0, cadence - ((Number(prompt.questionIndex) || 0) - legacyIndex));
 }
 
 function targetClassDefinition(entry = {}) {
@@ -883,11 +1010,6 @@ function playerTargetCardsHtml(states, key, actionWindow, options = {}) {
 function renderVitals(session) {
   const states = Array.isArray(session.playerStates) ? session.playerStates : [];
   const vitals = states.find((entry) => sameName(entry.name, playerState.playerName));
-  document.body.classList.remove(
-    "player-status-ok",
-    "player-status-low",
-    "player-status-downed"
-  );
 
   if (!vitals) {
     clearPendingAbility();
@@ -906,7 +1028,9 @@ function renderVitals(session) {
     }
     playerState.lastVitals = null;
     playerState.vitalsRenderSignature = "";
-    document.body.classList.add("player-status-ok");
+    document.body.classList.toggle("player-status-ok", true);
+    document.body.classList.toggle("player-status-low", false);
+    document.body.classList.toggle("player-status-downed", false);
     return;
   }
 
@@ -922,7 +1046,24 @@ function renderVitals(session) {
   const tookDamage = Number.isFinite(priorHp) && hp < priorHp;
   const becameIncapacitated = Boolean(priorVitals) && !priorVitals.incapacitated && incapacitated;
   const lowHealth = hp <= Math.max(2, Math.ceil((Number(vitals.maxHp) || 10) * 0.25));
-  const statusText = incapacitated ? "Incapacitated" : lowHealth ? "Critical condition" : "Operational";
+  document.body.classList.toggle("player-status-ok", !incapacitated && !lowHealth);
+  document.body.classList.toggle("player-status-low", !incapacitated && lowHealth);
+  document.body.classList.toggle("player-status-downed", incapacitated);
+  const secondChanceActive = Boolean(vitals.secondChanceActive && incapacitated);
+  const secondChanceCorrectResponses = Math.max(0, Number(vitals.secondChanceCorrectResponses) || 0);
+  const possessed = Boolean(vitals.possessed && !incapacitated);
+  const spectralInfected = Boolean(vitals.spectralInfected && !incapacitated && !possessed);
+  const possessionConfused = Boolean(vitals.possessionConfused && !incapacitated && !possessed);
+  const possessionCorrectStreak = Math.max(0, Number(vitals.possessionCorrectStreak) || 0);
+  const statusText = possessed
+    ? `Possessed — escape ${possessionCorrectStreak}/2`
+    : spectralInfected
+    ? "Dazed and Confused — answer field infected"
+    : possessionConfused
+    ? "Spectral Delirium — answer field infected"
+    : secondChanceActive
+    ? `Downed — Second Chance ${secondChanceCorrectResponses}/2`
+    : incapacitated ? "Incapacitated" : lowHealth ? "Critical condition" : "Operational";
   const vitalsRenderSignature = JSON.stringify({
     hp,
     maxHp: vitals.maxHp,
@@ -932,6 +1073,9 @@ function renderVitals(session) {
     xp: vitals.xp,
     points: vitals.points,
     answerStreak: vitals.answerStreak,
+    totalAnswers: vitals.totalAnswers,
+    correctAnswers: vitals.correctAnswers,
+    accuracyPercent: vitals.accuracyPercent,
     items: vitals.items,
     answerFeedback: vitals.answerFeedback,
     classCooldowns: vitals.classCooldowns,
@@ -943,7 +1087,13 @@ function renderVitals(session) {
     promptId: session.prompt?.id || "",
     combat: Boolean(session.prompt?.combat),
     accepting: Boolean(session.prompt?.accepting),
-    allowPlayerActions: Boolean(session.prompt?.allowPlayerActions)
+    allowPlayerActions: Boolean(session.prompt?.allowPlayerActions),
+    secondChanceActive,
+    secondChanceCorrectResponses,
+    possessed,
+    possessionConfused,
+    spectralInfected,
+    possessionCorrectStreak
   });
   if (vitalsRenderSignature === playerState.vitalsRenderSignature) return;
   playerState.vitalsRenderSignature = vitalsRenderSignature;
@@ -955,7 +1105,10 @@ function renderVitals(session) {
   if (playerEls.playerVitals) {
     playerEls.playerVitals.className = classNames.join(" ");
     const classDefinition = combatSystem.classDefinition?.(vitals.classId) || null;
-    const itemCards = (Array.isArray(vitals.items) ? vitals.items : []).map((itemId) => combatSystem.itemDefinition?.(itemId)).filter(Boolean);
+    const itemCards = (Array.isArray(vitals.items) ? vitals.items : [])
+      .map((itemId) => combatSystem.itemDefinition?.(itemId))
+      .filter(Boolean)
+      .slice(0, ITEM_CAPACITY);
     playerEls.playerVitals.style.setProperty("--player-class-color", vitals.classColor || classDefinition?.color || "#9eeeff");
     const points = Math.max(0, Math.round(Number(vitals.points) || 0));
     const maxHp = Math.max(10, Number(vitals.maxHp) || 10);
@@ -963,6 +1116,12 @@ function renderVitals(session) {
     const level = Math.max(1, Number(vitals.level) || 1);
     const xp = Math.max(0, Number(vitals.xp) || 0);
     const streak = Math.max(0, Number(vitals.answerStreak) || 0);
+    const totalAnswers = Math.max(0, Math.round(Number(vitals.totalAnswers) || 0));
+    const correctAnswers = Math.min(totalAnswers, Math.max(0, Math.round(Number(vitals.correctAnswers) || 0)));
+    const accuracyPercent = totalAnswers
+      ? Math.round(correctAnswers / totalAnswers * 100)
+      : null;
+    const accuracyLabel = accuracyPercent == null ? "ACC --" : `ACC ${accuracyPercent}%`;
     playerEls.playerVitals.innerHTML = "";
     const classId = String(vitals.classId || "").toLowerCase();
     const reserve = classId === "enforcer" ? Math.max(0, Number(vitals.enforcerReserve) || 0) : 0;
@@ -985,15 +1144,14 @@ function renderVitals(session) {
       : combatRoundCooldown
         ? playerCombatCooldownRemaining(classMarker, classCooldownInfo[1], session.prompt?.nodeIndex, classCurrent)
         : Number.isFinite(classLast) ? Math.max(0, classCooldownInfo[1] - (classCurrent - classLast)) : 0;
-    const reviveLast = Number(cooldowns["level6-medic"]);
-    const reviveRemaining = classId === "medic" && level >= 6 && Number.isFinite(reviveLast)
-      ? Math.max(0, 6 - (Number(session.prompt?.questionIndex || 0) - reviveLast))
+    const reviveRemaining = classId === "medic" && level >= 6
+      ? playerQuestionCooldownRemaining(cooldowns["level6-medic"], 6, session.prompt)
       : 0;
     const scoutUnavailable = classId === "scout" && session.prompt?.questionType === "true-false";
     const classReady = !classRemaining && !scoutUnavailable && (level >= 3 || classId !== "soldier") && (classId !== "soldier" || streak >= 3);
     const abilityTurnUsed = Boolean(vitals.abilityUsedThisTurn) || abilityPending;
     const combatRoom = Boolean(session.prompt?.combat);
-    const abilityWindow = Boolean(session.prompt?.allowPlayerActions && session.prompt?.accepting && !incapacitated);
+    const abilityWindow = Boolean(session.prompt?.allowPlayerActions && session.prompt?.accepting && !incapacitated && !possessed);
     const classAbilityAllowed = abilityWindow && (combatRoom || ["medic", "scout"].includes(classId));
     const tacticianProtocolCycleAllowed = classId === "tactician" && !abilityTurnUsed && classAbilityAllowed;
     const itemAbilityAllowed = (effect) => abilityWindow && (combatRoom || ["heal", "hint"].includes(effect));
@@ -1020,20 +1178,30 @@ function renderVitals(session) {
     const targetableClass = ["medic", "engineer"].includes(classId);
     const levelSixLabels = { soldier: "Determined Aim", scout: "Intel Sniper", enforcer: "Stand Tough", engineer: "Kick Start Your Heart", tactician: "Inspire the Masses" };
     const levelSixLabel = levelSixLabels[classId] || "";
-    const levelSixLast = Number(cooldowns[`level6-${classId}`]);
-    const levelSixRemaining = level >= 6 && Number.isFinite(levelSixLast) ? Math.max(0, 6 - (Number(session.prompt?.questionIndex || 0) - levelSixLast)) : 0;
+    const levelSixRemaining = level >= 6
+      ? playerQuestionCooldownRemaining(cooldowns[`level6-${classId}`], 6, session.prompt)
+      : 0;
     const levelSixPassive = classId === "engineer";
     const levelSixAllowed = level >= 6 && !levelSixPassive && !levelSixRemaining && !abilityTurnUsed && abilityWindow && (combatRoom || classId === "scout");
+    const ultimateRemaining = classId === "medic" ? reviveRemaining : levelSixRemaining;
+    const ultimateCharging = level >= 6 && ultimateRemaining > 0;
+    const ultimateProgress = ultimateCharging ? Math.round(((6 - Math.min(6, ultimateRemaining)) / 6) * 1000) / 10 : 100;
+    const ultimateLabel = classId === "medic" ? "Rebirth" : levelSixLabel || "Ultimate";
+    const ultimateIconTitle = level < 6
+      ? `${vitals.classLabel || "Operator"} ultimate unlocks at level 6`
+      : ultimateCharging
+        ? `${ultimateLabel} charging: ${6 - Math.min(6, ultimateRemaining)} of 6`
+        : `${ultimateLabel} ready`;
     const levelSixAction = level >= 6 && classId !== "medic" && levelSixLabel
-      ? `<div class="player-revive-action level-six-action"><strong>${escapeHtml(levelSixLabel)}</strong><small>${levelSixPassive ? "Passive — activates when an operator is incapacitated" : "Level 6 ability — six-question cooldown"}</small><button type="button" class="player-ability-btn class" id="playerLevelSixAbilityBtn" ${levelSixAllowed ? "" : "disabled"}>${levelSixPassive ? `Passive — ${levelSixRemaining ? `Recharge ${levelSixRemaining}` : "Ready"}` : abilityTurnUsed ? "Used this turn" : levelSixRemaining ? `Recharge ${levelSixRemaining}` : "Use ability"}</button></div>`
+      ? `<div class="player-revive-action level-six-action"><strong>${escapeHtml(levelSixLabel)}</strong><small>${levelSixPassive ? "Passive — activates when an operator is incapacitated" : "Level 6 ability — six-question cooldown"}</small><button type="button" class="player-ability-btn class" id="playerLevelSixAbilityBtn" ${levelSixAllowed ? "" : "disabled"}>${levelSixPassive ? `Passive — ${levelSixRemaining ? "Charging" : "Ready"}` : abilityTurnUsed ? "Used this turn" : levelSixRemaining ? "Charging" : "Use ability"}</button></div>`
       : "";
     const classAction = manualClass
-      ? `<div class="player-class-action-row">${classId === "tactician" ? `<button type="button" class="tactician-protocol-button protocol-${escapeAttribute(playerState.selectedTacticianProtocol)}" id="playerTacticianProtocol" data-protocol="${escapeAttribute(playerState.selectedTacticianProtocol)}" ${tacticianProtocolCycleAllowed ? "" : "disabled"}><span>PROTOCOL</span><strong data-protocol-label>${escapeHtml(playerState.selectedTacticianProtocol.toUpperCase())}</strong><small>Tap to cycle</small></button>` : ""}${targetableClass ? classTargetSelect : ""}<button type="button" class="player-ability-btn class" id="playerClassAbilityBtn" ${classReady && !abilityTurnUsed && classAbilityAllowed ? "" : "disabled"}>${targetableClass ? "Use ability" : classId === "tactician" ? "Use protocol" : classId === "enforcer" ? "Arm shield" : "Use now"}</button>${reviveUnlocked && combatRoom ? `<div class="player-revive-action"><strong>Rebirth</strong><small>Revive at 75% HP with full brace; forfeit this turn's attack</small>${reviveTargetSelect}<button type="button" class="player-ability-btn class" id="playerMedicReviveBtn" ${reviveReady ? "" : "disabled"}>${abilityTurnUsed ? "Used this turn" : reviveRemaining ? `Recharge ${reviveRemaining}` : reviveTargets.length ? "Revive operator" : "No operator down"}</button></div>` : ""}${levelSixAction}</div>`
+      ? `<div class="player-class-action-row">${classId === "tactician" ? `<label class="player-tactician-protocol-picker"><span>Protocol</span><select id="playerTacticianProtocol" ${tacticianProtocolCycleAllowed ? "" : "disabled"}><option value="assault" ${playerState.selectedTacticianProtocol === "assault" ? "selected" : ""}>Assault</option><option value="guard" ${playerState.selectedTacticianProtocol === "guard" ? "selected" : ""}>Guard</option><option value="support" ${playerState.selectedTacticianProtocol === "support" ? "selected" : ""}>Support</option></select></label>` : ""}${targetableClass ? classTargetSelect : ""}<button type="button" class="player-ability-btn class" id="playerClassAbilityBtn" ${classReady && !abilityTurnUsed && classAbilityAllowed ? "" : "disabled"}>${targetableClass ? "Use ability" : classId === "tactician" ? "Use protocol" : classId === "enforcer" ? "Arm shield" : "Use now"}</button>${reviveUnlocked && combatRoom ? `<div class="player-revive-action"><strong>Rebirth</strong><small>Revive at 75% HP with full brace; forfeit this turn's attack</small>${reviveTargetSelect}<button type="button" class="player-ability-btn class" id="playerMedicReviveBtn" ${reviveReady ? "" : "disabled"}>${abilityTurnUsed ? "Used this turn" : reviveRemaining ? "Charging" : reviveTargets.length ? "Revive operator" : "No operator down"}</button></div>` : ""}${levelSixAction}</div>`
       : "";
     const abilityPresentation = playerClassAbilityPresentation(classId, level);
     const abilityBadge = abilityPending ? "ARMING..." : abilityTurnUsed ? "USED THIS TURN" : classRemaining ? `RECHARGE ${classRemaining}` : classReady ? (abilityPresentation.upgraded ? "EMPOWERED READY" : "READY") : level < 3 ? "LV 3 UNLOCK" : "STREAK 3 REQUIRED";
     const answerFeedback = vitals.answerFeedback;
-    playerEls.playerVitals.insertAdjacentHTML("beforeend", `<div class="player-vitals-modern"><div class="player-vitals-modern-top"><span class="player-vitals-class-icon" style="--player-class-color:${escapeAttribute(vitals.classColor || classDefinition?.color || "#9eeeff")}">${classGlyph}</span><div class="player-vitals-hp-copy"><strong>${hp} / ${maxHp} HP</strong><div class="player-vitals-hp-track" aria-label="Health ${hp} of ${maxHp}"><i style="width:${hpPercent}%"></i></div><small>${escapeHtml(statusText)}</small></div><b>LV ${level}</b></div><div class="player-vitals-modern-summary"><span>${escapeHtml(vitals.classLabel || "Operator")}</span><span>${xp} XP</span><span>${streak} STK</span><span>${points} PTS</span></div>${noticeHtml}${abilityNoticeHtml}</div>`);
+    playerEls.playerVitals.insertAdjacentHTML("beforeend", `<div class="player-vitals-modern"><div class="player-vitals-modern-top"><span class="player-vitals-class-icon ${ultimateCharging ? "ultimate-recharging" : ""}" style="--player-class-color:${escapeAttribute(vitals.classColor || classDefinition?.color || "#9eeeff")}; --ultimate-charge:${ultimateProgress}%" title="${escapeAttribute(ultimateIconTitle)}">${classGlyph}</span><div class="player-vitals-hp-copy"><strong>${hp} / ${maxHp} HP</strong><div class="player-vitals-hp-track" aria-label="Health ${hp} of ${maxHp}"><i style="width:${hpPercent}%"></i></div><small>${escapeHtml(statusText)}</small></div><b>LV ${level}</b></div><div class="player-vitals-modern-summary"><span>${escapeHtml(vitals.classLabel || "Operator")}</span><span>${xp} XP</span><span>${streak} STK</span><span>${points} PTS</span><span title="${totalAnswers ? `${correctAnswers} correct of ${totalAnswers} responses` : "No scored responses yet"}">${accuracyLabel}</span></div>${noticeHtml}${abilityNoticeHtml}</div>`);
     if (playerEls.playerAnswerFeedbackPanel) {
       playerEls.playerAnswerFeedbackPanel.hidden = !answerFeedback;
       playerEls.playerAnswerFeedbackPanel.innerHTML = answerFeedback
@@ -1047,7 +1215,7 @@ function renderVitals(session) {
     }
     playerEls.playerLoadoutArea?.querySelector("#playerClassAbilityBtn")?.addEventListener("click", () => {
       const target = selectedAbilityTarget(`class:${classId}`, states);
-      const protocol = classId === "tactician" ? (playerEls.playerLoadoutArea?.querySelector("#playerTacticianProtocol")?.dataset.protocol || playerState.selectedTacticianProtocol || "assault") : "";
+      const protocol = classId === "tactician" ? (playerEls.playerLoadoutArea?.querySelector("#playerTacticianProtocol")?.value || playerState.selectedTacticianProtocol || "assault") : "";
       const suffix = protocol || target || "";
       submitAction(`CLASS:${classId}${suffix ? `:${suffix}` : ""}`, session.prompt?.id || playerState.promptId);
     });
@@ -1059,20 +1227,8 @@ function renderVitals(session) {
     playerEls.playerLoadoutArea?.querySelector("#playerLevelSixAbilityBtn")?.addEventListener("click", () => {
       submitAction(`ULTIMATE:${classId}`, session.prompt?.id || playerState.promptId);
     });
-    playerEls.playerLoadoutArea?.querySelector("#playerTacticianProtocol")?.addEventListener("click", (event) => {
-      const button = event.currentTarget;
-      if (button.disabled) return;
-      const protocols = ["assault", "guard", "support"];
-      const current = protocols.indexOf(button.dataset.protocol || playerState.selectedTacticianProtocol || "assault");
-      const next = protocols[(current + 1 + protocols.length) % protocols.length];
-      playerState.selectedTacticianProtocol = next;
-      button.dataset.protocol = next;
-      const label = button.querySelector("[data-protocol-label]");
-      if (label) label.textContent = next.toUpperCase();
-      button.classList.remove("protocol-assault", "protocol-guard", "protocol-support");
-      button.classList.add(`protocol-${next}`);
-      playerState.vitalsRenderSignature = "";
-      renderVitals(session);
+    playerEls.playerLoadoutArea?.querySelector("#playerTacticianProtocol")?.addEventListener("change", (event) => {
+      playerState.selectedTacticianProtocol = event.currentTarget.value || "assault";
     });
     playerEls.playerLoadoutArea?.querySelectorAll("[data-target-select-key]").forEach((button) => button.addEventListener("click", () => {
       const key = button.dataset.targetSelectKey || "";
@@ -1102,14 +1258,19 @@ function renderVitals(session) {
     }
   }
 
-  if (incapacitated) document.body.classList.add("player-status-downed");
-  else if (lowHealth) document.body.classList.add("player-status-low");
-  else document.body.classList.add("player-status-ok");
-
   if (becameIncapacitated) vibratePlayer("downed");
   else if (tookDamage) vibratePlayer(lowHealth ? "critical-damage" : "damage");
 
-  playerState.lastVitals = { hp, incapacitated };
+  playerState.lastVitals = {
+    hp,
+    incapacitated,
+    secondChanceActive: Boolean(vitals.secondChanceActive),
+    secondChanceCorrectResponses: Math.max(0, Number(vitals.secondChanceCorrectResponses) || 0),
+    possessed: Boolean(vitals.possessed),
+    possessionConfused: Boolean(vitals.possessionConfused),
+    spectralInfected: Boolean(vitals.spectralInfected),
+    possessionCorrectStreak: Math.max(0, Number(vitals.possessionCorrectStreak) || 0)
+  };
 }
 
 function vibratePlayer(patternName) {
@@ -1180,7 +1341,7 @@ function submitAnswer(answer, expectedPromptId = playerState.promptId) {
     if (status) status.textContent = "Prompt locking in...";
     return;
   }
-  if (playerState.lastVitals?.incapacitated) {
+  if (playerState.lastVitals?.incapacitated && !playerState.lastVitals?.secondChanceActive) {
     if (status) status.textContent = "You are incapacitated and cannot answer until revived.";
     return;
   }
@@ -1213,9 +1374,8 @@ function submitAnswer(answer, expectedPromptId = playerState.promptId) {
     });
 }
 
-function markAbilityPendingUi(action, promptId = playerState.promptId) {
+function markAbilityPendingUi(promptId = playerState.promptId) {
   playerState.pendingAbilityPromptId = promptId || "";
-  playerState.pendingAbilityAction = action || "";
   const loadout = playerEls.playerLoadoutArea;
   if (!loadout) return;
   const classLoadout = loadout.querySelector(".player-class-loadout");
@@ -1225,7 +1385,7 @@ function markAbilityPendingUi(action, promptId = playerState.promptId) {
     badge.className = "ready optimistic-arming";
     badge.textContent = "ARMING...";
   }
-  loadout.querySelectorAll(".player-ability-btn, .tactician-protocol-button, [data-player-item]").forEach((control) => {
+  loadout.querySelectorAll(".player-ability-btn, .player-tactician-protocol-picker select, [data-player-item]").forEach((control) => {
     control.disabled = true;
   });
 }
@@ -1233,7 +1393,6 @@ function markAbilityPendingUi(action, promptId = playerState.promptId) {
 function clearPendingAbility(promptId = "") {
   if (!promptId || playerState.pendingAbilityPromptId === promptId) {
     playerState.pendingAbilityPromptId = "";
-    playerState.pendingAbilityAction = "";
   }
 }
 
@@ -1267,7 +1426,7 @@ function submitAction(action, expectedPromptId = playerState.promptId) {
     return;
   }
   if (status) status.textContent = "Sending action...";
-  if (abilityAction) markAbilityPendingUi(cleanAction, playerState.promptId);
+  if (abilityAction) markAbilityPendingUi(playerState.promptId);
   fetchWithTimeout("/api/player-action", {
     method: "POST",
     headers: { "content-type": "application/json" },
