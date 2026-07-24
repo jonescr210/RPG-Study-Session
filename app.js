@@ -111,7 +111,7 @@ const playerSessionApi = {
   ...(window.StudyAdventurePlayerSession || {})
 };
 
-const DASHBOARD_OPTIONAL_SRC = "dashboard-optional.js?v=playthrough-fixes-1";
+const DASHBOARD_OPTIONAL_SRC = "dashboard-optional.js?v=ready-bots-2";
 let dashboardOptionalPromise = null;
 
 function loadDashboardOptional() {
@@ -224,21 +224,24 @@ const BOSS_VISUAL_PROFILES = Object.freeze({
     behaviorId: "green-possession",
     namingCues: Object.freeze(["ghostly", "possession"]),
     imageSrc: "assets/boss-eyes-final-green.png?v=1",
-    introSrc: "assets/boss-eyes-final-intro-60fps.mp4?v=1"
+    introSrc: "assets/boss-eyes-final-intro-60fps.mp4?v=1",
+    musicSrc: "audio-effects/boss_music_ghost.mp3?v=20m-fade-1"
   }),
   "signal-yellow": Object.freeze({
     id: "signal-yellow",
     behaviorId: "yellow-ballistics",
     namingCues: Object.freeze(["human", "super-soldier", "heretic"]),
     imageSrc: "assets/boss-eyes-signal-yellow.png?v=1",
-    introSrc: "assets/boss-eyes-signal-yellow-intro-60fps.mp4?v=1"
+    introSrc: "assets/boss-eyes-signal-yellow-intro-60fps.mp4?v=1",
+    musicSrc: "audio-effects/boss_music_soldier.mp3?v=20m-fade-1"
   }),
   "arc-blue": Object.freeze({
     id: "arc-blue",
-    behaviorId: "blue-pending",
+    behaviorId: "blue-xenomorph",
     namingCues: Object.freeze(["alien", "xenomorphic", "horror"]),
     imageSrc: "assets/boss-eyes-arc-blue.png?v=1",
-    introSrc: "assets/boss-eyes-arc-blue-intro-60fps.mp4?v=1"
+    introSrc: "assets/boss-eyes-arc-blue-acid-intro.mp4?v=1",
+    musicSrc: "audio-effects/boss_music_alien.mp3?v=20m-fade-1"
   })
 });
 const GREEN_MID_POSSESSION_PHASE_NAME = "Wraithbound Discord";
@@ -262,6 +265,28 @@ const YELLOW_FINAL_RAIN_SNIPER_SHOTS = 3;
 const YELLOW_FINAL_RAIN_C4_BOMBS = 2;
 const YELLOW_FINAL_RAIN_AOE_FRACTION = 0.2;
 const YELLOW_FINAL_NORMAL_DAMAGE = Object.freeze([7, 15]);
+const BLUE_MID_ACID_PHASE_NAME = "Acid Spit";
+const BLUE_MID_CHEST_BURSTER_PHASE_NAME = "Chest Burster";
+const BLUE_MID_ACID_STRIKES = 1;
+const BLUE_MID_ACID_DAMAGE_FRACTION = 0.1;
+const BLUE_MID_ACID_BURN_DAMAGE = 2;
+const BLUE_MID_ACID_BURN_TURNS = 3;
+const BLUE_MID_NORMAL_DAMAGE_MAX_MULTIPLIER = 0.75;
+const BLUE_MID_CHEST_BURST_DAMAGE_FRACTION = 0.5;
+const BLUE_FINAL_ISOLATION_PHASE_NAME = "Severed Signal";
+const BLUE_FINAL_HIDDEN_SWIPE_NAME = "Something in the Dark";
+const BLUE_FINAL_HIDDEN_SWIPE_DAMAGE_FRACTION = 0.1;
+const BLUE_FINAL_ISOLATION_GROUP_LIMIT = 3;
+const BLUE_FINAL_SECOND_ISOLATION_HEALTH_FRACTION = 0.5;
+const BLUE_FINAL_SECOND_ISOLATION_INFECTIONS_PER_HALLWAY = 2;
+const BLUE_FINAL_CHEST_BURST_PHASE_NAME = "Mass Chest Burst";
+const BLUE_FINAL_CHEST_BURST_HEALTH_FRACTION = 0.2;
+const BLUE_FINAL_CHEST_BURST_STACK_DAMAGE_FRACTION = 0.5;
+const BLUE_FINAL_CHEST_BURST_INCAP_FRACTION = 0.25;
+const BLUE_FINAL_LIGHT_HEAL_FRACTION = 0.1;
+const BLUE_FINAL_MINION_INFECTION_CHANCE = 0.5;
+const BLUE_FINAL_HEALTH_MULTIPLIER = 0.9;
+const BLUE_FINAL_NORMAL_DAMAGE_MULTIPLIER = 0.75;
 const DEFAULT_BOSS_VISUAL_BY_PHASE = Object.freeze({
   mid: "blood-red",
   final: "spectral-green"
@@ -347,6 +372,41 @@ function bossUsesGreenPossessionBehavior(node = state.nodes[state.currentNode]) 
 /** Returns true when a room uses the yellow ballistic boss rules. */
 function bossUsesYellowBallisticsBehavior(node = state.nodes[state.currentNode]) {
   return bossVisualProfileForNode(node)?.behaviorId === "yellow-ballistics";
+}
+
+/** Returns true when a room uses the blue xenomorph boss rules. */
+function bossUsesBlueXenomorphBehavior(node = state.nodes[state.currentNode]) {
+  return bossVisualProfileForNode(node)?.behaviorId === "blue-xenomorph";
+}
+
+function blueMidBossBehaviorActive(node = state.nodes[state.currentNode]) {
+  return node?.bossPhase === "mid" && bossUsesBlueXenomorphBehavior(node);
+}
+
+function blueFinalBossBehaviorActive(node = state.nodes[state.currentNode]) {
+  return node?.bossPhase === "final" && bossUsesBlueXenomorphBehavior(node);
+}
+
+function blueFinalIsolationActive(encounter = currentCombatEncounter(), node = state.nodes[state.currentNode]) {
+  return Boolean(blueFinalBossBehaviorActive(node) && encounter?.blueFinalIsolation?.active);
+}
+
+function blueAcidSpitBehaviorActive(encounter, node = state.nodes[encounter?.nodeIndex ?? state.currentNode]) {
+  return Boolean(
+    blueMidBossBehaviorActive(node)
+    || (blueFinalBossBehaviorActive(node) && encounter?.blueFinalIsolation?.completed)
+  );
+}
+
+function blueAcidSpitOpeningPrompt(node = state.nodes[state.currentNode]) {
+  return blueMidBossBehaviorActive(node) ? `BossPhase 100% — ${BLUE_MID_ACID_PHASE_NAME}` : "";
+}
+
+function activateBlueAcidSpitOpening(encounter, node = state.nodes[state.currentNode]) {
+  if (!encounter || !blueMidBossBehaviorActive(node) || encounter.blueAcidSpitOpeningResolved) return null;
+  const newlyActivated = !encounter.blueAcidSpitAnnounced;
+  encounter.blueAcidSpitAnnounced = true;
+  return { newlyActivated };
 }
 
 function yellowSniperScopeOpeningPrompt(node = state.nodes[state.currentNode]) {
@@ -936,6 +996,8 @@ const state = {
   combatStageEnteredNodes: new Set(),
   retiredCombatNodes: new Set(),
   combatDisplayedHp: {},
+  combatDisplayedBlueFinalInfectionStacks: {},
+  combatDisplayedPlayerResults: [],
   statusRenderSignature: "",
   combatEntryWatchdogTimer: null,
   combatNextNodeTimer: null,
@@ -1187,6 +1249,7 @@ const ENEMY_VISUAL_POOLS = Object.freeze({
   medium: Object.freeze(Array.from({ length: 5 }, (_, index) => `enemy_assets/ghosts/shadow-enemy-${index + 1}.png`)),
   heavy: Object.freeze(Array.from({ length: 5 }, (_, index) => `enemy_assets/monster/alien-enemy-${index + 1}.png`))
 });
+const BLUE_PARASITE_IMAGE_SRC = ENEMY_VISUAL_POOLS.heavy[2];
 const ENEMY_NARRATION_NAMES = Object.freeze({
   light: Object.freeze(["Hostile Soldier", "Raider", "Trooper", "Rifleman", "Combatant", "Sentry"]),
   medium: Object.freeze(["Ghost", "Specter", "Wraith", "Phantom", "Shade", "Revenant"]),
@@ -1198,7 +1261,24 @@ const COMBAT_ENTRY_WATCHDOG_MS = 8000;
 const BOSS_INTRO_START_DELAY_MS = 2250;
 const BOSS_INTRO_VIDEO_FADE_MS = 650;
 const BOSS_INTRO_STATIC_FADE_MS = 950;
-const BOSS_INTRO_WATCHDOG_MS = 24000;
+const BLUE_FINAL_BOSS_FADE_MS = 850;
+const BLUE_FINAL_BLACKOUT_HOLD_MS = 550;
+const BLUE_FINAL_TEAM_SPLIT_MS = 1100;
+const BLUE_FINAL_HALLWAY_LOCK_MS = 400;
+const BLUE_FINAL_EMPTY_HALLWAY_HOLD_MS = 900;
+const BLUE_FINAL_CONTACT_SILHOUETTE_MS = 450;
+const BLUE_FINAL_CONTACT_IMAGE_WAIT_MS = 1800;
+const BLUE_FINAL_ENEMY_REVEAL_MS = 1900;
+const BLUE_FINAL_POST_REVEAL_HOLD_MS = 350;
+const BLUE_FINAL_ISOLATION_INTRO_STAGE_CLASSES = Object.freeze([
+  "blue-isolation-boss-fade",
+  "blue-isolation-blackout",
+  "blue-isolation-split-reveal",
+  "blue-isolation-hallway-lock",
+  "blue-isolation-enemy-staged",
+  "blue-isolation-enemy-reveal"
+]);
+const BOSS_INTRO_WATCHDOG_MS = 28000;
 const FINAL_BOSS_SECOND_AOE_DAMAGE = Object.freeze([10, 15]);
 const REBIRTH_BRACE_MITIGATION = 0.7;
 const QUESTION_SET_STORAGE_KEY = "studyAdventureQuestionSets";
@@ -1212,8 +1292,8 @@ const GENERATED_ENVIRONMENT_NOTE = "Let the local DM create a custom mission loc
 const BACKGROUND_MUSIC_VOLUME = 72;
 const BACKGROUND_MUSIC_DUCK_VOLUME = 24;
 const TTS_SFX_DUCK_GAIN = 0.22;
-const LOCAL_NORMAL_MUSIC_SRC = "audio-effects/normal_music.mp3";
-const LOCAL_BOSS_MUSIC_SRC = "audio-effects/boss_music.mp3";
+const LOCAL_NORMAL_MUSIC_SRC = "audio-effects/normal_music.mp3?v=20m-fade-1";
+const LOCAL_BOSS_MUSIC_SRC = "audio-effects/boss_music.mp3?v=20m-original-quality-2";
 let narrationAudioContext = null;
 const narrationAudioNodes = new WeakMap();
 
@@ -2598,8 +2678,14 @@ function loadBackgroundMusic(mode = desiredBackgroundMusicMode(), options = {}) 
   const youtubeRequested = requestedMode === "boss" ? state.useYoutubeBossMusic : state.useYoutubeMusic;
   const id = youtubeRequested ? extractYouTubeId(url) : "";
   const useYoutube = Boolean(id);
-  const localSrc = requestedMode === "boss" ? LOCAL_BOSS_MUSIC_SRC : LOCAL_NORMAL_MUSIC_SRC;
-  const sourceKey = useYoutube ? `youtube:${id}` : `local:${requestedMode}`;
+  const bossProfile = requestedMode === "boss"
+    ? bossVisualProfileForNode(state.nodes[state.currentNode])
+    : null;
+  const localSrc = requestedMode === "boss"
+    ? bossProfile?.musicSrc || LOCAL_BOSS_MUSIC_SRC
+    : LOCAL_NORMAL_MUSIC_SRC;
+  const localCacheKey = `${requestedMode}:${localSrc}`;
+  const sourceKey = useYoutube ? `youtube:${id}` : `local:${localSrc}`;
   state.youtubeMusicUrl = normalUrl;
   state.youtubeBossMusicUrl = bossUrl;
   window.localStorage.setItem("studyAdventureYoutubeMusicUrl", normalUrl);
@@ -2656,7 +2742,7 @@ function loadBackgroundMusic(mode = desiredBackgroundMusicMode(), options = {}) 
         }
       }, { once: true });
     } else {
-      const audio = state.backgroundMusicPreloads[requestedMode] || document.createElement("audio");
+      const audio = state.backgroundMusicPreloads[localCacheKey] || document.createElement("audio");
       audio.title = `Bundled ${requestedMode} background music`;
       audio.loop = true;
       audio.controls = true;
@@ -2667,7 +2753,7 @@ function loadBackgroundMusic(mode = desiredBackgroundMusicMode(), options = {}) 
       if (!audio.src || !audio.src.endsWith(localSrc)) audio.src = localSrc;
       els.backgroundMusicEmbed.innerHTML = "";
       els.backgroundMusicEmbed.appendChild(audio);
-      state.backgroundMusicPreloads[requestedMode] = audio;
+      state.backgroundMusicPreloads[localCacheKey] = audio;
       let localStarted = false;
       if (audio) audio.volume = Math.max(0, Math.min(1, state.backgroundMusicCurrentVolume / 100));
       audio?.addEventListener("error", () => {
@@ -3391,6 +3477,7 @@ function readMissionConfig() {
     return null;
   }
   let length = actionDrivenMode ? actionMissionLengthFor() : missionLengthFor(questionPool.length);
+  const bossTestVisualId = BOSS_VISUAL_PROFILES[els.bossTestVisual?.value] ? els.bossTestVisual.value : "blood-red";
   const bossTestPhase = els.bossTestPhase?.value === "mid" ? "mid" : "final";
   if (!actionDrivenMode && els.bossTestMode?.checked && bossTestPhase === "mid") {
     if (questionPool.length < TWO_BOSS_MIN_QUESTIONS) {
@@ -3444,8 +3531,8 @@ function readMissionConfig() {
     useYoutubeBossMusic: Boolean(els.useYoutubeBossMusic?.checked),
     youtubeMusicRandomStart: Boolean(els.youtubeMusicRandomStart?.checked),
     bossTestMode: Boolean(els.bossTestMode?.checked),
-    bossTestPhase: els.bossTestPhase?.value === "mid" ? "mid" : "final",
-    bossTestVisualId: BOSS_VISUAL_PROFILES[els.bossTestVisual?.value] ? els.bossTestVisual.value : "blood-red",
+    bossTestPhase,
+    bossTestVisualId,
     bossVisualPoolIds: selectedBossVisualPoolIds(),
     combatTestMode: Boolean(els.combatTestMode?.checked),
     actionDrivenMode
@@ -3679,9 +3766,10 @@ function launchMission(players, config) {
           answerStreak: 0,
           totalAnswers: 0,
           correctAnswers: 0,
+          lastStandAvailable: true,
           classId: config.playerClasses?.[normalize(name)] || combatSystem.CLASS_IDS?.[index % combatSystem.CLASS_IDS.length]
         })
-      : { name, hp: 10, maxHp: 10, status: [], incapacitated: false, points: 0, xp: 0, level: 1, answerStreak: 0, totalAnswers: 0, correctAnswers: 0 });
+      : { name, hp: 10, maxHp: 10, status: [], incapacitated: false, points: 0, xp: 0, level: 1, answerStreak: 0, totalAnswers: 0, correctAnswers: 0, lastStandAvailable: true });
     state.inventory = { medkits: 2, ems: 0 };
     state.itemCodex = readStoredItemCodex();
     state.pendingRewardChoice = null;
@@ -4608,27 +4696,49 @@ function playerStatePayload() {
   const greenConfusionPhase = Number(encounter?.greenConfusionPhase) || 0;
   return state.players.map((player) => {
     const displayedHp = state.combatDisplayedHp[normalize(player.name)];
-    const hp = Number.isFinite(displayedHp) ? displayedHp : player.hp;
+    const usingDisplayedHp = Number.isFinite(displayedHp);
+    const hp = usingDisplayedHp ? displayedHp : player.hp;
+    const displayedIncapacitated = usingDisplayedHp ? hp <= 0 : Boolean(player.incapacitated) || hp <= 0;
+    const isolationGroup = blueFinalIsolationActive(encounter) && encounter?.blueFinalIsolation?.splitRevealed !== false
+      ? blueFinalIsolationGroupForPlayer(encounter, player)
+      : null;
     return {
     name: player.name,
     hp: Math.max(0, hp),
     maxHp: Math.max(10, Number(player.maxHp) || 10),
     // Compatibility placeholder for the replacement condition system.
     status: [],
-    incapacitated: Boolean(player.incapacitated) || hp <= 0,
-    secondChanceActive: Boolean(state.secondChanceEnabled && (player.incapacitated || hp <= 0)),
+    incapacitated: displayedIncapacitated,
+    secondChanceActive: Boolean(state.secondChanceEnabled && displayedIncapacitated),
     secondChanceCorrectResponses: Math.max(0, Number(player.secondChanceCorrectResponses) || 0),
     possessed: Boolean(player._greenPossessed),
     possessionConfused: Boolean(player._spectralInfected && !player._greenPossessed && !player.incapacitated),
     spectralInfected: Boolean(player._spectralInfected && greenConfusionPhase === 1),
     spectralInfectionCorrectStreak: Math.max(0, Number(player.spectralInfectionCorrectStreak) || 0),
     possessionCorrectStreak: Math.max(0, Number(player.greenPossessionCorrectStreak) || 0),
+    acidBurnTurns: displayedIncapacitated
+      ? 0
+      : Math.max(0, Number(blueAcidBurnState(encounter, player)?.turnsRemaining) || 0),
+    blueFinalInfectionStacks: displayedBlueFinalInfectionStacks(encounter, player),
+    blueIsolationActive: Boolean(isolationGroup),
+    blueIsolationSearching: Boolean(isolationGroup && !encounter?.blueFinalIsolation?.initialWaveSpawned),
+    blueIsolationAwaitingReunion: Boolean(isolationGroup?.strandedDowned && displayedIncapacitated),
+    blueIsolationInfectionOnly: Boolean(isolationGroup && !encounter?.enemies?.some((enemy) => (
+      enemy.blueIsolationGroupId === isolationGroup.id
+      && enemy.blueIsolationLight
+      && !enemy.defeated
+      && enemy.hp > 0
+    ))),
+    blueIsolationGroupId: isolationGroup?.id || "",
+    blueIsolationGroupLabel: isolationGroup?.label || "",
+    blueIsolationMembers: [...(isolationGroup?.memberNames || [])],
     points: Math.max(0, Math.round(Number(player.points) || 0)),
     xp: Math.max(0, Math.round(Number(player.xp) || 0)),
     level: Math.max(1, Math.round(Number(player.level) || 1)),
     answerStreak: Math.max(0, Math.round(Number(player.answerStreak) || 0)),
     totalAnswers: Math.max(0, Math.round(Number(player.totalAnswers) || 0)),
     correctAnswers: Math.max(0, Math.round(Number(player.correctAnswers) || 0)),
+    lastStandAvailable: lastStandCharged(player),
     accuracyPercent: playerAnswerAccuracy(player).percent,
     enforcerReserve: player.classId === "enforcer" ? Math.max(0, Math.round(Number(player.enforcerReserve) || 0)) : 0,
     classId: player.classId || "",
@@ -4751,6 +4861,8 @@ function buildPlayerPrompt() {
       enemyCount: combatEncounter.enemies.filter((enemy) => !enemy.defeated).length,
       round: combatEncounter.round + 1,
       boss: node?.type === "boss",
+      blueIsolationActive: blueFinalIsolationActive(combatEncounter, node),
+      blueIsolationPhase: blueFinalIsolationActive(combatEncounter, node) ? BLUE_FINAL_ISOLATION_PHASE_NAME : "",
       intent: combatIntentText(info.type, info.operator)
     } : null,
     classHint: state.classHints[state.currentQuestion] || "",
@@ -7304,6 +7416,9 @@ function simulatedAnswerFor(question, correct, player = null) {
   const displayedQuestion = player?._spectralInfected
     ? questionWithPossessionInfectionChoices(question) || question
     : question;
+  if (displayedQuestion.type === "readiness") {
+    return displayedQuestion.mode === "fill" ? displayedQuestion.answerText : displayedQuestion.answerKey;
+  }
   if (correct) return displayedQuestion.mode === "fill" ? displayedQuestion.answerText : displayedQuestion.answerKey;
   if (displayedQuestion.mode === "fill") return "incorrect test answer";
   const wrongChoice = displayedQuestion.choices.find((choice) => choice.key !== displayedQuestion.answerKey);
@@ -8977,7 +9092,10 @@ function ensureCombatEncounter(nodeIndex = state.currentNode) {
   }
   if (node.type === "boss") {
     const finalBoss = node.bossPhase === "final";
-    const targetHp = Math.max(finalBoss ? 36 : 28, activePlayers().length * (finalBoss ? 26 : 20));
+    const baseTargetHp = Math.max(finalBoss ? 36 : 28, activePlayers().length * (finalBoss ? 26 : 20));
+    const targetHp = finalBoss && blueFinalBossBehaviorActive(node)
+      ? Math.max(1, Math.round(baseTargetHp * BLUE_FINAL_HEALTH_MULTIPLIER))
+      : baseTargetHp;
     group.enemies[0].label = bossIdentityForNode(node);
     group.enemies[0].hp = targetHp;
     group.enemies[0].maxHp = targetHp;
@@ -8996,6 +9114,7 @@ function ensureCombatEncounter(nodeIndex = state.currentNode) {
   };
   state.combatEncounters[nodeIndex] = encounter;
   activateGreenFinalInfection(encounter, node);
+  activateBlueFinalIsolation(encounter, node);
   return encounter;
 }
 
@@ -9193,7 +9312,18 @@ function addEnforcerReserve(player, amount) {
   return added;
 }
 
-function applyCombatDamage(player, amount, source, notes, facts, encounter = null, allowRedirect = true, minimumHp = 0) {
+function lastStandCharged(player) {
+  return Boolean(player) && player.lastStandAvailable !== false;
+}
+
+function rechargeLastStand(player) {
+  if (!player) return false;
+  const restored = !lastStandCharged(player);
+  player.lastStandAvailable = true;
+  return restored;
+}
+
+function applyCombatDamage(player, amount, source, notes, facts, encounter = null, allowRedirect = true, minimumHp = 0, lastStandEligible = false) {
   if (!player || player.incapacitated) return 0;
   let incoming = Math.max(0, Math.round(Number(amount) || 0));
   if (incoming > 0 && player._itemAbilityGuard) {
@@ -9251,7 +9381,12 @@ function applyCombatDamage(player, amount, source, notes, facts, encounter = nul
     return 0;
   }
   if (allowRedirect && incoming > 0 && player.classId !== "enforcer" && incoming >= player.hp) {
-    const redirector = activePlayers().find((candidate) => candidate.classId === "enforcer" && Number(candidate.level) >= 3 && !candidate.incapacitated && !candidate._greenPossessed && combatCooldownReady(candidate, "fatal-redirect", 3, encounter));
+    const redirector = activePlayers().find((candidate) => candidate.classId === "enforcer"
+      && Number(candidate.level) >= 3
+      && !candidate.incapacitated
+      && !candidate._greenPossessed
+      && blueFinalIsolationAllowsPlayerTarget(encounter, candidate, player)
+      && combatCooldownReady(candidate, "fatal-redirect", 3, encounter));
     if (redirector) {
       markCombatCooldown(redirector, "fatal-redirect", encounter);
       const redirectedAmount = Math.max(1, Math.ceil(incoming / 2));
@@ -9271,6 +9406,14 @@ function applyCombatDamage(player, amount, source, notes, facts, encounter = nul
     facts.push(source === "possession rescue"
       ? `${player.name} cannot be killed by allied possession-suppression fire and remains at ${minimumHp} HP`
       : `${player.name} survives Feral Rupture at ${minimumHp} HP`);
+  }
+  if (lastStandEligible && incoming > 0 && incoming >= player.hp && lastStandCharged(player)) {
+    player.lastStandAvailable = false;
+    player._combatLastStand = true;
+    player._combatBlocked = true;
+    incoming = 0;
+    facts.push(`${player.name}'s Last Stand charge ignites after their correct brace and shrugs off the incapacitating hit`);
+    addEventNote(notes, player.name, `${player.name}'s Last Stand burns its one-shot charge and rejects a lethal impact.`);
   }
   const before = player.hp;
   applyDamage(player, incoming, source);
@@ -9320,7 +9463,7 @@ function resolveYellowPreemptiveHits({ encounter, enemy, targets, entries, type,
         : braced
           ? combatBraceMitigation(braceEntry, type)
           : 0;
-    const commandGuard = Math.max(0, Number(encounter.tacticianGuardAmount) || 0);
+    const commandGuard = combatTeamGuardAmount(encounter, target);
     const mitigatedAmount = braced
       ? Math.round(amount * (1 - braceMitigation))
       : Math.max(0, amount - commandGuard);
@@ -9345,18 +9488,20 @@ function resolveYellowPreemptiveHits({ encounter, enemy, targets, entries, type,
       };
     }
 
-    const damage = applyCombatDamage(target, targetAmount, sourceName, notes, facts, encounter, true);
+    const damage = applyCombatDamage(target, targetAmount, sourceName, notes, facts, encounter, true, 0, Boolean(braced && braceEntry?.correct));
     const combatBlocked = Boolean(target._combatBlocked);
     const redirected = target._combatRedirect || null;
     const bubbleBlocked = Boolean(target._combatBubble);
     const kickStarted = target._combatKickStarted || null;
+    const lastStandTriggered = Boolean(target._combatLastStand);
     blocked = blocked || bubbleBlocked || combatBlocked;
     delete target._combatBlocked;
     delete target._combatRedirect;
     delete target._combatBubble;
     delete target._combatKickStarted;
+    delete target._combatLastStand;
     return {
-      target, braced, braceMitigation, blocked, bubbleBlocked, redirected, kickStarted,
+      target, braced, braceMitigation, blocked, bubbleBlocked, redirected, kickStarted, lastStandTriggered,
       damage: kickStarted?.damageTaken || damage,
       hpBefore,
       hpAfter: target.hp,
@@ -9636,7 +9781,7 @@ function resolveYellowOpforMirrorAction(enemy, encounter, entries, type, operato
       : braced
         ? combatBraceMitigation(braceEntry, type)
         : 0;
-    const commandGuard = Math.max(0, Number(encounter.tacticianGuardAmount) || 0);
+    const commandGuard = combatTeamGuardAmount(encounter, target);
     const mitigatedAmount = braced
       ? Math.round(rolledAmount * (1 - braceMitigation))
       : Math.max(0, rolledAmount - commandGuard);
@@ -9644,18 +9789,20 @@ function resolveYellowOpforMirrorAction(enemy, encounter, entries, type, operato
     const targetAmount = blocked ? 0 : Math.max(0, mitigatedAmount);
     if (target.classId === "enforcer" && rolledAmount > targetAmount) addEnforcerReserve(target, rolledAmount - targetAmount);
     const hpBefore = target.hp;
-    const damage = applyCombatDamage(target, targetAmount, YELLOW_FINAL_OPFOR_PHASE_NAME, notes, facts, encounter, true);
+    const damage = applyCombatDamage(target, targetAmount, YELLOW_FINAL_OPFOR_PHASE_NAME, notes, facts, encounter, true, 0, Boolean(braced && braceEntry?.correct));
     const combatBlocked = Boolean(target._combatBlocked);
     const redirected = target._combatRedirect || null;
     const bubbleBlocked = Boolean(target._combatBubble);
     const kickStarted = target._combatKickStarted || null;
+    const lastStandTriggered = Boolean(target._combatLastStand);
     blocked = blocked || bubbleBlocked || combatBlocked;
     delete target._combatBlocked;
     delete target._combatRedirect;
     delete target._combatBubble;
     delete target._combatKickStarted;
+    delete target._combatLastStand;
     return {
-      target, braced, braceMitigation, blocked, bubbleBlocked, redirected, kickStarted,
+      target, braced, braceMitigation, blocked, bubbleBlocked, redirected, kickStarted, lastStandTriggered,
       damage: kickStarted?.damageTaken || damage,
       hpBefore,
       hpAfter: target.hp,
@@ -9673,6 +9820,29 @@ function combatIntentText(type = null, operator = null) {
   if (!type) type = combatRoundChallengeType(state.currentQuestion);
   if (!operator && type.locked) operator = selectOperator(state.currentQuestion);
   const encounter = isCombatNode(state.nodes[state.currentNode]) ? currentCombatEncounter() : null;
+  if (blueFinalIsolationActive(encounter)) {
+    if (encounter.blueFinalIsolation?.splitRevealed === false) {
+      return "Critical signal forming. The squad still holds together while visual contact with the boss stabilizes.";
+    }
+    const groups = blueFinalIsolationGroups(encounter);
+    if (!encounter.blueFinalIsolation?.initialWaveSpawned) {
+      return `${BLUE_FINAL_ISOLATION_PHASE_NAME}: ${groups.length} separated groups are lost beyond visual range. No hostile contact is visible yet. Answer while searching the darkness; the boss cannot be targeted.`;
+    }
+    const activeIsolationLights = encounter.enemies.some((enemy) => enemy.blueIsolationLight && !enemy.defeated && enemy.hp > 0);
+    if (!activeIsolationLights) {
+      return `${BLUE_FINAL_ISOLATION_PHASE_NAME}: ${groups.length} sealed cell${groups.length === 1 ? "" : "s"}. Correct responses destroy the infection assigned to that operator; incorrect responses let it attack and vanish. The boss cannot be targeted.`;
+    }
+    return `${BLUE_FINAL_ISOLATION_PHASE_NAME}: ${groups.length} sealed cell${groups.length === 1 ? "" : "s"}. Correct responses attack only your cell's light hostile; infection stalkers choose the lowest-accuracy incorrect responder. The boss cannot be targeted.`;
+  }
+  const infectionEnemies = encounter?.enemies.filter((enemy) => enemy.blueChestParasite && !enemy.defeated) || [];
+  if (infectionEnemies.length) {
+    return `Infection phase: ${infectionEnemies.length} assigned parasite${infectionEnemies.length === 1 ? "" : "s"}. A correct response destroys the assigned parasite; an incorrect response lets it attack and escape.`;
+  }
+  if (blueMidBossBehaviorActive()
+    && !encounter?.bluePostInfectionAcidResolved
+    && Number(encounter?.bluePostInfectionAcidRound) === Math.max(0, Number(encounter?.round) || 0) + 1) {
+    return `${BLUE_MID_ACID_PHASE_NAME}: one boss AOE replaces its normal activations this round; surviving adds act normally.`;
+  }
   const count = encounter?.enemies.filter((enemy) => !enemy.defeated).reduce((sum, enemy) => {
     const phaseIncoming = enemy.opforAbilityActive
       || (Number(enemy.opforAbilityArmedRound) > 0
@@ -9695,7 +9865,11 @@ function applyPendingCombatAbilities(encounter, notes, facts, supportEvents = []
     const source = state.players.find((player) => sameName(player.name, use.sourceName));
     if (!source || source.incapacitated || source._greenPossessed) return;
     const target = use.targetName
-      ? state.players.find((player) => sameName(player.name, use.targetName) && (use.revive ? player.incapacitated : !player.incapacitated))
+      ? state.players.find((player) => sameName(player.name, use.targetName) && (
+          use.rebirth
+            ? player.incapacitated || !lastStandCharged(player)
+            : use.revive ? player.incapacitated : !player.incapacitated
+        ) && blueFinalIsolationAllowsPlayerTarget(encounter, source, player))
       : source;
     const classId = String(use.classId || source.classId || "").toLowerCase();
     if (!encounter && !["medic", "scout"].includes(classId)) return;
@@ -9711,30 +9885,44 @@ function applyPendingCombatAbilities(encounter, notes, facts, supportEvents = []
       supportEvents.push({ kind: "ultimate", source: source.name, target: source.name, amount: 0, label: "Stand Tough" });
     } else if (use.levelSix === "tactician") {
       source._inspireMassesReady = true;
-      supportEvents.push({ kind: "ultimate", source: source.name, target: "team", amount: 0, label: "Inspire the Masses" });
-      encounter.tacticianGuardAmount = Math.max(3, Number(encounter.tacticianGuardAmount) || 0);
-      activePlayers().filter((player) => player.hp < player.maxHp).forEach((player) => {
+      const teamLabel = combatAbilityTeamLabel(encounter, source);
+      const teamMembers = combatAbilityTeamMembers(encounter, source, activePlayers());
+      supportEvents.push({ kind: "ultimate", source: source.name, target: teamLabel, amount: 0, label: "Inspire the Masses" });
+      setCombatTeamGuard(encounter, source, 3);
+      teamMembers.filter((player) => player.hp < player.maxHp).forEach((player) => {
         const before = player.hp;
         healPlayer(player, 3);
         const healed = Math.max(0, player.hp - before);
         if (healed) supportEvents.push({ kind: "heal", source: source.name, target: player.name, amount: healed, hpAfter: player.hp, maxHp: player.maxHp, label: "Inspire the Masses" });
       });
-      facts.push(`${source.name}'s Inspire the Masses grants the squad damage, healing, and a 3-point Guard barrier in one turn`);
-      supportEvents.push({ kind: "barrier", source: source.name, target: "team", amount: 3, label: "Inspire the Masses" });
+      facts.push(`${source.name}'s Inspire the Masses grants ${teamLabel} damage, healing, and a 3-point Guard barrier in one turn`);
+      supportEvents.push({ kind: "barrier", source: source.name, target: teamLabel, amount: 3, label: "Inspire the Masses" });
     } else if (classId === "medic") {
-      if (use.revive) {
-        const revivedHp = Math.max(1, Math.ceil(Math.max(1, Number(target.maxHp) || 10) * 0.75));
-        target.hp = revivedHp;
-        target.incapacitated = false;
-        target._rebirthBracedReady = true;
+      if (use.rebirth) {
+        const revived = Boolean(target.incapacitated);
+        const revivedHp = revived
+          ? Math.max(1, Math.ceil(Math.max(1, Number(target.maxHp) || 10) * 0.75))
+          : Math.max(0, Number(target.hp) || 0);
+        if (revived) {
+          target.hp = revivedHp;
+          target.incapacitated = false;
+          target._rebirthBracedReady = true;
+        }
+        rechargeLastStand(target);
         source._classNoAttackReady = true;
-        facts.push(`${source.name}'s Rebirth returns ${target.name} to the fight at 75% health in a full brace; ${source.name} forfeits this turn's attack`);
-        addEventNote(notes, target.name, `${source.name} revives ${target.name} with ${revivedHp} HP and a full brace for the enemy phase.`);
-        if (use.levelSix === "medic") supportEvents.push({ kind: "ultimate", source: source.name, target: target.name, amount: 0, label: "Rebirth" });
-        supportEvents.push({ kind: "revive", source: source.name, target: target.name, amount: revivedHp, hpAfter: revivedHp, maxHp: target.maxHp, braced: true, label: "Rebirth" });
+        facts.push(revived
+          ? `${source.name}'s Rebirth returns ${target.name} to the fight at 75% health in a full brace and recharges their Last Stand; ${source.name} forfeits this turn's attack`
+          : `${source.name}'s Rebirth recharges ${target.name}'s spent Last Stand; ${source.name} forfeits this turn's attack`);
+        addEventNote(notes, target.name, revived
+          ? `${source.name} revives ${target.name} with ${revivedHp} HP, a full brace, and a restored Last Stand charge.`
+          : `${source.name} restores ${target.name}'s Last Stand charge.`);
+        supportEvents.push({ kind: "ultimate", source: source.name, target: target.name, amount: 0, label: "Rebirth" });
+        supportEvents.push(revived
+          ? { kind: "revive", source: source.name, target: target.name, amount: revivedHp, hpAfter: revivedHp, maxHp: target.maxHp, braced: true, lastStandRecharged: true, label: "Rebirth" }
+          : { kind: "last-stand", source: source.name, target: target.name, amount: 0, lastStandRecharged: true, label: "Rebirth" });
         delete state.classAbilityTargets[normalize(source.name)];
         delete state.classAbilityTargetNotices[normalize(source.name)];
-        source.abilityNotice = "Rebirth resolved";
+        source.abilityNotice = `Rebirth restored ${target.name}'s Last Stand`;
         return;
       }
       const empoweredMedic = Number(source.level) >= 3 && empoweredReady(source, encounter, "medic-overflow", 3);
@@ -9749,7 +9937,11 @@ function applyPendingCombatAbilities(encounter, notes, facts, supportEvents = []
       }
       if (empoweredMedic) {
         markEmpoweredUse(source, "medic-overflow", encounter);
-        activePlayers().filter((player) => player !== target && player.hp < player.maxHp).sort((a, b) => a.hp - b.hp).slice(0, 2).forEach((secondary) => {
+        combatAbilityTeamMembers(encounter, source, activePlayers())
+          .filter((player) => player !== target && player.hp < player.maxHp)
+          .sort((a, b) => a.hp - b.hp)
+          .slice(0, 2)
+          .forEach((secondary) => {
           const secondaryBefore = secondary.hp;
           healPlayer(secondary, Math.min(3, 2 + Math.floor(itemBonus(source, "healing") / 2)));
           if (secondary.hp > secondaryBefore) supportEvents.push({ kind: "heal", source: source.name, target: secondary.name, amount: secondary.hp - secondaryBefore, hpAfter: secondary.hp, maxHp: secondary.maxHp, label: "Medical Field" });
@@ -9825,6 +10017,7 @@ function applyPendingCombatAbilities(encounter, notes, facts, supportEvents = []
     const target = use.targetName
       ? state.players.find((player) => sameName(player.name, use.targetName) && !player.incapacitated)
       : source;
+    if (!blueFinalIsolationAllowsPlayerTarget(encounter, source, target)) return;
     if (ability.effect === "heal") {
       if (!target) return;
       const before = target.hp;
@@ -9856,6 +10049,1168 @@ function applyPendingCombatAbilities(encounter, notes, facts, supportEvents = []
     source.abilityNotice = `${ability.label} resolved`;
   });
   return disruptionCount;
+}
+
+function blueAcidBurnState(encounter, player) {
+  return encounter?.blueAcidBurns?.[normalize(player?.name)] || null;
+}
+
+function blueFinalInfectionStacks(encounter, player) {
+  const node = state.nodes[encounter?.nodeIndex ?? state.currentNode];
+  if (!encounter || !player || !blueFinalBossBehaviorActive(node)) return 0;
+  return Math.max(0, Math.round(Number(encounter.blueFinalInfectionStacks?.[normalize(player.name)]) || 0));
+}
+
+function displayedBlueFinalInfectionStacks(encounter, player) {
+  const key = normalize(player?.name);
+  if (key && Object.prototype.hasOwnProperty.call(state.combatDisplayedBlueFinalInfectionStacks || {}, key)) {
+    return Math.max(0, Math.round(Number(state.combatDisplayedBlueFinalInfectionStacks[key]) || 0));
+  }
+  return blueFinalInfectionStacks(encounter, player);
+}
+
+function setDisplayedBlueFinalInfectionStacks(player, stacks) {
+  const key = normalize(player?.name);
+  if (!key) return 0;
+  state.combatDisplayedBlueFinalInfectionStacks = state.combatDisplayedBlueFinalInfectionStacks || {};
+  const count = Math.max(0, Math.round(Number(stacks) || 0));
+  state.combatDisplayedBlueFinalInfectionStacks[key] = count;
+  return count;
+}
+
+function addBlueFinalInfectionStack(encounter, player, amount = 1) {
+  if (!encounter || !player || amount <= 0) return blueFinalInfectionStacks(encounter, player);
+  encounter.blueFinalInfectionStacks = encounter.blueFinalInfectionStacks || {};
+  const key = normalize(player.name);
+  const count = blueFinalInfectionStacks(encounter, player) + Math.max(1, Math.round(Number(amount) || 1));
+  encounter.blueFinalInfectionStacks[key] = count;
+  return count;
+}
+
+function tryBlueFinalMinionInfection(encounter, enemy, hit) {
+  const node = state.nodes[encounter?.nodeIndex ?? state.currentNode];
+  const boss = bossEnemyForEncounter(encounter);
+  const eligibleTier = ["light", "medium"].includes(String(enemy?.tier || "").toLowerCase());
+  // Mass Chest Burst is the closing phase. Its spawned lights cannot create
+  // replacement stacks after the stored infections have already ruptured.
+  if (!encounter
+    || !enemy
+    || enemy.boss
+    || !eligibleTier
+    || !blueFinalBossBehaviorActive(node)
+    || encounter.blueFinalChestBurstTriggered
+    || !boss
+    || boss.defeated
+    || boss.hp <= 0) return null;
+  const struckPlayer = hit?.damage > 0 || hit?.kickStarted
+    ? hit.target
+    : hit?.redirected?.target && hit.redirected.damage > 0
+      ? hit.redirected.target
+      : null;
+  if (!struckPlayer || state.rng() >= BLUE_FINAL_MINION_INFECTION_CHANCE) return null;
+  return {
+    player: struckPlayer,
+    targetName: struckPlayer.name,
+    stacksAfter: addBlueFinalInfectionStack(encounter, struckPlayer)
+  };
+}
+
+function clearBlueFinalInfectionStacks(encounter) {
+  if (encounter) encounter.blueFinalInfectionStacks = {};
+}
+
+function blueFinalInfectionVisualStyle(stacks) {
+  const count = Math.max(0, Math.round(Number(stacks) || 0));
+  if (!count) return "";
+  const borderWidth = Math.min(4, 1 + Math.floor((count - 1) / 2));
+  const pulseSeconds = Math.max(0.48, 1.75 - (count - 1) * 0.2);
+  const glowAlpha = Math.min(0.95, 0.46 + count * 0.1);
+  const glowSize = Math.min(34, 12 + count * 4);
+  return `--blue-infection-stacks:${count};--blue-infection-border-width:${borderWidth}px;--blue-infection-pulse-duration:${pulseSeconds.toFixed(2)}s;--blue-infection-glow-alpha:${glowAlpha.toFixed(2)};--blue-infection-glow-size:${glowSize}px`;
+}
+
+function applyBlueFinalInfectionCardVisual(card, stacks) {
+  if (!card) return;
+  const count = Math.max(0, Math.round(Number(stacks) || 0));
+  card.classList.toggle("blue-final-infected", count > 0);
+  if (count > 0) {
+    card.dataset.blueInfectionStacks = String(count);
+    const visualStyle = blueFinalInfectionVisualStyle(count);
+    for (const declaration of visualStyle.split(";").filter(Boolean)) {
+      const separator = declaration.indexOf(":");
+      if (separator > 0) card.style.setProperty(declaration.slice(0, separator), declaration.slice(separator + 1));
+    }
+  } else {
+    delete card.dataset.blueInfectionStacks;
+    card.style.removeProperty("--blue-infection-stacks");
+    card.style.removeProperty("--blue-infection-border-width");
+    card.style.removeProperty("--blue-infection-pulse-duration");
+    card.style.removeProperty("--blue-infection-glow-alpha");
+    card.style.removeProperty("--blue-infection-glow-size");
+  }
+}
+
+function blueFinalIsolationGroups(encounter, options = {}) {
+  const groups = encounter?.blueFinalIsolation?.groups || [];
+  return options.includeInactive ? groups : groups.filter((group) => group.active !== false);
+}
+
+function blueFinalIsolationGroupForPlayer(encounter, player, groups = blueFinalIsolationGroups(encounter)) {
+  return groups.find((group) => (group.memberNames || []).some((name) => sameName(name, player?.name))) || null;
+}
+
+function blueFinalIsolationAliveGroupMembers(group) {
+  return (group?.memberNames || [])
+    .map((name) => state.players.find((player) => sameName(player.name, name)))
+    .filter((player) => player && !player.incapacitated);
+}
+
+function blueFinalIsolationPlayerAwaitingReunion(encounter, player) {
+  if (!blueFinalIsolationActive(encounter) || !player?.incapacitated) return false;
+  const group = blueFinalIsolationGroupForPlayer(encounter, player);
+  return Boolean(group?.strandedDowned && !blueFinalIsolationAliveGroupMembers(group).length);
+}
+
+function blueFinalIsolationAllowsPlayerTarget(encounter, source, target) {
+  if (!blueFinalIsolationActive(encounter)) return true;
+  if (!source || !target) return false;
+  if (blueFinalIsolationPlayerAwaitingReunion(encounter, target)) return false;
+  const sourceGroup = blueFinalIsolationGroupForPlayer(encounter, source);
+  const targetGroup = blueFinalIsolationGroupForPlayer(encounter, target);
+  return Boolean(sourceGroup && targetGroup && sourceGroup.id === targetGroup.id);
+}
+
+function combatAbilityTeamMembers(encounter, source, candidates = state.players) {
+  const available = (candidates || []).filter(Boolean);
+  return blueFinalIsolationActive(encounter)
+    ? available.filter((target) => blueFinalIsolationAllowsPlayerTarget(encounter, source, target))
+    : available;
+}
+
+function setCombatTeamGuard(encounter, source, amount) {
+  if (!encounter || !source) return 0;
+  const guardAmount = Math.max(0, Math.round(Number(amount) || 0));
+  if (!blueFinalIsolationActive(encounter)) {
+    encounter.tacticianGuardAmount = Math.max(guardAmount, Number(encounter.tacticianGuardAmount) || 0);
+    return encounter.tacticianGuardAmount;
+  }
+  const group = blueFinalIsolationGroupForPlayer(encounter, source);
+  if (!group) return 0;
+  encounter.tacticianGuardByIsolationGroup = encounter.tacticianGuardByIsolationGroup || {};
+  encounter.tacticianGuardByIsolationGroup[group.id] = Math.max(
+    guardAmount,
+    Number(encounter.tacticianGuardByIsolationGroup[group.id]) || 0
+  );
+  return encounter.tacticianGuardByIsolationGroup[group.id];
+}
+
+function combatTeamGuardAmount(encounter, target) {
+  if (!encounter || !target) return 0;
+  if (!blueFinalIsolationActive(encounter)) return Math.max(0, Number(encounter.tacticianGuardAmount) || 0);
+  const group = blueFinalIsolationGroupForPlayer(encounter, target);
+  return group ? Math.max(0, Number(encounter.tacticianGuardByIsolationGroup?.[group.id]) || 0) : 0;
+}
+
+function combatAbilityTeamLabel(encounter, source) {
+  return blueFinalIsolationActive(encounter)
+    ? blueFinalIsolationGroupForPlayer(encounter, source)?.label || "isolated team"
+    : "team";
+}
+
+function blueFinalIsolationGroupForEnemy(encounter, enemy, groups = blueFinalIsolationGroups(encounter)) {
+  return groups.find((group) => group.id === enemy?.blueIsolationGroupId) || null;
+}
+
+function blueFinalIsolationGroupHallwaySpan(isolation, group) {
+  const explicitSpan = Math.max(0, Math.round(Number(group?.hallwaySpan) || 0));
+  if (explicitSpan) return explicitSpan;
+  return group?.id && group.id === isolation?.mainGroupId
+    ? Math.max(1, 1 + Math.round(Number(isolation?.reunionCount) || 0))
+    : 1;
+}
+
+function blueFinalIsolationSnapshot(encounter) {
+  const isolation = encounter?.blueFinalIsolation;
+  if (!isolation) return null;
+  return {
+    active: Boolean(isolation.active),
+    completed: Boolean(isolation.completed),
+    splitRevealed: isolation.splitRevealed !== false,
+    initialWaveSpawned: Boolean(isolation.initialWaveSpawned),
+    hallwaysDivided: Boolean(isolation.hallwaysDivided),
+    introPhase: isolation.introPhase || "",
+    bossAttackUnlocked: isolation.bossAttackUnlocked !== false,
+    cycle: Math.max(1, Number(isolation.cycle) || 1),
+    openingInfectionCount: Math.max(1, Number(isolation.openingInfectionCount) || 1),
+    openingLightEnemy: isolation.openingLightEnemy !== false,
+    reunionCount: Math.max(0, Number(isolation.reunionCount) || 0),
+    mainGroupId: isolation.mainGroupId || "",
+    groups: (isolation.groups || []).map((group) => ({
+      id: group.id,
+      label: group.label,
+      memberNames: [...(group.memberNames || [])],
+      active: group.active !== false,
+      strandedDowned: Boolean(group.strandedDowned),
+      hallwaySpan: blueFinalIsolationGroupHallwaySpan(isolation, group),
+      wave: Math.max(1, Number(group.wave) || 1),
+      lightEnemyId: group.lightEnemyId || "",
+      lightEnemyIds: [...(group.lightEnemyIds || [group.lightEnemyId]).filter(Boolean)],
+      infectionEnemyIds: [...(group.infectionEnemyIds || [])]
+    }))
+  };
+}
+
+function createBlueFinalIsolationEnemy(encounter, group, kind, memberNames = []) {
+  const tier = kind === "infection" ? "medium" : "light";
+  const enemy = combatSystem.createEnemyGroup?.([tier], state.rng)?.enemies?.[0];
+  if (!enemy) return null;
+  enemy.id = `blue-final-${kind}-${group.id}-${group.wave}-${Date.now()}-${Math.floor(state.rng() * 1_000_000)}`;
+  enemy.summoned = true;
+  enemy.blueIsolationGroupId = group.id;
+  enemy.blueIsolationMemberNames = [...memberNames];
+  enemy.blueIsolationInfection = kind === "infection";
+  enemy.blueIsolationLight = kind === "light";
+  assignEnemyVisuals([enemy]);
+  if (enemy.blueIsolationInfection) {
+    enemy.hp = 1;
+    enemy.maxHp = 1;
+    enemy.imageSrc = BLUE_PARASITE_IMAGE_SRC;
+    enemy.label = `Infection Stalker — ${group.label}`;
+  } else {
+    const groupScale = 0.75 + Math.max(1, group.memberNames.length) * 0.25;
+    enemy.hp = Math.max(5, Math.round(enemy.hp * groupScale));
+    enemy.maxHp = enemy.hp;
+    enemy.label = `Corridor Hunter — ${group.label}`;
+  }
+  encounter.enemies.push(enemy);
+  return enemy;
+}
+
+function splitBlueIsolationAssignments(memberNames, count) {
+  const total = Math.min(
+    Math.max(1, memberNames.length),
+    Math.max(1, Math.round(Number(count) || 1))
+  );
+  const assignments = Array.from({ length: total }, () => []);
+  memberNames.forEach((name, index) => assignments[index % total].push(name));
+  return assignments.filter((assignment) => assignment.length);
+}
+
+function clearBlueFinalIsolationGroupEnemies(encounter, group) {
+  encounter?.enemies?.forEach((enemy) => {
+    if (!group?.id || enemy.blueIsolationGroupId !== group.id || enemy.boss) return;
+    enemy.hp = 0;
+    enemy.defeated = true;
+  });
+}
+
+function spawnBlueFinalIsolationWave(encounter, group, options = {}) {
+  if (!encounter || !group) return [];
+  const preserveExisting = Boolean(options.preserveExisting);
+  const existingGroupEnemies = preserveExisting
+    ? encounter.enemies.filter((enemy) => (
+        enemy.blueIsolationGroupId === group.id
+        && !enemy.boss
+        && !enemy.defeated
+        && enemy.hp > 0
+      ))
+    : [];
+  if (!preserveExisting) clearBlueFinalIsolationGroupEnemies(encounter, group);
+  group.wave = Math.max(1, Number(group.wave) || 1);
+  const reunionWave = Boolean(options.reunion);
+  const aliveMemberNames = blueFinalIsolationAliveGroupMembers(group).map((player) => player.name);
+  const aliveMemberCount = Math.max(1, aliveMemberNames.length);
+  const infectionCount = reunionWave
+    ? Math.min(aliveMemberCount, Math.max(1, Math.ceil(group.memberNames.length / 2)))
+    : Math.min(
+        aliveMemberCount,
+        Math.max(1, Number(encounter.blueFinalIsolation?.openingInfectionCount) || 1)
+      );
+  const assignments = splitBlueIsolationAssignments(aliveMemberNames, infectionCount);
+  const spawned = assignments
+    .map((memberNames) => createBlueFinalIsolationEnemy(encounter, group, "infection", memberNames))
+    .filter(Boolean);
+  const lightEnemy = reunionWave || encounter.blueFinalIsolation?.openingLightEnemy !== false
+    ? createBlueFinalIsolationEnemy(encounter, group, "light", group.memberNames)
+    : null;
+  if (lightEnemy) spawned.push(lightEnemy);
+  const activeGroupEnemies = [...existingGroupEnemies, ...spawned];
+  group.infectionEnemyIds = activeGroupEnemies.filter((enemy) => enemy.blueIsolationInfection).map((enemy) => enemy.id);
+  group.lightEnemyIds = activeGroupEnemies.filter((enemy) => enemy.blueIsolationLight).map((enemy) => enemy.id);
+  group.lightEnemyId = group.lightEnemyIds[0] || "";
+  syncEncounterGroupHp(encounter);
+  return spawned;
+}
+
+function spawnBlueFinalIsolationOpeningWave(encounter) {
+  const isolation = encounter?.blueFinalIsolation;
+  if (!isolation?.active || isolation.initialWaveSpawned) return [];
+  isolation.initialWaveSpawned = true;
+  return blueFinalIsolationGroups(encounter).flatMap((group) => spawnBlueFinalIsolationWave(encounter, group));
+}
+
+function activateBlueFinalIsolation(encounter, node = state.nodes[encounter?.nodeIndex ?? state.currentNode], options = {}) {
+  if (!encounter || !blueFinalBossBehaviorActive(node)) return null;
+  const replaceExisting = Boolean(options.replaceExisting);
+  if (encounter.blueFinalIsolation && !replaceExisting) return encounter.blueFinalIsolation;
+  if (replaceExisting) {
+    blueFinalIsolationGroups(encounter, { includeInactive: true })
+      .forEach((group) => clearBlueFinalIsolationGroupEnemies(encounter, group));
+  }
+  const operators = shuffle([...activePlayers()]);
+  if (!operators.length) return null;
+  // Acid Burn belongs only to a visible Acid Spit sequence. Clear any residual
+  // spit status before the boss vanishes so a hallway swipe cannot appear to
+  // apply or immediately tick Acid Burn.
+  encounter.blueAcidBurns = {};
+  const cycle = Math.max(1, Math.round(Number(options.cycle) || 1));
+  const groupCount = operators.length === 2
+    ? 2
+    : Math.max(1, Math.min(BLUE_FINAL_ISOLATION_GROUP_LIMIT, operators.length));
+  const memberBuckets = Array.from({ length: groupCount }, () => []);
+  operators.forEach((player, index) => memberBuckets[index % groupCount].push(player.name));
+  const groups = memberBuckets.map((memberNames, index) => ({
+    id: `isolation-${cycle}-${index + 1}`,
+    label: `CELL ${String.fromCharCode(65 + index)}`,
+    memberNames,
+    active: true,
+    strandedDowned: false,
+    hallwaySpan: 1,
+    wave: 1,
+    lightEnemyId: "",
+    lightEnemyIds: [],
+    infectionEnemyIds: []
+  }));
+  encounter.blueFinalIsolation = {
+    active: true,
+    completed: false,
+    splitRevealed: false,
+    initialWaveSpawned: false,
+    hallwaysDivided: false,
+    introPhase: "boss",
+    bossAttackUnlocked: false,
+    cycle,
+    openingInfectionCount: Math.max(1, Math.round(Number(options.openingInfectionCount) || 1)),
+    openingLightEnemy: options.openingLightEnemy !== false,
+    reunionCount: 0,
+    mainGroupId: "",
+    groups
+  };
+  const boss = bossEnemyForEncounter(encounter);
+  if (boss) boss.blueFinalHidden = true;
+  syncEncounterGroupHp(encounter);
+  return encounter.blueFinalIsolation;
+}
+
+function blueFinalIsolationGroupHasEnemies(encounter, group) {
+  if (!group?.id || group.strandedDowned) return false;
+  return Boolean(encounter?.enemies?.some((enemy) => (
+    enemy.blueIsolationGroupId === group.id
+    && !enemy.boss
+    && !enemy.defeated
+    && enemy.hp > 0
+  )));
+}
+
+function darkenBlueFinalIsolationDownedHallways(encounter, facts = [], options = {}) {
+  if (!blueFinalIsolationActive(encounter) || !encounter.blueFinalIsolation?.initialWaveSpawned) return [];
+  const events = [];
+  for (const group of blueFinalIsolationGroups(encounter)) {
+    if (blueFinalIsolationAliveGroupMembers(group).length || group.strandedDowned) continue;
+    const vanishedEnemies = (encounter.enemies || []).filter((enemy) => (
+      enemy.blueIsolationGroupId === group.id
+      && !enemy.boss
+      && !enemy.defeated
+      && enemy.hp > 0
+    ));
+    group.strandedDowned = true;
+    clearBlueFinalIsolationGroupEnemies(encounter, group);
+    const memberNames = [...(group.memberNames || [])];
+    facts.push(`${group.label} loses every living operator; ${vanishedEnemies.length ? `${vanishedEnemies.map((enemy) => enemy.label).join(", ")} withdraw into the dark and ` : ""}${memberNames.join(" and ") || "the downed cell"} cannot be targeted until another cleared hallway reunites with them`);
+    events.push({
+      kind: "darkened",
+      groupId: group.id,
+      groupLabel: group.label,
+      memberNames,
+      presentationPhase: options.presentationPhase || "enemy",
+      vanishedEnemyIds: vanishedEnemies.map((enemy) => enemy.id),
+      vanishedEnemyLabels: vanishedEnemies.map((enemy) => enemy.label),
+      snapshot: blueFinalIsolationSnapshot(encounter)
+    });
+  }
+  if (events.length) syncEncounterGroupHp(encounter);
+  return events;
+}
+
+function blueFinalIsolationTargetForPlayer(encounter, player) {
+  const group = blueFinalIsolationGroupForPlayer(encounter, player);
+  if (!group) return null;
+  return encounter.enemies.find((enemy) => (
+    enemy.blueIsolationGroupId === group.id
+    && enemy.blueIsolationLight
+    && !enemy.defeated
+    && enemy.hp > 0
+  )) || null;
+}
+
+function blueFinalIsolationAccuracyRank(player) {
+  const accuracy = playerAnswerAccuracy(player);
+  return {
+    percent: accuracy.percent == null ? 0 : accuracy.percent,
+    total: accuracy.total
+  };
+}
+
+function resolveBlueFinalIsolationInfections(encounter, entries, notes, facts, darkenedEvents = []) {
+  if (!blueFinalIsolationActive(encounter)) return { killActions: [], attackActions: [] };
+  const killActions = [];
+  const attackActions = [];
+  for (const enemy of encounter.enemies.filter((candidate) => candidate.blueIsolationInfection && !candidate.defeated)) {
+    if (enemy.defeated) continue;
+    const members = (enemy.blueIsolationMemberNames || [])
+      .map((name) => state.players.find((player) => sameName(player.name, name)))
+      .filter((player) => player && !player.incapacitated);
+    if (!members.length) {
+      enemy.hp = 0;
+      enemy.defeated = true;
+      darkenedEvents.push(...darkenBlueFinalIsolationDownedHallways(encounter, facts, { presentationPhase: "infection" }));
+      continue;
+    }
+    const responses = members.map((player) => ({
+      player,
+      entry: entries.find((candidate) => candidate.player && sameName(candidate.player.name, player.name)) || null
+    }));
+    const wrong = responses.filter(({ entry }) => !entry?.correct);
+    if (!wrong.length) {
+      const killer = responses
+        .slice()
+        .sort((a, b) => combatAnswerElapsedMs(a.entry?.submittedAt || Date.now()) - combatAnswerElapsedMs(b.entry?.submittedAt || Date.now()))[0]?.player;
+      enemy.hp = 0;
+      enemy.defeated = true;
+      killActions.push({
+        enemy,
+        blueFinalIsolationInfection: true,
+        blueFinalIsolationInfectionKilled: true,
+        killer,
+        targets: []
+      });
+      if (killer) bankCombatXp(encounter, killer, 2);
+      facts.push(`${members.map((player) => player.name).join(" and ")} answer correctly; ${killer?.name || "the group"} kills ${enemy.label} before it can choose a host`);
+      continue;
+    }
+    const target = wrong
+      .slice()
+      .sort((a, b) => {
+        const aRank = blueFinalIsolationAccuracyRank(a.player);
+        const bRank = blueFinalIsolationAccuracyRank(b.player);
+        return aRank.percent - bRank.percent || aRank.total - bRank.total;
+      })[0]?.player;
+    if (!target) continue;
+    const tier = combatSystem.enemyTiers?.light;
+    const rolledAmount = combatSystem.rollRange?.(tier?.damage || [1, 5], state.rng) || 1;
+    const hpBefore = target.hp;
+    const damage = applyCombatDamage(target, rolledAmount, enemy.label, notes, facts, encounter, true);
+    const blocked = Boolean(target._combatBlocked || target._combatBubble);
+    const bubbleBlocked = Boolean(target._combatBubble);
+    const redirected = target._combatRedirect || null;
+    const kickStarted = target._combatKickStarted || null;
+    delete target._combatBlocked;
+    delete target._combatBubble;
+    delete target._combatRedirect;
+    delete target._combatKickStarted;
+    const hit = {
+      target,
+      braced: false,
+      braceMitigation: 0,
+      blocked,
+      bubbleBlocked,
+      redirected,
+      kickStarted,
+      damage: kickStarted?.damageTaken || damage,
+      hpBefore,
+      hpAfter: target.hp,
+      downed: Boolean(kickStarted || hpBefore > 0 && target.incapacitated)
+    };
+    const infection = tryBlueFinalMinionInfection(encounter, enemy, hit);
+    attackActions.push({
+      enemy,
+      blueFinalIsolationInfection: true,
+      blueFinalIsolationInfectionKilled: false,
+      blueFinalIsolationInfectionVanished: true,
+      blueFinalInfectionApplied: Boolean(infection),
+      blueFinalInfectionTargetName: infection?.targetName || "",
+      blueFinalInfectionStacksAfter: infection?.stacksAfter || 0,
+      blueIsolationGroupId: enemy.blueIsolationGroupId,
+      targets: [hit],
+      rolledAmount
+    });
+    enemy.hp = 0;
+    enemy.defeated = true;
+    darkenedEvents.push(...darkenBlueFinalIsolationDownedHallways(encounter, facts, { presentationPhase: "infection" }));
+    facts.push(`${enemy.label} selects ${target.name}, the lowest-accuracy incorrect responder in its isolated cell, attacks for ${hit.damage} damage${infection ? `, leaves infection stack ${infection.stacksAfter} on ${infection.targetName}` : " but fails its infection roll"}, and vanishes into the dark`);
+  }
+  syncEncounterGroupHp(encounter);
+  return { killActions, attackActions };
+}
+
+function resolveBlueFinalHiddenSwipe(encounter, notes, facts, darkenedEvents = []) {
+  if (!blueFinalIsolationActive(encounter) || encounter?.blueFinalIsolation?.bossAttackUnlocked === false) return null;
+  const eligibleGroups = blueFinalIsolationGroups(encounter)
+    .map((group) => ({
+      group,
+      players: (group.memberNames || [])
+        .map((name) => state.players.find((player) => sameName(player.name, name)))
+        .filter((player) => player && !player.incapacitated)
+    }))
+    .filter((entry) => entry.players.length);
+  if (!eligibleGroups.length) return null;
+  const selected = eligibleGroups[Math.floor(state.rng() * eligibleGroups.length)];
+  const boss = bossEnemyForEncounter(encounter);
+  if (!boss) return null;
+  const hits = selected.players.map((target) => {
+    const hpBefore = target.hp;
+    const incomingAmount = Math.max(1, Math.ceil(Math.max(1, Number(target.maxHp) || 1) * BLUE_FINAL_HIDDEN_SWIPE_DAMAGE_FRACTION));
+    const damage = applyCombatDamage(target, incomingAmount, BLUE_FINAL_HIDDEN_SWIPE_NAME, notes, facts, encounter, true);
+    const blocked = Boolean(target._combatBlocked || target._combatBubble);
+    const bubbleBlocked = Boolean(target._combatBubble);
+    const redirected = target._combatRedirect || null;
+    const kickStarted = target._combatKickStarted || null;
+    delete target._combatBlocked;
+    delete target._combatBubble;
+    delete target._combatRedirect;
+    delete target._combatKickStarted;
+    return {
+      target,
+      braced: false,
+      braceMitigation: 0,
+      blocked,
+      bubbleBlocked,
+      redirected,
+      kickStarted,
+      damage: kickStarted?.damageTaken || damage,
+      hpBefore,
+      hpAfter: target.hp,
+      downed: Boolean(kickStarted || hpBefore > 0 && target.incapacitated)
+    };
+  });
+  darkenedEvents.push(...darkenBlueFinalIsolationDownedHallways(encounter, facts, { presentationPhase: "enemy" }));
+  facts.push(`${boss.label} remains hidden and randomly swipes ${selected.group.label} for 10% max health per operator; the strike is never telegraphed`);
+  return {
+    enemy: boss,
+    aoe: true,
+    forcedBossAoe: true,
+    unstunnable: true,
+    blueFinalHiddenSwipe: true,
+    blueIsolationGroupId: selected.group.id,
+    blueIsolationGroupLabel: selected.group.label,
+    targets: hits
+  };
+}
+
+function completeBlueFinalIsolation(encounter, facts) {
+  const isolation = encounter?.blueFinalIsolation;
+  if (!isolation?.active) return null;
+  isolation.groups.forEach((group) => clearBlueFinalIsolationGroupEnemies(encounter, group));
+  isolation.active = false;
+  isolation.completed = true;
+  isolation.reunionAcidPending = true;
+  const boss = bossEnemyForEncounter(encounter);
+  if (boss) boss.blueFinalHidden = false;
+  syncEncounterGroupHp(encounter);
+  facts.push(`Every isolated cell reunites; ${BLUE_FINAL_ISOLATION_PHASE_NAME} ends and the hidden boss emerges to unleash ${BLUE_MID_ACID_PHASE_NAME}`);
+  return {
+    kind: "complete",
+    label: "FULL SQUAD REUNITED",
+    memberNames: state.players.map((player) => player.name),
+    snapshot: blueFinalIsolationSnapshot(encounter)
+  };
+}
+
+function advanceBlueFinalIsolation(encounter, facts) {
+  if (!blueFinalIsolationActive(encounter)) return [];
+  const isolation = encounter.blueFinalIsolation;
+  let groups = blueFinalIsolationGroups(encounter);
+  if (isolation.bossAttackUnlocked === false) {
+    isolation.bossAttackUnlocked = true;
+    facts.push(`${bossEnemyForEncounter(encounter)?.label || "The hidden boss"} begins stalking the divided hallways after withholding its attack during the opening question`);
+  }
+  if (!isolation.initialWaveSpawned) {
+    const spawnedEnemies = spawnBlueFinalIsolationOpeningWave(encounter);
+    facts.push(`The isolation handoff recovers after the opening question; ${spawnedEnemies.length} hostile shapes emerge around the separated cells`);
+    return [{
+      kind: "ambush",
+      label: "CONTACTS EMERGING",
+      memberNames: groups.flatMap((group) => group.memberNames || []),
+      spawnedEnemies: spawnedEnemies.map((enemy) => ({ ...enemy })),
+      snapshot: blueFinalIsolationSnapshot(encounter)
+    }];
+  }
+  if (groups.length === 1 && !blueFinalIsolationGroupHasEnemies(encounter, groups[0])) {
+    return [completeBlueFinalIsolation(encounter, facts)].filter(Boolean);
+  }
+  const events = [];
+  while (groups.length > 1) {
+    let source = null;
+    let target = null;
+    let earlyJoin = false;
+    const clearedGroups = groups.filter((group) => !blueFinalIsolationGroupHasEnemies(encounter, group));
+    if (clearedGroups.length > 1) {
+      const orderedTargets = [
+        clearedGroups.find((group) => group.id === isolation.mainGroupId),
+        ...clearedGroups
+      ]
+        .filter(Boolean)
+        .filter((group, index, entries) => entries.findIndex((candidate) => candidate.id === group.id) === index);
+      for (const candidateTarget of orderedTargets) {
+        const candidateSource = clearedGroups.find((candidate) => (
+          candidate.id !== candidateTarget.id
+          && (
+            blueFinalIsolationAliveGroupMembers(candidateTarget).length
+            || blueFinalIsolationAliveGroupMembers(candidate).length
+          )
+        ));
+        if (!candidateSource) continue;
+        target = candidateTarget;
+        source = candidateSource;
+        break;
+      }
+    } else if (groups.length > 2) {
+      source = clearedGroups.find((group) => (
+        !group.strandedDowned
+        && blueFinalIsolationAliveGroupMembers(group).length
+      )) || null;
+      if (source) {
+        const sourceIndex = groups.findIndex((group) => group.id === source.id);
+        target = groups
+          .map((group, index) => ({ group, index }))
+          .filter(({ group }) => (
+            group.id !== source.id
+            && blueFinalIsolationGroupHasEnemies(encounter, group)
+            && blueFinalIsolationAliveGroupMembers(group).length
+          ))
+          .sort((left, right) => (
+            Math.abs(left.index - sourceIndex) - Math.abs(right.index - sourceIndex)
+            || Number(right.group.id === isolation.mainGroupId) - Number(left.group.id === isolation.mainGroupId)
+            || left.index - right.index
+          ))[0]?.group || null;
+        earlyJoin = Boolean(target);
+      }
+    }
+    if (!source || !target) break;
+    const sourceGroupIndex = groups.findIndex((group) => group.id === source.id);
+    const targetGroupIndex = groups.findIndex((group) => group.id === target.id);
+    const crossedOccupiedHallway = Math.abs(sourceGroupIndex - targetGroupIndex) > 1;
+    const sourceHallwayLabel = source.label;
+    const targetHallwayLabel = target.label;
+    const destinationEnemyCount = encounter.enemies.filter((enemy) => (
+      enemy.blueIsolationGroupId === target.id
+      && !enemy.boss
+      && !enemy.defeated
+      && enemy.hp > 0
+    )).length;
+    if (!earlyJoin) clearBlueFinalIsolationGroupEnemies(encounter, target);
+    clearBlueFinalIsolationGroupEnemies(encounter, source);
+    target.hallwaySpan = blueFinalIsolationGroupHallwaySpan(isolation, target)
+      + blueFinalIsolationGroupHallwaySpan(isolation, source);
+    source.hallwaySpan = 0;
+    target.memberNames = [...new Set([...target.memberNames, ...source.memberNames])];
+    const reunitedDownedMemberNames = target.memberNames.filter((name) => {
+      const player = state.players.find((candidate) => sameName(candidate.name, name));
+      return Boolean(player?.incapacitated);
+    });
+    target.strandedDowned = false;
+    source.active = false;
+    source.strandedDowned = false;
+    source.lightEnemyId = "";
+    source.lightEnemyIds = [];
+    source.infectionEnemyIds = [];
+    isolation.reunionCount += 1;
+    isolation.mainGroupId = target.id;
+    groups = blueFinalIsolationGroups(encounter);
+    if (groups.length === 1) {
+      const mergedSnapshot = blueFinalIsolationSnapshot(encounter);
+      events.push({
+        kind: "merge",
+        sourceLabel: sourceHallwayLabel,
+        targetLabel: targetHallwayLabel,
+        memberNames: [...target.memberNames],
+        reunitedDownedMemberNames,
+        crossedOccupiedHallway,
+        spawnedEnemies: [],
+        snapshot: mergedSnapshot
+      });
+      events.push(completeBlueFinalIsolation(encounter, facts));
+      break;
+    }
+    target.wave += 1;
+    target.label = `REUNION ${isolation.reunionCount}`;
+    const spawnedEnemies = spawnBlueFinalIsolationWave(encounter, target, {
+      reunion: true,
+      preserveExisting: earlyJoin
+    });
+    const spawnedInfectionCount = spawnedEnemies.filter((enemy) => enemy.blueIsolationInfection).length;
+    facts.push(earlyJoin
+      ? `${sourceHallwayLabel} clears early and immediately enters ${targetHallwayLabel}; its ${destinationEnemyCount} surviving contact${destinationEnemyCount === 1 ? "" : "s"} remain active, while ${spawnedInfectionCount} infection stalker${spawnedInfectionCount === 1 ? "" : "s"} and one light corridor hunter gather to emerge at the end of the combat round`
+      : `${sourceHallwayLabel} and ${targetHallwayLabel} both clear${crossedOccupiedHallway ? " despite an occupied hallway between them, then follow one another's signal through the dark into a new shared corridor" : " and immediately reconnect"} as ${target.label}; ${spawnedInfectionCount} infection stalker${spawnedInfectionCount === 1 ? "" : "s"} and one light corridor hunter close on the larger group`);
+    events.push({
+      kind: "merge",
+      sourceLabel: sourceHallwayLabel,
+      targetLabel: target.label,
+      memberNames: [...target.memberNames],
+      reunitedDownedMemberNames,
+      crossedOccupiedHallway,
+      earlyJoin,
+      destinationEnemyCount,
+      spawnAtRoundEnd: earlyJoin,
+      spawnedEnemies: spawnedEnemies.map((enemy) => ({ ...enemy })),
+      snapshot: blueFinalIsolationSnapshot(encounter)
+    });
+  }
+  return events.filter(Boolean);
+}
+
+/** Status damage is collected once at round end, including the application round. */
+function statusDamageCanTickAtRoundEnd(status, round) {
+  if (!status || Math.max(0, Number(status.turnsRemaining) || 0) <= 0) return false;
+  const currentRound = Math.max(0, Number(round) || 0);
+  const appliedRound = Math.max(0, Number(status.appliedRound) || 0);
+  const lastTickRound = Number.isFinite(Number(status.lastTickRound))
+    ? Number(status.lastTickRound)
+    : appliedRound - 1;
+  return currentRound >= appliedRound && lastTickRound < currentRound;
+}
+
+function blueDirectCombatHit(target, amount) {
+  const hpBefore = Math.max(0, Number(target?.hp) || 0);
+  if (target && !target.incapacitated && amount > 0) applyDamage(target, amount);
+  const kickStarted = target?._combatKickStarted || null;
+  delete target?._combatKickStarted;
+  return {
+    target,
+    braced: false,
+    braceMitigation: 0,
+    blocked: false,
+    bubbleBlocked: false,
+    redirected: null,
+    kickStarted,
+    damage: kickStarted?.damageTaken || Math.max(0, hpBefore - Math.max(0, Number(target?.hp) || 0)),
+    hpBefore,
+    hpAfter: Math.max(0, Number(target?.hp) || 0),
+    downed: Boolean(kickStarted || hpBefore > 0 && target?.incapacitated)
+  };
+}
+
+function createBlueFinalChestBurstLight(encounter, sourceName, stackIndex) {
+  const enemy = combatSystem.createEnemyGroup?.(["light"], state.rng)?.enemies?.[0];
+  if (!enemy) return null;
+  enemy.id = `blue-final-burst-light-${encounter.round}-${normalize(sourceName)}-${stackIndex}-${Date.now()}-${Math.floor(state.rng() * 1_000_000)}`;
+  enemy.summoned = true;
+  enemy.blueFinalChestBurstLight = true;
+  enemy.blueFinalChestBurstSourceName = sourceName;
+  assignEnemyVisuals([enemy]);
+  enemy.label = `Burst Spawn â€” ${sourceName} ${stackIndex}`;
+  return enemy;
+}
+
+function blueFinalChestBurstLights(encounter) {
+  return encounter?.enemies?.filter((enemy) => (
+    enemy.blueFinalChestBurstLight
+    && !enemy.defeated
+    && Math.max(0, Number(enemy.hp) || 0) > 0
+  )) || [];
+}
+
+function resolveBlueFinalChestBurst(encounter, notes, facts) {
+  const node = state.nodes[encounter?.nodeIndex ?? state.currentNode];
+  const boss = bossEnemyForEncounter(encounter);
+  if (!encounter || !blueFinalBossBehaviorActive(node) || encounter.blueFinalChestBurstTriggered || !boss) {
+    return { actions: [], spawnedEnemies: [] };
+  }
+  encounter.blueFinalChestBurstTriggered = true;
+  const actions = [];
+  const spawnedEnemies = [];
+  for (const target of state.players) {
+    const stackCount = blueFinalInfectionStacks(encounter, target);
+    if (!stackCount) continue;
+    const hpBefore = Math.max(0, Number(target.hp) || 0);
+    let projectedHp = hpBefore;
+    const stackDamage = [];
+    for (let stack = 0; stack < stackCount; stack += 1) {
+      const damage = Math.max(0, Math.ceil(projectedHp * BLUE_FINAL_CHEST_BURST_STACK_DAMAGE_FRACTION));
+      stackDamage.push(damage);
+      projectedHp = Math.max(0, projectedHp - damage);
+    }
+    const criticalAfterBurst = projectedHp <= Math.max(1, Number(target.maxHp) || 1) * BLUE_FINAL_CHEST_BURST_INCAP_FRACTION;
+    const requestedDamage = target.incapacitated
+      ? 0
+      : criticalAfterBurst
+        ? hpBefore
+        : Math.max(0, hpBefore - projectedHp);
+    const hit = blueDirectCombatHit(target, requestedDamage);
+    actions.push({
+      enemy: boss,
+      blueFinalChestBurst: true,
+      unstunnable: true,
+      stackCount,
+      stackDamage,
+      criticalAfterBurst,
+      targets: [hit]
+    });
+    for (let stack = 1; stack <= stackCount; stack += 1) {
+      const light = createBlueFinalChestBurstLight(encounter, target.name, stack);
+      if (light) spawnedEnemies.push(light);
+    }
+    addEventNote(notes, target.name, criticalAfterBurst
+      ? `${stackCount} infection stack${stackCount === 1 ? "" : "s"} rupture and incapacitate ${target.name}.`
+      : `${stackCount} infection stack${stackCount === 1 ? "" : "s"} rupture for ${hit.damage} damage.`);
+    facts.push(`${target.name}'s ${stackCount} infection stack${stackCount === 1 ? "" : "s"} deal half of current HP in sequence${criticalAfterBurst ? " and force incapacitation at or below 25% max health" : ""}; ${stackCount} light hostile${stackCount === 1 ? "" : "s"} emerge`);
+  }
+  clearBlueFinalInfectionStacks(encounter);
+  if (spawnedEnemies.length) {
+    encounter.enemies.unshift(...spawnedEnemies);
+    encounter.blueFinalChestBurstActive = true;
+  } else {
+    encounter.blueFinalChestBurstActive = false;
+  }
+  syncEncounterGroupHp(encounter);
+  facts.push(`${BLUE_FINAL_CHEST_BURST_PHASE_NAME} converts every stored infection stack into one light hostile; the boss withholds its normal attack pattern and heals 10% maximum health each turn while any of those hostiles remain`);
+  return { actions, spawnedEnemies };
+}
+
+function healBlueFinalBossFromChestBurstLights(encounter, facts) {
+  const node = state.nodes[encounter?.nodeIndex ?? state.currentNode];
+  const boss = bossEnemyForEncounter(encounter);
+  const lights = blueFinalChestBurstLights(encounter);
+  if (!encounter || !blueFinalBossBehaviorActive(node) || !boss || boss.defeated || boss.hp <= 0 || !lights.length) return null;
+  const hpBefore = Math.max(0, Number(boss.hp) || 0);
+  const amount = Math.max(1, Math.ceil(Math.max(1, Number(boss.maxHp) || 1) * BLUE_FINAL_LIGHT_HEAL_FRACTION));
+  boss.hp = Math.min(Math.max(1, Number(boss.maxHp) || 1), hpBefore + amount);
+  const healed = Math.max(0, boss.hp - hpBefore);
+  encounter.blueFinalChestBurstActive = true;
+  syncEncounterGroupHp(encounter);
+  facts.push(`${boss.label} consumes the living signal from ${lights.length} remaining burst spawn${lights.length === 1 ? "" : "s"} and heals ${healed} HP, equal to up to 10% maximum health`);
+  return {
+    enemy: boss,
+    blueFinalBossLightHeal: true,
+    amount: healed,
+    hpBefore,
+    hpAfter: boss.hp,
+    maxHp: boss.maxHp,
+    remainingLights: lights.length
+  };
+}
+
+function createBlueAlienEnemy(tier, encounter, targetName, kind) {
+  const enemy = combatSystem.createEnemyGroup?.([tier], state.rng)?.enemies?.[0];
+  if (!enemy) return null;
+  enemy.id = `blue-${kind}-${encounter.round}-${normalize(targetName)}-${Date.now()}-${Math.floor(state.rng() * 1_000_000)}`;
+  enemy.summoned = true;
+  enemy.blueTargetName = targetName;
+  enemy.blueChestParasite = kind === "parasite";
+  enemy.blueChestBurster = kind === "chest-burster";
+  assignEnemyVisuals([enemy]);
+  const alienVisuals = ENEMY_VISUAL_POOLS.heavy;
+  enemy.imageSrc = enemy.blueChestParasite
+    ? BLUE_PARASITE_IMAGE_SRC
+    : alienVisuals[Math.floor(state.rng() * alienVisuals.length)] || enemy.imageSrc;
+  if (enemy.blueChestParasite) {
+    enemy.hp = 1;
+    enemy.maxHp = 1;
+    enemy.label = `Parasite — ${targetName}`;
+  } else {
+    enemy.label = `Chest Burster — ${targetName}`;
+  }
+  return enemy;
+}
+
+function spawnBlueChestBurster(encounter, targetName) {
+  const enemy = createBlueAlienEnemy("medium", encounter, targetName, "chest-burster");
+  if (!enemy) return null;
+  encounter.enemies.unshift(enemy);
+  syncEncounterGroupHp(encounter);
+  return enemy;
+}
+
+function resolveBlueAcidSpit(encounter, entries, type, operator, notes, facts, options = {}) {
+  const node = state.nodes[encounter?.nodeIndex ?? state.currentNode];
+  const boss = bossEnemyForEncounter(encounter);
+  if (!encounter || !blueAcidSpitBehaviorActive(encounter, node) || !boss || boss.defeated || boss.hp <= 0) return [];
+  const actions = [];
+  encounter.blueAcidBurns = encounter.blueAcidBurns || {};
+  for (let strike = 1; strike <= BLUE_MID_ACID_STRIKES; strike += 1) {
+    const targets = enemyTargetablePlayers();
+    if (!targets.length) break;
+    const hits = targets.map((target) => {
+      const braceEntry = combatBraceEntry(entries, type, operator, target);
+      const rebirthBraced = Boolean((target._rebirthBracedReady || target._secondChanceBracedReady || target._possessionReleasedBracedReady) && !target._standToughReady);
+      const braced = Boolean((braceEntry?.correct || rebirthBraced) && !target._standToughReady);
+      const braceMitigation = rebirthBraced
+        ? REBIRTH_BRACE_MITIGATION
+        : braced
+          ? combatBraceMitigation(braceEntry, type)
+          : 0;
+      const incomingAmount = Math.max(1, Math.ceil(Math.max(1, Number(target.maxHp) || 1) * BLUE_MID_ACID_DAMAGE_FRACTION));
+      const commandGuard = combatTeamGuardAmount(encounter, target);
+      const mitigatedAmount = braced
+        ? Math.round(incomingAmount * (1 - braceMitigation))
+        : Math.max(0, incomingAmount - commandGuard);
+      let blocked = braced && mitigatedAmount <= 0;
+      const hpBefore = target.hp;
+      const damage = applyCombatDamage(target, blocked ? 0 : mitigatedAmount, BLUE_MID_ACID_PHASE_NAME, notes, facts, encounter, true, 0, Boolean(braced && braceEntry?.correct));
+      const combatBlocked = Boolean(target._combatBlocked);
+      const redirected = target._combatRedirect || null;
+      const bubbleBlocked = Boolean(target._combatBubble);
+      const kickStarted = target._combatKickStarted || null;
+      const lastStandTriggered = Boolean(target._combatLastStand);
+      blocked = blocked || bubbleBlocked || combatBlocked;
+      delete target._combatBlocked;
+      delete target._combatRedirect;
+      delete target._combatBubble;
+      delete target._combatKickStarted;
+      delete target._combatLastStand;
+      const burnApplied = !braced && !target.incapacitated;
+      if (burnApplied) {
+        encounter.blueAcidBurns[normalize(target.name)] = {
+          targetName: target.name,
+          turnsRemaining: BLUE_MID_ACID_BURN_TURNS,
+          appliedRound: encounter.round,
+          sourceAttack: "acid-spit"
+        };
+      }
+      return {
+        target,
+        braced,
+        braceMitigation,
+        blocked,
+        bubbleBlocked,
+        redirected,
+        kickStarted,
+        lastStandTriggered,
+        blueBurnApplied: burnApplied,
+        blueBurnTurns: burnApplied ? BLUE_MID_ACID_BURN_TURNS : 0,
+        damage: kickStarted?.damageTaken || damage,
+        hpBefore,
+        hpAfter: target.hp,
+        downed: Boolean(kickStarted || hpBefore > 0 && target.incapacitated)
+      };
+    });
+    actions.push({
+      enemy: boss,
+      aoe: true,
+      forcedBossAoe: true,
+      unstunnable: true,
+      blueAcidSpit: true,
+      blueAcidSpitOpening: Boolean(options.opening),
+      blueAcidSpitPostInfection: Boolean(options.postInfection),
+      blueFinalReunionAcid: Boolean(options.finalReunion),
+      blueAcidSpitIndex: strike,
+      amount: BLUE_MID_ACID_DAMAGE_FRACTION,
+      rolledAmount: 0,
+      targets: hits
+    });
+  }
+  if (options.opening) encounter.blueAcidSpitOpeningResolved = true;
+  facts.push(`${boss.label} uses ${BLUE_MID_ACID_PHASE_NAME}: one un-stunnable area strike deals 10% max health before brace mitigation; unbraced operators receive ${BLUE_MID_ACID_BURN_TURNS} acid-burn ticks beginning at the end of the current combat round`);
+  return actions;
+}
+
+function spawnBlueChestParasites(encounter, operators = activePlayers(), facts = []) {
+  if (!encounter) return [];
+  const spawnedEnemies = [];
+  for (const target of operators.filter(Boolean)) {
+    const alreadyAssigned = encounter.enemies.some((enemy) => enemy.blueChestParasite
+      && !enemy.defeated
+      && sameName(enemy.blueTargetName, target.name));
+    if (alreadyAssigned) continue;
+    const parasite = createBlueAlienEnemy("light", encounter, target.name, "parasite");
+    if (!parasite) continue;
+    parasite.blueParasiteResolveRound = encounter.round + 1;
+    spawnedEnemies.push(parasite);
+  }
+  if (!spawnedEnemies.length) return [];
+  encounter.enemies.unshift(...spawnedEnemies);
+  syncEncounterGroupHp(encounter);
+  facts.push(`${BLUE_MID_CHEST_BURSTER_PHASE_NAME} deploys ${spawnedEnemies.length} assigned 1-HP infection parasite${spawnedEnemies.length === 1 ? "" : "s"}; they resolve from fresh answers in combat round ${encounter.round + 1}`);
+  return spawnedEnemies;
+}
+
+function resolveBlueChestParasites(encounter, entries, notes, facts) {
+  const node = state.nodes[encounter?.nodeIndex ?? state.currentNode];
+  if (!encounter || !blueMidBossBehaviorActive(node)) return { actions: [], spawnedEnemies: [] };
+  const actions = [];
+  const spawnedEnemies = [];
+  encounter.blueChestBursterInfections = encounter.blueChestBursterInfections || {};
+  const parasites = encounter.enemies.filter((enemy) => enemy.blueChestParasite
+    && !enemy.defeated
+    && Math.max(0, Number(enemy.blueParasiteResolveRound) || 0) <= encounter.round);
+  for (const parasite of parasites) {
+    const target = state.players.find((player) => sameName(player.name, parasite.blueTargetName));
+    const spawnedEnemy = { ...parasite };
+    spawnedEnemies.push(spawnedEnemy);
+    if (!target) {
+      parasite.hp = 0;
+      parasite.defeated = true;
+      continue;
+    }
+    const response = entries.find((entry) => entry.player && sameName(entry.player.name, target.name));
+    const correct = Boolean(response?.correct);
+    const hpBefore = target.hp;
+    let damage = 0;
+    let blocked = false;
+    let bubbleBlocked = false;
+    let redirected = null;
+    let kickStarted = null;
+    if (!correct) {
+      const incomingAmount = 1;
+      damage = applyCombatDamage(target, incomingAmount, BLUE_MID_CHEST_BURSTER_PHASE_NAME, notes, facts, encounter, true);
+      blocked = Boolean(target._combatBlocked || target._combatBubble);
+      bubbleBlocked = Boolean(target._combatBubble);
+      redirected = target._combatRedirect || null;
+      kickStarted = target._combatKickStarted || null;
+      delete target._combatBlocked;
+      delete target._combatRedirect;
+      delete target._combatBubble;
+      delete target._combatKickStarted;
+      encounter.blueChestBursterInfections[normalize(target.name)] = {
+        targetName: target.name,
+        resolveRound: encounter.round + 1
+      };
+      addEventNote(notes, target.name, `${target.name}'s assigned parasite strikes for ${damage} damage, then disappears from sensors.`);
+      facts.push(`${target.name}'s incorrect response lets their assigned 1-HP parasite attack for at most 1 damage before vanishing from sensors`);
+    } else {
+      addEventNote(notes, target.name, `${target.name} answers correctly and destroys their assigned parasite before it can attack.`);
+      facts.push(`${target.name}'s correct response destroys their assigned 1-HP parasite without taking damage`);
+    }
+    parasite.hp = 0;
+    parasite.defeated = true;
+    actions.push({
+      enemy: parasite,
+      spawnedEnemy,
+      blueChestParasite: true,
+      blueChestParasiteKilled: correct,
+      blueChestParasiteEscaped: !correct,
+      blueTargetName: target.name,
+      targets: [{
+        target,
+        braced: correct,
+        braceMitigation: correct ? 1 : 0,
+        blocked,
+        bubbleBlocked,
+        redirected,
+        kickStarted,
+        damage: kickStarted?.damageTaken || damage,
+        hpBefore,
+        hpAfter: target.hp,
+        downed: Boolean(kickStarted || hpBefore > 0 && target.incapacitated)
+      }]
+    });
+  }
+  if (parasites.length) syncEncounterGroupHp(encounter);
+  return { actions, spawnedEnemies };
+}
+
+function resolveBlueChestBursterOutcomes(encounter, entries, notes, facts) {
+  const node = state.nodes[encounter?.nodeIndex ?? state.currentNode];
+  if (!encounter || !blueMidBossBehaviorActive(node) || !encounter.blueChestBursterInfections) return [];
+  const actions = [];
+  for (const [key, infection] of Object.entries(encounter.blueChestBursterInfections)) {
+    if (Math.max(0, Number(infection.resolveRound) || 0) > encounter.round) continue;
+    const target = state.players.find((player) => sameName(player.name, infection.targetName || key));
+    delete encounter.blueChestBursterInfections[key];
+    if (!target) continue;
+    const response = entries.find((entry) => entry.player && sameName(entry.player.name, target.name));
+    const correct = Boolean(response?.correct);
+    const enemy = spawnBlueChestBurster(encounter, target.name);
+    if (!enemy) continue;
+    const amount = correct
+      ? Math.max(1, Math.ceil(Math.max(1, Number(target.maxHp) || 1) * BLUE_MID_CHEST_BURST_DAMAGE_FRACTION))
+      : Math.max(1, Math.max(0, Number(target.hp) || 0));
+    const hit = blueDirectCombatHit(target, amount);
+    hit.blueChestBurstCorrect = correct;
+    hit.blueChestBurstImmediateIncap = !correct;
+    actions.push({
+      enemy,
+      spawnedEnemy: { ...enemy },
+      blueChestBurst: true,
+      blueChestBurstCorrect: correct,
+      blueChestBurstImmediateIncap: !correct,
+      unstunnable: true,
+      targets: [hit]
+    });
+    if (correct) {
+      facts.push(`${target.name}'s correct follow-up triggers an unavoidable chest burst for 50% max health and spawns a medium alien`);
+      addEventNote(notes, target.name, `An alien bursts from ${target.name}, dealing ${hit.damage} unavoidable damage and entering the hostile line.`);
+    } else {
+      facts.push(`${target.name}'s incorrect follow-up causes immediate incapacitation as a medium alien bursts into the hostile line`);
+      addEventNote(notes, target.name, `An alien bursts from ${target.name}, immediately incapacitating them and entering the hostile line.`);
+    }
+  }
+  return actions;
+}
+
+function resolveBlueAcidBurnTicks(encounter, notes, facts) {
+  const node = state.nodes[encounter?.nodeIndex ?? state.currentNode];
+  const boss = bossEnemyForEncounter(encounter);
+  if (!encounter || blueFinalIsolationActive(encounter) || !blueAcidSpitBehaviorActive(encounter, node) || !boss || !encounter.blueAcidBurns) return [];
+  const hits = [];
+  for (const [key, burn] of Object.entries(encounter.blueAcidBurns)) {
+    if (burn.sourceAttack !== "acid-spit") {
+      delete encounter.blueAcidBurns[key];
+      continue;
+    }
+    if (Math.max(0, Number(burn.turnsRemaining) || 0) <= 0) {
+      delete encounter.blueAcidBurns[key];
+      continue;
+    }
+    if (!statusDamageCanTickAtRoundEnd(burn, encounter.round)) continue;
+    const target = state.players.find((player) => sameName(player.name, burn.targetName || key));
+    if (!target || target.incapacitated) {
+      delete encounter.blueAcidBurns[key];
+      continue;
+    }
+    const hit = blueDirectCombatHit(target, BLUE_MID_ACID_BURN_DAMAGE);
+    burn.turnsRemaining = Math.max(0, Number(burn.turnsRemaining) - 1);
+    burn.lastTickRound = encounter.round;
+    hit.blueAcidBurnTick = true;
+    hit.statusDamage = true;
+    hit.statusAppliedThisRound = Math.max(0, Number(burn.appliedRound) || 0) === encounter.round;
+    hit.statusId = "acid-burn";
+    hit.statusLabel = "Acid Burn";
+    hit.blueBurnTurns = burn.turnsRemaining;
+    hits.push(hit);
+    addEventNote(notes, target.name, `${target.name} takes ${hit.damage} ongoing acid-burn damage; ${burn.turnsRemaining} turn${burn.turnsRemaining === 1 ? "" : "s"} remain.`);
+    facts.push(`${target.name}'s acid burn deals ${hit.damage} unavoidable damage with ${burn.turnsRemaining} turns remaining`);
+    if (!burn.turnsRemaining || target.incapacitated) delete encounter.blueAcidBurns[key];
+  }
+  return hits.length ? [{
+    enemy: boss,
+    statusDamageBatch: true,
+    statusEffects: [{ id: "acid-burn", label: "Acid Burn" }],
+    blueAcidBurnTick: true,
+    unstunnable: true,
+    targets: hits
+  }] : [];
+}
+
+function resolveBlueRoundStartActions(encounter, entries, notes, facts) {
+  return resolveBlueChestBursterOutcomes(encounter, entries, notes, facts);
+}
+
+/** Collapses every status resolver into one synchronized end-of-round action. */
+function batchEndOfRoundStatusDamage(actions = []) {
+  const statusActions = actions.filter((action) => action?.statusDamageBatch && action.targets?.length);
+  if (!statusActions.length) return [];
+  const effects = new Map();
+  statusActions.flatMap((action) => action.statusEffects || []).forEach((effect) => {
+    if (effect?.id) effects.set(effect.id, effect);
+  });
+  return [{
+    enemy: statusActions[0].enemy,
+    statusDamageBatch: true,
+    statusEffects: [...effects.values()],
+    unstunnable: true,
+    targets: statusActions.flatMap((action) => action.targets || [])
+  }];
 }
 
 function bossDisruptionSucceeds(enemy) {
@@ -9935,10 +11290,15 @@ function supportEventStatusLine(event) {
   const amount = Math.max(0, Number(event.amount) || 0);
   const target = event.target || event.source;
   const recipient = target ? ` on ${target}` : "";
-  const hpResult = Number.isFinite(Number(event.hpAfter)) && Number.isFinite(Number(event.maxHp))
+  const hpResult = event.hpAfter != null && event.maxHp != null
+    && Number.isFinite(Number(event.hpAfter)) && Number.isFinite(Number(event.maxHp))
     ? ` (${Math.max(0, Number(event.hpAfter))}/${Math.max(1, Number(event.maxHp))} HP)`
     : "";
-  if (event.kind === "revive") return `${event.source} uses ${event.label}${recipient}, reviving them at ${amount} HP${hpResult}${event.braced ? " in a full brace for this enemy phase" : ""}; ${event.source} forfeits this turn's attack.`;
+  if (event.kind === "revive") return `${event.source} uses ${event.label}${recipient}, reviving them at ${amount} HP${hpResult}${event.braced ? " in a full brace for this enemy phase" : ""}${event.lastStandRecharged ? " with Last Stand recharged" : ""}; ${event.source} forfeits this turn's attack.`;
+  if (event.kind === "last-stand") return `${event.source} uses ${event.label}${recipient}, recharging their spent Last Stand; ${event.source} forfeits this turn's attack.`;
+  if (event.kind === "heal" && event.heals?.length > 1) {
+    return `${event.source} uses ${event.label} in one pulse, restoring ${event.heals.map((heal) => `${heal.amount} HP to ${heal.target}`).join(", ")}.`;
+  }
   if (event.kind === "heal" || event.kind === "regen") return `${event.source} uses ${event.label}${recipient}, restoring ${amount} HP${hpResult}.`;
   if (event.kind === "hint") return `${event.source} uses ${event.label}${recipient}; a clue is added to the prompt.`;
   if (event.kind === "bubble") return `${event.source} uses ${event.label}${recipient}, applying a one-hit protection bubble.`;
@@ -9985,14 +11345,76 @@ function opforAttackBannerText(action) {
 function enemyActionStatusLines(actions = []) {
   return actions.flatMap((action) => {
     if (action.disrupted) return [`${action.enemy.label}'s attack is disrupted.`];
+    if (action.statusDamageBatch) {
+      return action.targets.map((hit) => `${hit.target.name}'s ${hit.statusLabel || "status effect"} deals ${hit.damage} damage at the end of the combat round${Number.isFinite(Number(hit.blueBurnTurns)) ? `; ${hit.blueBurnTurns} turn${hit.blueBurnTurns === 1 ? "" : "s"} remain` : ""}.`);
+    }
+    if (action.blueFinalIsolationInfection) {
+      if (action.blueFinalIsolationInfectionKilled) {
+        return [`${action.killer?.name || "The isolated cell"} destroys ${action.enemy.label} before it can select a host.`];
+      }
+      return action.targets.map((hit) => `${action.enemy.label} chooses ${hit.target.name}, the lowest-accuracy incorrect responder in its cell, attacks for ${hit.damage} damage${action.blueFinalInfectionApplied ? `, leaves infection stack ${action.blueFinalInfectionStacksAfter} on ${action.blueFinalInfectionTargetName}` : " but fails its 50% infection roll"}, then disappears into the darkness.`);
+    }
+    if (action.blueFinalHiddenSwipe) {
+      return action.targets.map((hit) => `${action.enemy.label} flashes into view and rakes ${action.blueIsolationGroupLabel} from the dark, dealing ${hit.damage} hidden-strike damage to ${hit.target.name}.`);
+    }
+    if (action.blueChestParasite) {
+      return action.targets.map((hit) => action.blueChestParasiteKilled
+        ? `${hit.target.name} answers correctly and destroys their assigned 1-HP parasite without taking damage.`
+        : hit.kickStarted
+          ? `${hit.target.name}'s assigned parasite incapacitates them, then disappears; ${hit.kickStarted.source}'s Kick Start Your Heart revives them at ${hit.hpAfter} HP.`
+          : hit.redirected
+            ? `${hit.target.name}'s assigned parasite attack is redirected to ${hit.redirected.target.name} by RRR, then disappears from sensors.`
+            : hit.bubbleBlocked
+              ? `${hit.target.name}'s protection bubble absorbs their assigned parasite's attack before it disappears from sensors.`
+              : hit.blocked
+                ? `${hit.target.name}'s protection blocks their assigned parasite's attack before it disappears from sensors.`
+                : `${hit.target.name}'s assigned parasite attacks for ${hit.damage} damage, then disappears from sensors.`);
+    }
+    if (action.blueChestBurst) {
+      return action.targets.map((hit) => hit.kickStarted
+        ? `An alien bursts from ${hit.target.name} and incapacitates them; ${hit.kickStarted.source}'s Kick Start Your Heart revives them at ${hit.hpAfter} HP as a medium alien joins the hostile line.`
+        : action.blueChestBurstCorrect
+          ? `An alien bursts from ${hit.target.name}, dealing ${hit.damage} unavoidable damage equal to 50% max health; a medium alien joins the hostile line.`
+          : `An alien bursts from ${hit.target.name} after their incorrect response and immediately incapacitates them; a medium alien joins the hostile line.`);
+    }
+    if (action.blueAcidBurnTick) {
+      return action.targets.map((hit) => `${hit.target.name}'s acid burn deals ${hit.damage} unavoidable damage; ${hit.blueBurnTurns} turn${hit.blueBurnTurns === 1 ? "" : "s"} remain.`);
+    }
+    if (action.blueAcidSpit) {
+      return action.targets.map((hit) => {
+        if (hit.lastStandTriggered) return `${hit.target.name}'s Last Stand charge rejects ${action.enemy.label}'s incapacitating Acid Spit hit after their correct brace.`;
+        const mitigation = hit.braced
+          ? ` after bracing (${Math.round(hit.braceMitigation * 100)}% mitigated)`
+          : hit.blueBurnApplied
+            ? ` and burns them for ${BLUE_MID_ACID_BURN_DAMAGE} damage over ${BLUE_MID_ACID_BURN_TURNS} turns`
+            : "";
+        const revival = hit.kickStarted
+          ? ` ${hit.kickStarted.source}'s Kick Start Your Heart revives ${hit.target.name} at ${hit.hpAfter} HP.`
+          : "";
+        return `${action.enemy.label} [${BLUE_MID_ACID_PHASE_NAME.toUpperCase()} ${action.blueAcidSpitIndex}/${BLUE_MID_ACID_STRIKES}] hits ${hit.target.name} for ${hit.damage} damage${mitigation}.${revival}`;
+      });
+    }
     if (action.opforNoAttack) {
       return [`${action.enemy.label} cannot acquire its matching-class operator.`];
     }
     if (action.yellowSniperFallback) {
-      return action.targets.map((hit) => `${action.enemy.label}'s scoped target ${action.yellowSniperOriginalTargetName || "operator"} is already down; the scope converts into a normal single-target attack against ${hit.target.name} for ${hit.damage} damage${hit.braced ? ` after bracing (${Math.round(hit.braceMitigation * 100)}% mitigated)` : ""}.`);
+      return action.targets.map((hit) => hit.lastStandTriggered
+        ? `${hit.target.name}'s Last Stand charge rejects ${action.enemy.label}'s converted incapacitating shot after their correct brace.`
+        : `${action.enemy.label}'s scoped target ${action.yellowSniperOriginalTargetName || "operator"} is already down; the scope converts into a normal single-target attack against ${hit.target.name} for ${hit.damage} damage${hit.braced ? ` after bracing (${Math.round(hit.braceMitigation * 100)}% mitigated)` : ""}.`);
+    }
+    if (action.targets.some((hit) => hit.blueFinalInfectionApplied)) {
+      return action.targets.map((hit) => {
+        const struckName = hit.redirected?.target?.name || hit.target.name;
+        const infection = hit.blueFinalInfectionApplied
+          ? ` ${hit.blueFinalInfectionTargetName} gains infection stack ${hit.blueFinalInfectionStacksAfter}.`
+          : "";
+        return `${action.enemy.label} attacks ${struckName} for ${hit.damage + Math.max(0, Number(hit.redirected?.damage) || 0)} damage.${infection}`;
+      });
     }
     return action.targets.map((hit) => hit.yellowC4CarrierFailure
       ? `${action.yellowAbilityName || YELLOW_MID_C4_PHASE_NAME} detonates on ${hit.target.name}; their incorrect response forces them directly to 1 HP.`
+      : hit.lastStandTriggered
+        ? `${hit.target.name}'s Last Stand charge burns out and completely rejects ${action.enemy.label}'s incapacitating hit after their correct brace.`
       : hit.kickStarted
         ? `${hit.kickStarted.source}'s Kick Start Your Heart revives ${hit.target.name} at 25% HP with a protection bubble.`
         : hit.redirected
@@ -10193,7 +11615,10 @@ function resolveGreenPossessedAttacks(encounter, entries, question, type, operat
     const braceMitigation = braced ? combatBraceMitigation(braceEntry, type) : 0;
     const amount = braced ? Math.max(0, Math.round(rolledAmount * (1 - braceMitigation))) : rolledAmount;
     const hpBefore = target.hp;
-    const damage = applyCombatDamage(target, amount, "possession", notes, facts, encounter);
+    const damage = applyCombatDamage(target, amount, "possession", notes, facts, encounter, true, 0, Boolean(braced && braceEntry?.correct));
+    const lastStandTriggered = Boolean(target._combatLastStand);
+    delete target._combatBlocked;
+    delete target._combatLastStand;
     actions.push({
       enemy: { id: `possessed-${normalize(entry.player.name)}`, label: entry.player.name, boss: false },
       possessed: true,
@@ -10202,7 +11627,7 @@ function resolveGreenPossessedAttacks(encounter, entries, question, type, operat
       aoe: false,
       amount,
       rolledAmount,
-      targets: [{ target, braced, braceMitigation, blocked: damage <= 0, damage, hpBefore, hpAfter: target.hp, downed: hpBefore > 0 && target.incapacitated }]
+      targets: [{ target, braced, braceMitigation, blocked: damage <= 0, lastStandTriggered, damage, hpBefore, hpAfter: target.hp, downed: hpBefore > 0 && target.incapacitated }]
     });
     facts.push(`${entry.player.name} attacks ${target.name} while possessed for normal operator damage${entry.correct ? "" : " despite answering incorrectly"}`);
   }
@@ -10250,6 +11675,7 @@ function applyCombatEncounter(entries, type, operator, question) {
   const roundStartBoss = bossEnemyForEncounter(encounter);
   const roundStartBossHp = Math.max(0, Number(roundStartBoss?.hp ?? encounter.hp) || 0);
   const roundStartBossMaxHp = Math.max(1, Number(roundStartBoss?.maxHp ?? encounter.maxHp) || 1);
+  const blueFinalIsolationAtRoundStart = blueFinalIsolationSnapshot(encounter);
   const roundStartPlayers = state.combatXpBaseline.length
     ? state.combatXpBaseline.map((player) => ({ ...player }))
     : state.players.map((player) => ({ name: player.name, xp: player.xp, level: player.level }));
@@ -10271,7 +11697,12 @@ function applyCombatEncounter(entries, type, operator, question) {
     name: player.name,
     hp: Math.max(0, Number(player.hp) || 0),
     maxHp: Math.max(10, Number(player.maxHp) || 10),
+    lastStandAvailable: lastStandCharged(player),
     status: [],
+    acidBurnTurns: player.incapacitated
+      ? 0
+      : Math.max(0, Number(blueAcidBurnState(encounter, player)?.turnsRemaining) || 0),
+    blueFinalInfectionStacks: blueFinalInfectionStacks(encounter, player),
     incapacitated: Boolean(player.incapacitated),
     possessed: Boolean(player._greenPossessed),
     spectralInfected: Boolean(player._spectralInfected),
@@ -10283,6 +11714,7 @@ function applyCombatEncounter(entries, type, operator, question) {
     )
   }));
   const facts = [];
+  const blueFinalIsolationDarkenedEvents = [];
   if (greenFinalInfectionOpening) facts.push(`${GREEN_FINAL_INFECTION_PHASE_NAME} infects every active operator with an eight-choice answer field until each earns one correct response`);
   const combatSupportEvents = [];
   const postEnemySupportEvents = [];
@@ -10301,8 +11733,35 @@ function applyCombatEncounter(entries, type, operator, question) {
     .filter((snapshot) => !state.players.find((player) => sameName(player.name, snapshot.name))?._greenPossessed)
     .map((snapshot) => snapshot.name);
   encounter.tacticianGuardAmount = 0;
+  encounter.tacticianGuardByIsolationGroup = {};
   const pendingOpforStunSourceNames = pendingCombatDisruptorNames();
   let disrupted = applyPendingCombatAbilities(encounter, notes, facts, combatSupportEvents);
+  const blueFinalInfectionPhase = resolveBlueFinalIsolationInfections(
+    encounter,
+    entries,
+    notes,
+    facts,
+    blueFinalIsolationDarkenedEvents
+  );
+  const blueParasiteTargetNamesAtRoundStart = new Set(encounter.enemies
+    .filter((enemy) => enemy.blueChestParasite
+      && !enemy.defeated
+      && Math.max(0, Number(enemy.blueParasiteResolveRound) || 0) <= encounter.round)
+    .map((enemy) => normalize(enemy.blueTargetName))
+    .filter(Boolean));
+  const blueRoundStartActions = resolveBlueRoundStartActions(encounter, entries, notes, facts);
+  preemptiveEnemyActions.push(...blueRoundStartActions);
+  totalDamage += blueRoundStartActions.flatMap((action) => action.targets || [])
+    .reduce((sum, hit) => sum + hit.damage, 0);
+  const blueChestParasitePhase = resolveBlueChestParasites(encounter, entries, notes, facts);
+  const blueParasiteInfectionTurn = blueChestParasitePhase.actions.length > 0;
+  if (blueParasiteInfectionTurn) {
+    encounter.bluePostInfectionAcidRound = encounter.round + 1;
+    encounter.bluePostInfectionAcidResolved = false;
+    facts.push(`${bossEnemyForEncounter(encounter)?.label || "The boss"} holds position while infection parasites resolve, then prepares ${BLUE_MID_ACID_PHASE_NAME} for combat round ${encounter.bluePostInfectionAcidRound}`);
+  }
+  totalDamage += blueChestParasitePhase.actions.flatMap((action) => action.targets || [])
+    .reduce((sum, hit) => sum + hit.damage + (hit.redirected?.damage || 0), 0);
   const attackEntries = [...entries];
   state.players.filter((player) => player._determinedAimReady && !player.incapacitated).forEach((player) => {
     if (!attackEntries.some((entry) => entry.player && sameName(entry.player.name, player.name))) {
@@ -10310,7 +11769,12 @@ function applyCombatEncounter(entries, type, operator, question) {
     }
   });
   const possessionRescuePhase = Boolean(encounter.greenPossessionActive);
-  const attacks = attackEntries.filter((entry) => (entry.correct || entry.player?._determinedAimReady) && entry.player && !entry.player.incapacitated && !entry.player._greenPossessed && !entry.player._classNoAttackReady)
+  const attacks = attackEntries.filter((entry) => (entry.correct || entry.player?._determinedAimReady)
+      && entry.player
+      && !blueParasiteTargetNamesAtRoundStart.has(normalize(entry.player.name))
+      && !entry.player.incapacitated
+      && !entry.player._greenPossessed
+      && !entry.player._classNoAttackReady)
     .sort((a, b) => pointTimestamp(a.submittedAt) - pointTimestamp(b.submittedAt));
   const doubleAttackers = new Set(attacks
     .filter((entry) => entry.player._classDoubleAttackReady && entry.player.classId === "soldier" && Number(entry.player.level) >= 3 && Number(entry.player.answerStreak) >= 3)
@@ -10331,32 +11795,61 @@ function applyCombatEncounter(entries, type, operator, question) {
     });
   const tactician = attacks.find((entry) => entry.player._classCommandReady && entry.player.classId === "tactician");
   const tacticianProtocol = String(tactician?.player?._classCommandProtocol || "assault").toLowerCase();
-  const tacticianCommand = tactician && attacks.length >= 2 && tacticianProtocol === "assault";
+  const tacticianTeamAttacks = tactician
+    ? attacks.filter((entry) => blueFinalIsolationAllowsPlayerTarget(encounter, tactician.player, entry.player))
+    : [];
+  const tacticianCommand = tactician && tacticianTeamAttacks.length >= 2 && tacticianProtocol === "assault";
   const inspiredTactician = state.players.find((player) => player._inspireMassesReady && !player.incapacitated) || null;
-  const tacticianBonus = inspiredTactician ? 2 : tacticianCommand ? (Number(tactician.player.level) >= 3 ? 2 : 1) : 0;
+  const tacticianBonusForPlayer = (player) => {
+    if (inspiredTactician && blueFinalIsolationAllowsPlayerTarget(encounter, inspiredTactician, player)) return 2;
+    if (tacticianCommand && blueFinalIsolationAllowsPlayerTarget(encounter, tactician.player, player)) {
+      return Number(tactician.player.level) >= 3 ? 2 : 1;
+    }
+    return 0;
+  };
   if (tactician && tacticianProtocol === "guard") {
-    encounter.tacticianGuardAmount = Number(tactician.player.level) >= 3 ? 3 : 2;
-    facts.push(`${tactician.player.name}'s ${Number(tactician.player.level) >= 3 ? "empowered " : ""}Guard Protocol prepares a ${encounter.tacticianGuardAmount}-point team barrier`);
+    const guardAmount = setCombatTeamGuard(encounter, tactician.player, Number(tactician.player.level) >= 3 ? 3 : 2);
+    const teamLabel = combatAbilityTeamLabel(encounter, tactician.player);
+    facts.push(`${tactician.player.name}'s ${Number(tactician.player.level) >= 3 ? "empowered " : ""}Guard Protocol prepares a ${guardAmount}-point barrier for ${teamLabel}`);
     // A Tactician barrier reduces each unbraced hit. Keep it distinct from the
     // Enforcer's full-block shield so presentation and cooldown paths cannot
     // silently treat the two class abilities as the same effect.
-    combatSupportEvents.push({ kind: "barrier", source: tactician.player.name, target: "team", amount: encounter.tacticianGuardAmount, label: "Guard Protocol" });
+    combatSupportEvents.push({ kind: "barrier", source: tactician.player.name, target: teamLabel, amount: guardAmount, label: "Guard Protocol" });
   } else if (tactician && tacticianProtocol === "support") {
     const empoweredSupport = Number(tactician.player.level) >= 3;
-    const injured = activePlayers()
+    const injured = combatAbilityTeamMembers(encounter, tactician.player, activePlayers())
       .filter((player) => !player.incapacitated && player.hp < player.maxHp)
       .sort((a, b) => a.hp - b.hp);
     const supportTargets = empoweredSupport ? injured : injured.slice(0, 1);
     if (supportTargets.length) {
-      if (empoweredSupport) facts.push(`${tactician.player.name}'s empowered Support Protocol restores the whole active squad`);
+      if (empoweredSupport) facts.push(`${tactician.player.name}'s empowered Support Protocol restores ${combatAbilityTeamLabel(encounter, tactician.player)}`);
+      const supportHeals = [];
       for (const supportTarget of supportTargets) {
         const before = supportTarget.hp;
         healPlayer(supportTarget, 2);
         const healed = Math.max(0, supportTarget.hp - before);
         if (!healed) continue;
         if (!empoweredSupport) facts.push(`${tactician.player.name}'s Support Protocol stabilizes ${supportTarget.name}`);
-        combatSupportEvents.push({ kind: "heal", source: tactician.player.name, target: supportTarget.name, amount: healed, hpAfter: supportTarget.hp, maxHp: supportTarget.maxHp, label: empoweredSupport ? "Empowered Support Protocol" : "Support Protocol" });
+        supportHeals.push({
+          target: supportTarget.name,
+          amount: healed,
+          hpAfter: supportTarget.hp,
+          maxHp: supportTarget.maxHp
+        });
         addEventNote(notes, supportTarget.name, `${tactician.player.name}'s ${empoweredSupport ? "empowered " : ""}Support Protocol restores ${healed} HP.`);
+      }
+      if (supportHeals.length) {
+        combatSupportEvents.push({
+          kind: "heal",
+          source: tactician.player.name,
+          target: empoweredSupport ? combatAbilityTeamLabel(encounter, tactician.player) : supportHeals[0].target,
+          amount: supportHeals.reduce((sum, heal) => sum + heal.amount, 0),
+          hpAfter: supportHeals.length === 1 ? supportHeals[0].hpAfter : null,
+          maxHp: supportHeals.length === 1 ? supportHeals[0].maxHp : null,
+          heals: supportHeals,
+          simultaneous: true,
+          label: empoweredSupport ? "Empowered Support Protocol" : "Support Protocol"
+        });
       }
     } else {
       facts.push(`${tactician.player.name}'s Support Protocol finds no injured operator`);
@@ -10377,8 +11870,34 @@ function applyCombatEncounter(entries, type, operator, question) {
   preemptiveEnemyActions.push(...yellowPreemptiveActions);
   totalDamage += yellowPreemptiveActions.flatMap((action) => action.targets || [])
     .reduce((sum, hit) => sum + hit.damage + (hit.redirected?.damage || 0), 0);
+  const activeNodeAtRoundStart = state.nodes[state.currentNode];
+  const blueOpeningAcidActions = encounter.round === 1 && blueMidBossBehaviorActive(activeNodeAtRoundStart) && !encounter.blueAcidSpitOpeningResolved
+    ? resolveBlueAcidSpit(encounter, entries, type, operator, notes, facts, { opening: true })
+    : [];
+  const bluePostInfectionAcidDue = Boolean(
+    blueMidBossBehaviorActive(activeNodeAtRoundStart)
+    && !encounter.bluePostInfectionAcidResolved
+    && Number(encounter.bluePostInfectionAcidRound) === encounter.round
+  );
+  const bluePostInfectionAcidActions = bluePostInfectionAcidDue
+    ? resolveBlueAcidSpit(encounter, entries, type, operator, notes, facts, { postInfection: true })
+    : [];
+  if (bluePostInfectionAcidDue) encounter.bluePostInfectionAcidResolved = true;
+  const blueAcidSpitActions = [...blueOpeningAcidActions, ...bluePostInfectionAcidActions];
+  preemptiveEnemyActions.push(...blueAcidSpitActions);
+  totalDamage += blueAcidSpitActions.flatMap((action) => action.targets || [])
+    .reduce((sum, hit) => sum + hit.damage + (hit.redirected?.damage || 0), 0);
+  let blueAcidSpitThisRound = blueAcidSpitActions.length > 0;
+  let blueChestParasiteSpawnedEnemies = [];
+  let blueFinalIsolationEvents = [];
+  let blueFinalHiddenSwipe = null;
+  let blueFinalSecondIsolationTriggeredThisRound = false;
+  let blueFinalChestBurstActions = [];
+  let blueFinalChestBurstSpawnedEnemies = [];
+  let blueFinalBossLightHeal = null;
+  let bossPhasePrompt = "";
   const attackResults = [];
-  const enemyActions = [];
+  const enemyActions = [...blueChestParasitePhase.actions, ...blueFinalInfectionPhase.attackActions];
   const opforAbilityEvents = [];
   const opforImmediateActions = [];
   const initiativeSequence = [];
@@ -10552,12 +12071,13 @@ function applyCombatEncounter(entries, type, operator, question) {
   let greenPossessionActivatedThisRound = false;
   let greenPossessionPhaseEndedThisRound = false;
   let yellowOpforDeployedThisRound = false;
+  let blueInfectionDeployedThisRound = false;
   for (const entry of attackQueue) {
     resolveOpforThrough(combatAnswerElapsedMs(entry.submittedAt || Date.now()));
     // Possession can begin between queued attacks. An operator seized by the
     // threshold hit no longer completes a pending squad attack.
     if (entry.player.incapacitated || entry.player._greenPossessed) continue;
-    const damage = combatPlayerDamage(entry, question, type) + tacticianBonus;
+    const damage = combatPlayerDamage(entry, question, type) + tacticianBonusForPlayer(entry.player);
     const possessedTargets = encounter.greenPossessionActive
       ? activePlayers().filter((player) => player._greenPossessed)
       : [];
@@ -10576,7 +12096,7 @@ function applyCombatEncounter(entries, type, operator, question) {
       const rescueResult = {
         player: entry.player,
         damage: dealt,
-        empowered: Boolean(entry.empoweredFollowUp || (tacticianCommand && Number(tactician.player.level) >= 3)),
+        empowered: Boolean(entry.empoweredFollowUp || (tacticianCommand && Number(tactician.player.level) >= 3 && blueFinalIsolationAllowsPlayerTarget(encounter, tactician.player, entry.player))),
         doubleAttack: Boolean(entry.empoweredFollowUp),
         defeated: [],
         possessionRescue: true,
@@ -10610,7 +12130,16 @@ function applyCombatEncounter(entries, type, operator, question) {
     // Operators engage their own hostile mirror first. Once that counterpart
     // falls, their fire advances to the first remaining OPFOR card in line.
     const yellowOpforTarget = yellowOpforCounterpart || activeOpforMirrors[0] || null;
-    const target = summonOnlyTarget || yellowOpforTarget || encounter.enemies.find((enemy) => !enemy.defeated) || null;
+    const blueIsolationTarget = blueFinalIsolationActive(encounter)
+      ? blueFinalIsolationTargetForPlayer(encounter, entry.player)
+      : null;
+    const blueIsolationHolding = Boolean(blueFinalIsolationActive(encounter) && !blueIsolationTarget);
+    const blueIsolationSearching = Boolean(blueIsolationHolding && !encounter.blueFinalIsolation?.initialWaveSpawned);
+    const target = summonOnlyTarget
+      || yellowOpforTarget
+      || blueIsolationTarget
+      || (blueIsolationHolding ? null : encounter.enemies.find((enemy) => !enemy.defeated))
+      || null;
     const targetHpBefore = target?.hp || 0;
     const bossHpBeforeThisAttack = Math.max(0, Number(bossEnemyForEncounter(encounter)?.hp) || 0);
     const groupHpBefore = encounter.hp;
@@ -10642,8 +12171,10 @@ function applyCombatEncounter(entries, type, operator, question) {
       facts.push(`${entry.player.name}'s attack is disrupted by the opposing OPFOR Tactician`);
       continue;
     }
-    const focusedTarget = summonOnlyTarget || yellowOpforTarget;
-    const applied = focusedTarget
+    const focusedTarget = summonOnlyTarget || yellowOpforTarget || blueIsolationTarget;
+    const applied = blueIsolationHolding
+      ? { damage: 0, defeated: [], cleared: false }
+      : focusedTarget
       ? yellowOpforTarget
         ? applyYellowOpforDamage(encounter, focusedTarget, damage)
         : applyFocusedEnemyDamage(encounter, focusedTarget, damage)
@@ -10651,12 +12182,17 @@ function applyCombatEncounter(entries, type, operator, question) {
     const attackResult = {
       player: entry.player,
       damage: applied.damage,
-      empowered: Boolean(entry.empoweredFollowUp || (tacticianCommand && Number(tactician.player.level) >= 3)),
+      empowered: Boolean(entry.empoweredFollowUp || (tacticianCommand && Number(tactician.player.level) >= 3 && blueFinalIsolationAllowsPlayerTarget(encounter, tactician.player, entry.player))),
       doubleAttack: Boolean(entry.empoweredFollowUp),
       aoe: Boolean(type.locked && !yellowOpforTarget),
+      blueFinalIsolationHolding: blueIsolationHolding,
+      blueFinalIsolationSearching: blueIsolationSearching,
+      blueIsolationGroupId: blueIsolationTarget?.blueIsolationGroupId
+        || blueFinalIsolationGroupForPlayer(encounter, entry.player)?.id
+        || "",
       defeated: applied.defeated,
       targetId: target?.id || "",
-      targetLabel: target?.label || "hostile line",
+      targetLabel: target?.label || (blueIsolationSearching ? "empty darkness" : blueIsolationHolding ? "sealed corridor" : "hostile line"),
       targetMaxHp: target?.maxHp || 1,
       targetHpBefore,
       targetHpAfter: target?.hp || 0,
@@ -10677,6 +12213,59 @@ function applyCombatEncounter(entries, type, operator, question) {
     attackResults.push(attackResult);
     initiativeSequence.push({ kind: "player", attack: attackResult, initiativeElapsed: combatAnswerElapsedMs(entry.submittedAt || Date.now()) });
     if (applied.defeated.length) bankCombatXp(encounter, entry.player, 2 * applied.defeated.length);
+    const activeBoss = bossEnemyForEncounter(encounter);
+    const activeNode = state.nodes[state.currentNode];
+    if (blueFinalBossBehaviorActive(activeNode) && target?.boss && activeBoss?.maxHp) {
+      const holdBossAtThreshold = () => {
+        if (activeBoss.hp > 0) return;
+        activeBoss.hp = 1;
+        activeBoss.defeated = false;
+        const defeatedBossIndex = applied.defeated.findIndex((enemy) => enemy.id === activeBoss.id);
+        if (defeatedBossIndex >= 0) applied.defeated.splice(defeatedBossIndex, 1);
+        syncEncounterGroupHp(encounter);
+        attackResult.targetHpAfter = activeBoss.hp;
+        attackResult.defeated = applied.defeated;
+        attackResult.enemyStatesAfter = encounter.enemies.map((enemy) => ({ id: enemy.id, hp: enemy.hp, maxHp: enemy.maxHp, defeated: enemy.defeated }));
+        attackResult.groupHpAfter = encounter.hp;
+      };
+      if (!encounter.blueFinalSecondIsolationTriggered
+        && activeBoss.hp / activeBoss.maxHp <= BLUE_FINAL_SECOND_ISOLATION_HEALTH_FRACTION) {
+        holdBossAtThreshold();
+        encounter.blueFinalSecondIsolationTriggered = true;
+        const isolation = activateBlueFinalIsolation(encounter, activeNode, {
+          replaceExisting: true,
+          cycle: 2,
+          openingInfectionCount: BLUE_FINAL_SECOND_ISOLATION_INFECTIONS_PER_HALLWAY,
+          openingLightEnemy: false
+        });
+        blueFinalSecondIsolationTriggeredThisRound = Boolean(isolation);
+        attackResult.blueFinalSecondIsolationTriggeredAfter = Boolean(isolation);
+        attackResult.blueFinalSecondIsolationSnapshot = blueFinalIsolationSnapshot(encounter);
+        attackResult.enemyStatesAfter = encounter.enemies.map((enemy) => ({ id: enemy.id, hp: enemy.hp, maxHp: enemy.maxHp, defeated: enemy.defeated }));
+        attackResult.groupHpAfter = encounter.hp;
+        bossPhasePrompt = `BossPhase 50% â€” ${BLUE_FINAL_ISOLATION_PHASE_NAME}`;
+        facts.push(`${BLUE_FINAL_ISOLATION_PHASE_NAME} returns at 50% boss health; the squad is divided again and each opening hallway receives one infection stalker per living operator, capped at two, with no light enemy`);
+        break;
+      }
+      if (encounter.blueFinalSecondIsolationTriggered
+        && !encounter.blueFinalChestBurstTriggered
+        && activeBoss.hp / activeBoss.maxHp <= BLUE_FINAL_CHEST_BURST_HEALTH_FRACTION) {
+        holdBossAtThreshold();
+        const burst = resolveBlueFinalChestBurst(encounter, notes, facts);
+        blueFinalChestBurstActions = burst.actions;
+        blueFinalChestBurstSpawnedEnemies = burst.spawnedEnemies.map((enemy) => ({ ...enemy }));
+        totalDamage += burst.actions.flatMap((action) => action.targets || [])
+          .reduce((sum, hit) => sum + Math.max(0, Number(hit.damage) || 0), 0);
+        attackResult.blueFinalChestBurstTriggeredAfter = true;
+        attackResult.blueFinalChestBurstActions = burst.actions;
+        attackResult.blueFinalChestBurstSpawnedEnemies = blueFinalChestBurstSpawnedEnemies;
+        attackResult.enemyStatesAfter = encounter.enemies.map((enemy) => ({ id: enemy.id, hp: enemy.hp, maxHp: enemy.maxHp, defeated: enemy.defeated }));
+        attackResult.groupHpAfter = encounter.hp;
+        bossPhasePrompt = `BossPhase 20% â€” ${BLUE_FINAL_CHEST_BURST_PHASE_NAME}`;
+        facts.push(`${BLUE_FINAL_CHEST_BURST_PHASE_NAME} ends the player phase immediately at 20% boss health`);
+        break;
+      }
+    }
     if (applied.cleared) break;
     if (summonOnlyTarget && applied.defeated.length && !syncGreenPossessionPhase(encounter)) {
       attackResult.greenPossessionEndedAfter = true;
@@ -10693,8 +12282,6 @@ function applyCombatEncounter(entries, type, operator, question) {
       attackResult.greenPossessionPhaseName = possessionPhase.phaseName;
       break;
     }
-    const activeBoss = bossEnemyForEncounter(encounter);
-    const activeNode = state.nodes[state.currentNode];
     if (bossUsesGreenPossessionBehavior(activeNode)
       && activeNode?.bossPhase === "final"
       && !encounter.greenMindEraserActive
@@ -10703,6 +12290,25 @@ function applyCombatEncounter(entries, type, operator, question) {
       encounter.greenMindEraserActive = true;
       attackResult.greenMindEraserTriggeredAfter = true;
       facts.push(`${GREEN_FINAL_MIND_ERASER_PHASE_NAME} activates at 40% integrity; answer positions scramble every second, the second activation strikes half the party, and the third strikes the whole party for 25% max health`);
+    }
+    if (blueMidBossBehaviorActive(activeNode)
+      && target?.boss
+      && !encounter.blueChestBursterPhaseResolved
+      && activeBoss?.maxHp
+      && activeBoss.hp > 0
+      && activeBoss.hp / activeBoss.maxHp <= 0.5) {
+      encounter.blueChestBursterPhaseResolved = true;
+      const parasites = spawnBlueChestParasites(encounter, activePlayers(), facts);
+      attackResult.blueChestParasitesTriggeredAfter = Boolean(parasites.length);
+      attackResult.blueChestParasiteSpawnedEnemies = parasites.map((enemy) => ({ ...enemy }));
+      attackResult.enemyStatesAfter = encounter.enemies.map((enemy) => ({ id: enemy.id, hp: enemy.hp, maxHp: enemy.maxHp, defeated: enemy.defeated }));
+      attackResult.groupHpAfter = encounter.hp;
+      blueChestParasiteSpawnedEnemies = attackResult.blueChestParasiteSpawnedEnemies;
+      if (parasites.length) {
+        blueInfectionDeployedThisRound = true;
+        facts.push(`${BLUE_MID_CHEST_BURSTER_PHASE_NAME} ends combat round ${encounter.round} immediately; every remaining operator and hostile activation is canceled while infection parasites deploy for the next combat phase`);
+        break;
+      }
     }
     if (bossUsesYellowBallisticsBehavior(activeNode) && activeNode?.bossPhase === "final" && activeBoss?.maxHp && target?.boss) {
       const beforeRatio = bossHpBeforeThisAttack / activeBoss.maxHp;
@@ -10733,8 +12339,32 @@ function applyCombatEncounter(entries, type, operator, question) {
       attackResult.yellowFinalRainC4Targets = rain?.c4Targets.map((player) => player.name) || [];
     }
   }
-  if (!yellowOpforDeployedThisRound) resolveOpforThrough(Number.POSITIVE_INFINITY);
-  for (const entry of yellowOpforDeployedThisRound
+  if (blueFinalIsolationAtRoundStart?.active && activePlayers().length) {
+    blueFinalIsolationEvents = advanceBlueFinalIsolation(encounter, facts);
+    if (encounter.blueFinalIsolation?.reunionAcidPending) {
+      encounter.blueFinalIsolation.reunionAcidPending = false;
+      encounter.blueFinalIsolation.reunionAcidResolved = true;
+      const reunionAcidActions = resolveBlueAcidSpit(encounter, entries, type, operator, notes, facts, { finalReunion: true });
+      enemyActions.push(...reunionAcidActions);
+      totalDamage += reunionAcidActions.flatMap((action) => action.targets || [])
+        .reduce((sum, hit) => sum + hit.damage + (hit.redirected?.damage || 0), 0);
+      blueAcidSpitThisRound = blueAcidSpitThisRound || reunionAcidActions.length > 0;
+      if (reunionAcidActions.length) bossPhasePrompt = `SQUAD REUNITED — ${BLUE_MID_ACID_PHASE_NAME}`;
+    }
+  }
+  const blueFinalIsolationSpawnedEnemyIds = new Set(blueFinalIsolationEvents
+    .flatMap((event) => event.spawnedEnemies || [])
+    .map((enemy) => enemy.id));
+  const blueFinalChestBurstSpawnedEnemyIds = new Set(blueFinalChestBurstSpawnedEnemies.map((enemy) => enemy.id));
+  blueFinalHiddenSwipe = blueFinalIsolationAtRoundStart?.bossAttackUnlocked === false
+    ? null
+    : resolveBlueFinalHiddenSwipe(encounter, notes, facts, blueFinalIsolationDarkenedEvents);
+  if (blueFinalHiddenSwipe) {
+    enemyActions.push(blueFinalHiddenSwipe);
+    totalDamage += blueFinalHiddenSwipe.targets.reduce((sum, hit) => sum + hit.damage + (hit.redirected?.damage || 0), 0);
+  }
+  if (!yellowOpforDeployedThisRound && !blueInfectionDeployedThisRound) resolveOpforThrough(Number.POSITIVE_INFINITY);
+  for (const entry of yellowOpforDeployedThisRound || blueInfectionDeployedThisRound || blueFinalSecondIsolationTriggeredThisRound
     ? []
     : entries.filter((candidate) => !candidate.correct && candidate.player && !candidate.player.incapacitated)) {
     const backlash = Math.max(0, itemRisk(entry.player, "selfDamageOnMiss"));
@@ -10742,6 +12372,11 @@ function applyCombatEncounter(entries, type, operator, question) {
       applyDamage(entry.player, backlash, "risk item backlash");
       addEventNote(notes, entry.player.name, `${entry.player.name}'s risk item backfires for ${backlash} damage.`);
     }
+  }
+  blueFinalIsolationDarkenedEvents.push(...darkenBlueFinalIsolationDownedHallways(encounter, facts, { presentationPhase: "player" }));
+  if (blueFinalBossBehaviorActive(state.nodes[state.currentNode]) && !blueFinalIsolationActive(encounter)) {
+    encounter.blueFinalChestBurstActive = blueFinalChestBurstLights(encounter).length > 0;
+    blueFinalBossLightHeal = healBlueFinalBossFromChestBurstLights(encounter, facts);
   }
   encounter.cleared = encounter.hp <= 0;
   const activeBossNodeForPhase = state.nodes[state.currentNode];
@@ -10753,7 +12388,7 @@ function applyCombatEncounter(entries, type, operator, question) {
     activeBossNodeForPhase?.bossPhase === "mid"
     && bossUsesYellowBallisticsBehavior(activeBossNodeForPhase)
   );
-  let bossPhasePrompt = crossedBossPhasePrompt(
+  bossPhasePrompt = bossPhasePrompt || crossedBossPhasePrompt(
     activeBossNodeForPhase,
     roundStartBossHp,
     activeBossAfterPlayers?.hp ?? encounter.hp,
@@ -10790,6 +12425,7 @@ function applyCombatEncounter(entries, type, operator, question) {
       bossPhasePrompt = "";
     }
   }
+  if (blueInfectionDeployedThisRound) bossPhasePrompt = `BossPhase 50% — ${BLUE_MID_CHEST_BURSTER_PHASE_NAME}`;
   if (encounter.cleared && encounter.roomType === "boss" && !encounter.victoryXpAwarded) {
     encounter.victoryXpAwarded = true;
     for (const player of activePlayers()) bankCombatXp(encounter, player, 5);
@@ -10813,13 +12449,17 @@ function applyCombatEncounter(entries, type, operator, question) {
     disrupted = Math.min(1, disrupted + (lockedSuppressionAttempted ? 1 : 0));
     if (lockedSuppressionAttempted) facts.push(`${operator.name}'s sweep disruption locks onto one OPFOR mirror`);
   }
-  const possessionActions = greenPossessionActivatedThisRound
+  const possessionActions = greenPossessionActivatedThisRound || blueInfectionDeployedThisRound || blueFinalSecondIsolationTriggeredThisRound
     ? []
     : resolveGreenPossessedAttacks(encounter, entries, question, type, operator, notes, facts);
   enemyActions.push(...possessionActions);
   totalDamage += possessionActions.flatMap((action) => action.targets || []).reduce((sum, hit) => sum + hit.damage, 0);
   if (yellowOpforDeployedThisRound) {
     facts.push("OPFOR deployment suppresses every remaining player and hostile activation in the current round");
+  } else if (blueInfectionDeployedThisRound) {
+    facts.push("Infection deployment ends the combat round immediately; assigned parasites wait for fresh answers in the next combat phase");
+  } else if (blueFinalSecondIsolationTriggeredThisRound) {
+    facts.push("The returning isolation phase ends the combat round; the boss vanishes before any hostile counterattack");
   } else if (greenPossessionActivatedThisRound) {
     facts.push("Possession activation ends the combat round immediately; all remaining player and hostile attacks are canceled");
   } else if (greenPossessionPhaseEndedThisRound) {
@@ -10844,6 +12484,12 @@ function applyCombatEncounter(entries, type, operator, question) {
     if (lateEmpoweredOpforMirror) facts.push(`${bossEnemyForEncounter(encounter)?.label || "The boss"} empowers ${lateEmpoweredOpforMirror.label} for this turn`);
     enemyPhase:
     for (const enemy of encounter.enemies.filter((entry) => !entry.defeated)) {
+      if (enemy.defeated) continue;
+      if (blueFinalIsolationSpawnedEnemyIds.has(enemy.id)) continue;
+      if (blueFinalChestBurstSpawnedEnemyIds.has(enemy.id)) continue;
+      if (blueFinalIsolationAtRoundStart?.active && enemy.blueIsolationInfection) continue;
+      if (blueFinalIsolationAtRoundStart?.active && enemy.boss) continue;
+      if (enemy.boss && blueFinalChestBurstLights(encounter).length) continue;
       if (enemy.boss && encounter.greenPossessionActive) continue;
       if (enemy.boss && (roundStartOpforMirrors.length || opforMirrors.length)) continue;
       if (enemy.yellowOpforMirror) {
@@ -10880,6 +12526,10 @@ function applyCombatEncounter(entries, type, operator, question) {
       const greenFinalBoss = Boolean(enemy.boss && bossUsesGreenPossessionBehavior(activeBossNode) && activeBossNode?.bossPhase === "final");
       const yellowMidBoss = Boolean(enemy.boss && bossUsesYellowBallisticsBehavior(activeBossNode) && activeBossNode?.bossPhase === "mid");
       const yellowFinalBoss = Boolean(enemy.boss && bossUsesYellowBallisticsBehavior(activeBossNode) && activeBossNode?.bossPhase === "final");
+      const blueMidBoss = Boolean(enemy.boss && blueMidBossBehaviorActive(activeBossNode));
+      const blueFinalBoss = Boolean(enemy.boss && blueFinalBossBehaviorActive(activeBossNode));
+      if ((blueMidBoss || blueFinalBoss) && blueAcidSpitThisRound) continue;
+      if (blueMidBoss && blueParasiteInfectionTurn) continue;
       if (yellowFinalBoss && encounter.yellowFinalRainPending) continue;
       const midBoss = Boolean(redAssaultBoss && activeBossNode?.bossPhase === "mid");
       const midBossHalfHealthAttack = Boolean(
@@ -10935,19 +12585,49 @@ function applyCombatEncounter(entries, type, operator, question) {
         const yellowHealthAoe = yellowSniperAoe;
         const forcedBossAoe = Boolean(midBossHalfHealthAttack || finalBossSecondAoe || mindEraserAoe || yellowHealthAoe || yellowC4Aoe || yellowFinalRainAoe);
         const aoe = type.kind === "team" || forcedBossAoe;
-        const targetablePlayers = enemyTargetablePlayers();
-        let targets = forcedBossAoe
+        const isolationGroup = enemy.blueIsolationLight
+          ? blueFinalIsolationGroupForEnemy(encounter, enemy)
+          : null;
+        const isolationTargets = isolationGroup
+          ? (isolationGroup.memberNames || [])
+              .map((name) => state.players.find((player) => sameName(player.name, name)))
+              .filter((player) => player && !player.incapacitated)
+          : [];
+        const targetablePlayers = isolationGroup ? isolationTargets : enemyTargetablePlayers();
+        const isolationWrongTargets = isolationGroup
+          ? entries
+              .filter((entry) => !entry.correct && entry.player && targetablePlayers.some((player) => sameName(player.name, entry.player.name)))
+              .map((entry) => targetablePlayers.find((player) => sameName(player.name, entry.player.name)))
+              .filter(Boolean)
+          : [];
+        let targets = isolationGroup
+          ? [isolationWrongTargets[Math.floor(state.rng() * isolationWrongTargets.length)]
+              || targetablePlayers[Math.floor(state.rng() * targetablePlayers.length)]].filter(Boolean)
+          : forcedBossAoe
           ? mindEraserHalfAoe
             // An attack announced as an AOE must visibly hit multiple
             // operators whenever at least two valid targets remain.
             ? shuffle(targetablePlayers).slice(0, Math.min(targetablePlayers.length, Math.max(2, Math.ceil(targetablePlayers.length / 2))))
             : targetablePlayers
           : combatTargetsForActivation(entries, type, operator, incorrectTargetPriority);
-        const standToughEnforcer = enemyTargetablePlayers().find((player) => player._standToughReady) || null;
+        const standToughEnforcer = targetablePlayers.find((player) => player._standToughReady) || null;
         if (!aoe && standToughEnforcer) targets = [standToughEnforcer];
+        const blueMidNormalDamage = blueMidBoss
+          ? [
+              Math.max(1, Math.round(Number(tier.damage?.[0]) || 1)),
+              Math.max(1, Math.round((Number(tier.damage?.[1]) || 1) * BLUE_MID_NORMAL_DAMAGE_MAX_MULTIPLIER))
+            ]
+          : null;
+        const blueFinalNormalDamage = blueFinalBoss
+          ? [
+              Math.max(1, Math.round((Number(tier.damage?.[0]) || 1) * BLUE_FINAL_NORMAL_DAMAGE_MULTIPLIER)),
+              Math.max(1, Math.round((Number(tier.damage?.[1]) || 1) * BLUE_FINAL_NORMAL_DAMAGE_MULTIPLIER))
+            ]
+          : null;
+        const oneHpEnemyDamage = Number.isFinite(Number(enemy.maxHp)) && Number(enemy.maxHp) <= 1 ? [1, 1] : null;
         const damageRange = finalBossSecondAoe
           ? FINAL_BOSS_SECOND_AOE_DAMAGE
-          : activeBossDamageProfile?.range || (yellowFinalBoss ? YELLOW_FINAL_NORMAL_DAMAGE : tier.damage);
+          : oneHpEnemyDamage || activeBossDamageProfile?.range || (yellowFinalBoss ? YELLOW_FINAL_NORMAL_DAMAGE : blueMidNormalDamage || blueFinalNormalDamage || tier.damage);
         const yellowC4FollowupDamage = Math.max(1, Math.ceil(Math.max(1, Number(tier.damage?.[1]) || 1) * YELLOW_MID_C4_FOLLOWUP_FRACTION));
         const yellowFinalRainAoeDamage = Math.max(1, Math.ceil(YELLOW_FINAL_NORMAL_DAMAGE[1] * YELLOW_FINAL_RAIN_AOE_FRACTION));
         const rolledAmount = midBossHalfHealthAttack
@@ -10976,7 +12656,7 @@ function applyCombatEncounter(entries, type, operator, question) {
             : braced
               ? combatBraceMitigation(braceEntry, type)
               : 0;
-          const commandGuard = Math.max(0, Number(encounter.tacticianGuardAmount) || 0);
+          const commandGuard = combatTeamGuardAmount(encounter, target);
           const incomingAmount = mindEraserAoe || yellowHealthAoe
             // Percentage attacks scale per operator rather than from one shared
             // roll, which keeps the effect consistent across class/level HP.
@@ -10993,29 +12673,40 @@ function applyCombatEncounter(entries, type, operator, question) {
           if (blocked) facts.push(`${target.name} braces and blocks the area attack`);
           const hpBefore = target.hp;
           const minimumHp = midBossHalfHealthAttack ? 1 : 0;
-          const damage = applyCombatDamage(target, targetAmount, "combat", notes, facts, encounter, true, minimumHp);
+          const damage = applyCombatDamage(target, targetAmount, "combat", notes, facts, encounter, true, minimumHp, Boolean(braced && braceEntry?.correct));
           const combatBlocked = Boolean(target._combatBlocked);
           const redirected = target._combatRedirect || null;
           const bubbleBlocked = Boolean(target._combatBubble);
           const kickStarted = target._combatKickStarted || null;
+          const lastStandTriggered = Boolean(target._combatLastStand);
           blocked = blocked || bubbleBlocked;
           blocked = blocked || combatBlocked;
           delete target._combatBlocked;
           delete target._combatRedirect;
           delete target._combatBubble;
           delete target._combatKickStarted;
+          delete target._combatLastStand;
           return {
-            target, braced, braceMitigation, blocked, bubbleBlocked, redirected, kickStarted,
+            target, braced, braceMitigation, blocked, bubbleBlocked, redirected, kickStarted, lastStandTriggered,
             damage: kickStarted?.damageTaken || damage,
             hpBefore,
             hpAfter: target.hp,
             downed: Boolean(kickStarted || hpBefore > 0 && target.incapacitated)
           };
         });
+        for (const hit of hits) {
+          const infection = tryBlueFinalMinionInfection(encounter, enemy, hit);
+          if (!infection) continue;
+          hit.blueFinalInfectionApplied = true;
+          hit.blueFinalInfectionTargetName = infection.targetName;
+          hit.blueFinalInfectionStacksAfter = infection.stacksAfter;
+          facts.push(`${enemy.label}'s hit infects ${infection.targetName}; infection stack ${infection.stacksAfter} is now active`);
+        }
         totalDamage += hits.reduce((sum, hit) => sum + hit.damage + (hit.redirected?.damage || 0), 0);
         hits.forEach((hit) => {
           if (hit.damage > 0) incorrectTargetPriority.delete(normalize(hit.target.name));
         });
+        blueFinalIsolationDarkenedEvents.push(...darkenBlueFinalIsolationDownedHallways(encounter, facts, { presentationPhase: "enemy" }));
         enemyActions.push({
           enemy,
           aoe,
@@ -11059,6 +12750,14 @@ function applyCombatEncounter(entries, type, operator, question) {
   } else if (!encounter.cleared && state.selectedEMS) {
     facts.push("The armed EMS field absorbs the enemy phase");
   }
+  const endOfRoundStatusActions = blueFinalSecondIsolationTriggeredThisRound
+    ? []
+    : batchEndOfRoundStatusDamage([
+        ...resolveBlueAcidBurnTicks(encounter, notes, facts)
+      ]);
+  totalDamage += endOfRoundStatusActions.flatMap((action) => action.targets || [])
+    .reduce((sum, hit) => sum + hit.damage, 0);
+  blueFinalIsolationDarkenedEvents.push(...darkenBlueFinalIsolationDownedHallways(encounter, facts, { presentationPhase: "status" }));
   if (!encounter.cleared && activePlayers().length && encounter.yellowC4BombPending) {
     const c4Target = armYellowC4Bomb(encounter, activeBossNodeForPhase);
     if (c4Target) {
@@ -11086,20 +12785,40 @@ function applyCombatEncounter(entries, type, operator, question) {
   });
   state.selectedEMS = false;
   const defeatedCount = attackResults.reduce((sum, attack) => sum + attack.defeated.length, 0);
-  const attackSummary = attackResults.length
-    ? `${attackResults.map((attack) => attack.player.name).join(", ")} drive fire into the hostile line${defeatedCount ? ` and drop ${defeatedCount} attacker${defeatedCount === 1 ? "" : "s"}` : ""}`
-    : "The squad fails to break the hostile line";
+  const attackSummary = blueFinalIsolationAtRoundStart?.active && !blueFinalIsolationAtRoundStart.initialWaveSpawned
+    ? attackResults.length
+      ? `${attackResults.map((attack) => attack.player.name).join(", ")} move carefully through the dark and call for the missing squad`
+      : "The separated squad hears only breathing and distant movement"
+    : attackResults.length
+      ? `${attackResults.map((attack) => attack.player.name).join(", ")} drive fire into the hostile line${defeatedCount ? ` and drop ${defeatedCount} attacker${defeatedCount === 1 ? "" : "s"}` : ""}`
+      : "The squad fails to break the hostile line";
   const hostileCountered = [...preemptiveEnemyActions, ...enemyActions].some((action) => !action.disrupted);
   const narration = encounter.cleared
     ? `${attackSummary}. The last hostile signal collapses and the route clears.`
     : yellowOpforDeployedThisRound
       ? `${attackSummary}. Hostile mirrors deploy across the enemy line and force an immediate end to the round.`
+    : blueInfectionDeployedThisRound
+      ? `${attackSummary}. Infection parasites flood the hostile line and force an immediate end to the round.`
+    : blueParasiteInfectionTurn
+      ? `${attackSummary}. The infection parasites make their assigned strikes while the boss hangs back and loads another acid volley.`
+    : blueFinalSecondIsolationTriggeredThisRound
+      ? `${attackSummary}. At half integrity, the boss vanishes and every remaining combat activation is cut off as the squad is dragged back into separate dark hallways.`
+    : blueFinalChestBurstActions.length
+      ? `${attackSummary}. Every stored infection ruptures at once; pale hostiles tear free while the boss feeds on anything left alive.`
+    : blueFinalIsolationAtRoundStart?.active
+      ? blueFinalIsolationAtRoundStart.initialWaveSpawned
+        ? `${attackSummary}. Sealed corridors keep the squad divided while infection stalkers choose hosts${blueFinalHiddenSwipe ? " and blue eyes pulse once in the dark" : "; the hidden boss withholds its strike during the opening question"}.`
+        : `${attackSummary}. The squad is swallowed by darkness and searches for one another by voice alone; shapes begin moving only after the answers are in.`
     : `${attackSummary}. ${hostileCountered ? "The surviving hostiles answer with a coordinated counterattack." : "The enemy counterattack is completely disrupted."}`;
   const down = state.players.filter((player) => player.incapacitated);
   const combatStatusLines = [
     ...combatSupportEvents.map(supportEventStatusLine).filter(Boolean),
+    ...enemyActionStatusLines(blueFinalInfectionPhase.killActions),
+    ...enemyActionStatusLines(blueFinalInfectionPhase.attackActions),
     ...enemyActionStatusLines(preemptiveEnemyActions),
     ...attackResults.map((attack) => {
+      if (attack.blueFinalIsolationSearching) return `${attack.player.name} searches the darkness for the missing squad; no hostile contact has emerged yet.`;
+      if (attack.blueFinalIsolationHolding) return `${attack.player.name}'s corridor is already clear; they move toward the nearest surviving squad signal.`;
       if (attack.missedHiddenBoss) return `${attack.player.name} attacks the vanished boss, but the phased-out target cannot be hit.`;
       if (attack.opforStunned) return `${attack.player.name}'s attack is disrupted by the opposing OPFOR Tactician.`;
       if (attack.possessionRescue) {
@@ -11111,9 +12830,29 @@ function applyCombatEncounter(entries, type, operator, question) {
     }),
     ...(lockedSuppression ? [`${operator.name}'s area attack suppresses every remaining enemy activation.`] : []),
     ...opforAbilityEvents.map(opforAbilityStatusLine).filter(Boolean),
-    ...enemyActionStatusLines(enemyActions),
+    ...enemyActionStatusLines(enemyActions.filter((action) => !action.blueFinalIsolationInfection)),
     ...postEnemySupportEvents.map(supportEventStatusLine).filter(Boolean),
+    ...enemyActionStatusLines(endOfRoundStatusActions),
+    ...blueFinalIsolationEvents.map((event) => event.kind === "complete"
+      ? `Every operator reconnects. The boss emerges and answers the reunion with ${BLUE_MID_ACID_PHASE_NAME}.`
+      : event.kind === "ambush"
+        ? event.snapshot?.openingLightEnemy === false
+          ? "The opening search ends as infection stalkers materialize around each living operator, capped at two per isolated hallway."
+          : "The opening search ends as infection stalkers and corridor hunters materialize around the isolated groups."
+        : event.earlyJoin
+          ? `${event.sourceLabel} clears early and enters ${event.targetLabel}; existing contacts remain active and a reunion wave emerges at the end of the round.`
+          : `${event.sourceLabel} reconnects with ${event.targetLabel}; the larger cell draws a fresh infection wave.`),
+    ...blueFinalIsolationDarkenedEvents.map((event) => `${event.groupLabel} goes dark after its operators fall; ${event.vanishedEnemyLabels.length ? `${event.vanishedEnemyLabels.join(", ")} vanish and ` : ""}${event.memberNames.join(" and ")} remain untargetable until reunion.`),
     ...(yellowOpforDeployedThisRound ? [`${YELLOW_FINAL_OPFOR_PHASE_NAME} ends the current combat round immediately; OPFOR actions begin next round.`] : []),
+    ...(blueInfectionDeployedThisRound ? [`${BLUE_MID_CHEST_BURSTER_PHASE_NAME} ends the current combat round immediately; ${blueChestParasiteSpawnedEnemies.length} assigned infection parasite${blueChestParasiteSpawnedEnemies.length === 1 ? "" : "s"} will resolve next combat phase.`] : []),
+    ...(blueParasiteInfectionTurn ? [`The infection parasites resolve while ${bossEnemyForEncounter(encounter)?.label || "the boss"} withholds its normal attacks; ${BLUE_MID_ACID_PHASE_NAME} is prepared for the next combat round.`] : []),
+    ...(blueFinalSecondIsolationTriggeredThisRound ? [`BossPhase 50%: ${BLUE_FINAL_ISOLATION_PHASE_NAME} immediately cancels every remaining operator activation, backlash, status tick, and hostile activation before the second hallway split begins.`] : []),
+    ...blueFinalChestBurstActions.map((action) => {
+      const hit = action.targets?.[0];
+      return `${hit?.target?.name || "An operator"} ruptures ${action.stackCount} infection stack${action.stackCount === 1 ? "" : "s"} for ${hit?.damage || 0} damage${action.criticalAfterBurst ? " and is forced into incapacitation at or below 25% maximum health" : ""}.`;
+    }),
+    ...(blueFinalChestBurstSpawnedEnemies.length ? [`${blueFinalChestBurstSpawnedEnemies.length} light hostile${blueFinalChestBurstSpawnedEnemies.length === 1 ? "" : "s"} emerge, one for every consumed infection stack; normal boss attacks are suppressed until they are destroyed.`] : []),
+    ...(blueFinalBossLightHeal ? [`${blueFinalBossLightHeal.enemy.label} heals ${blueFinalBossLightHeal.amount} HP while ${blueFinalBossLightHeal.remainingLights} burst spawn${blueFinalBossLightHeal.remainingLights === 1 ? "" : "s"} remain.`] : []),
     ...(yellowC4AppliedAfterRound ? [`${YELLOW_MID_C4_PHASE_NAME} attaches to ${yellowC4AppliedAfterRound.targetName} and arms for the next enemy phase.`] : []),
     ...(yellowFinalRainAppliedAfterRound ? [`${YELLOW_FINAL_RAIN_PHASE_NAME} volley ${yellowFinalRainAppliedAfterRound.volleyNumber} applies new alternating Sniper Scope and C4 markers for the next round.`] : []),
     ...attackResults.filter((attack) => attack.yellowOpforTriggeredAfter)
@@ -11124,7 +12863,7 @@ function applyCombatEncounter(entries, type, operator, question) {
       .map((attack) => `${YELLOW_FINAL_RAIN_PHASE_NAME} alternates ${attack.yellowFinalRainSniperTargets?.length || 0} sniper lock${attack.yellowFinalRainSniperTargets?.length === 1 ? "" : "s"} with ${attack.yellowFinalRainC4Targets?.length || 0} non-overlapping C4 charge${attack.yellowFinalRainC4Targets?.length === 1 ? "" : "s"}, beginning with Sniper Scope.`)
   ];
   prepareGreenConfusionForNextQuestion(encounter, facts);
-  encounter.lastRound = { round: encounter.round, attackResults, preemptiveEnemyActions, enemyActions, initiativeSequence, opforAbilityEvents, opforImmediateActions, supportEvents: [...combatSupportEvents, ...postEnemySupportEvents], totalDamage, defeatedCount, roundStartEnemies, combatStatusLines, challengeKind: type.kind, yellowOpforRetaliationSniperPendingAtRoundStart, yellowOpforRetaliationSniperTargetNamesAtRoundStart };
+  encounter.lastRound = { round: encounter.round, attackResults, preemptiveEnemyActions, enemyActions, endOfRoundStatusActions, initiativeSequence, opforAbilityEvents, opforImmediateActions, supportEvents: [...combatSupportEvents, ...postEnemySupportEvents], totalDamage, defeatedCount, roundStartEnemies, combatStatusLines, challengeKind: type.kind, yellowOpforRetaliationSniperPendingAtRoundStart, yellowOpforRetaliationSniperTargetNamesAtRoundStart, blueChestParasiteSpawnedEnemies, blueInfectionDeployedThisRound, blueParasiteInfectionTurn, blueFinalIsolationAtRoundStart, blueFinalInfectionKillActions: blueFinalInfectionPhase.killActions, blueFinalIsolationEvents, blueFinalIsolationDarkenedEvents, blueFinalHiddenSwipe, blueFinalSecondIsolationTriggeredThisRound, blueFinalChestBurstActions, blueFinalChestBurstSpawnedEnemies, blueFinalBossLightHeal };
   facts.push(`Private mechanics: combat round ${encounter.round}; hostile pool ${encounter.hp}/${encounter.maxHp}; player attacks ${attackResults.map((attack) => `${attack.player.name} ${attack.damage}`).join(", ") || "none"}; enemy damage ${totalDamage}. Narrate physical outcomes without numbers.`);
   const resolvedYellowOpeningTargetNames = preemptiveEnemyActions
     .filter((action) => action.yellowSniperScope && !action.yellowFinalRainVolley)
@@ -11146,6 +12885,7 @@ function applyCombatEncounter(entries, type, operator, question) {
     attackResults,
     preemptiveEnemyActions,
     enemyActions,
+    endOfRoundStatusActions,
     initiativeSequence,
     greenPossessionVisualActive: greenPossessionActiveAtRoundStart,
     greenPossessionRescuePhase: possessionRescuePhase,
@@ -11154,9 +12894,24 @@ function applyCombatEncounter(entries, type, operator, question) {
     greenPossessionRoundHalted: greenPossessionActivatedThisRound,
     yellowOpforDeployedThisRound,
     yellowOpforRoundHalted: yellowOpforDeployedThisRound,
+    blueInfectionDeployedThisRound,
+    blueInfectionRoundHalted: blueInfectionDeployedThisRound,
+    blueParasiteInfectionTurn,
+    blueFinalIsolationAtRoundStart,
+    blueFinalInfectionKillActions: blueFinalInfectionPhase.killActions,
+    blueFinalIsolationEvents,
+    blueFinalIsolationDarkenedEvents,
+    blueFinalHiddenSwipe,
+    blueFinalSecondIsolationTriggered: blueFinalSecondIsolationTriggeredThisRound,
+    blueFinalSecondIsolationRoundHalted: blueFinalSecondIsolationTriggeredThisRound,
+    blueFinalChestBurstActions,
+    blueFinalChestBurstSpawnedEnemies,
+    blueFinalBossLightHeal,
     greenPossessionEndedThisRound: Boolean(greenPossessionPhaseEndedThisRound || possessionRescuePhase && !encounter.greenPossessionActive),
     greenFinalInfectionOpening,
     greenInfectionClearedByAnswers,
+    blueChestParasiteSpawnedEnemies,
+    blueAcidSpitThisRound,
     bossPhasePrompt,
     yellowC4AppliedAfterRound,
     yellowFinalRainAppliedAfterRound,
@@ -11990,6 +13745,9 @@ function clearDashboardBootSequence() {
 
 function runDashboardBootSequence(runId) {
   clearDashboardBootSequence();
+  if (state.bossTestMode || state.combatTestMode) {
+    return Promise.resolve(runId === state.deploymentRunId && state.started);
+  }
   document.body.classList.add("dashboard-booting", "dashboard-stage-shell");
   const schedule = (delay, callback) => {
     const timer = window.setTimeout(() => {
@@ -12359,6 +14117,7 @@ function statusRenderKey() {
     player.answerStreak,
     player.totalAnswers,
     player.correctAnswers,
+    player.lastStandAvailable === false ? 0 : 1,
     player.enforcerReserve,
     (player.items || []).join(","),
     JSON.stringify(player.classCooldowns || {}),
@@ -12378,6 +14137,7 @@ function statusRenderKey() {
     state.lastSubmittedAnswer,
     state.selectedEMS ? 1 : 0,
     JSON.stringify(state.combatDisplayedHp || {}),
+    JSON.stringify(state.combatDisplayedBlueFinalInfectionStacks || {}),
     JSON.stringify(state.pendingAbilityTarget || null),
     players.join("|"),
     actions,
@@ -12425,6 +14185,9 @@ function renderStatusCore() {
     const readyGlyph = accuracyResult === false ? "&#10005;" : accuracyResult === true ? "&#10003;" : "";
     const readyLabel = accuracyResult === false ? "Previous answer incorrect" : accuracyResult === true ? "Previous answer correct" : "No answer result";
     const equippedItems = playerItems(player).slice(0, ITEM_CAPACITY);
+    const infectionStacks = displayedBlueFinalInfectionStacks(currentCombatEncounter(), player);
+    const infectionClass = infectionStacks > 0 ? "blue-final-infected" : "";
+    const infectionStyle = blueFinalInfectionVisualStyle(infectionStacks);
     const itemDots = Array.from({ length: ITEM_CAPACITY }, (_, slotIndex) => {
       const item = equippedItems[slotIndex];
       return item
@@ -12432,7 +14195,7 @@ function renderStatusCore() {
         : `<i class="roster-item-dot empty" title="Empty item slot"></i>`;
     }).join("");
     return `
-    <article class="status-card roster-card ${playerStatusClasses(displayedPlayer)} ${playerPromptStatusClasses(player)}" style="--player-color:${playerColor(player.name)}; --role:${playerColor(player.name)}; --turn-rank:${actionTurnRank(player)}; --operator-boot-index:${index}" data-player-index="${index}" data-player-name="${escapeAttribute(player.name)}">
+    <article class="status-card roster-card ${playerStatusClasses(displayedPlayer)} ${playerPromptStatusClasses(player)} ${infectionClass}" style="--player-color:${playerColor(player.name)}; --role:${playerColor(player.name)}; --turn-rank:${actionTurnRank(player)}; --operator-boot-index:${index};${infectionStyle}" data-player-index="${index}" data-player-name="${escapeAttribute(player.name)}"${infectionStacks ? ` data-blue-infection-stacks="${infectionStacks}"` : ""}>
       <span class="role-hex player-class-icon ${ultimateVisual.charging ? "ultimate-recharging" : ""}" style="--ultimate-charge:${ultimateVisual.progress}%" title="${escapeAttribute(ultimateVisual.title || classDefinition.label || "Operator")}" aria-hidden="true">${playerClassIcon(player.classId)}</span>
       <div class="roster-main">
         <div class="roster-name"><strong title="${escapeAttribute(player.name)}">${escapeHtml(displayPlayerName(player.name))}</strong><small>LV ${Math.max(1, Number(player.level) || 1)}</small></div>
@@ -12440,7 +14203,7 @@ function renderStatusCore() {
       </div>
       <span class="ready-mark ${readyClass}" aria-label="${readyLabel}">${readyGlyph}</span>
       <div class="gear-line"><span>${escapeHtml(classDefinition.gear || classAbilityLabel(player.classId))}</span><b>${escapeHtml(abilityUsedThisTurn(player) ? "ARMED" : abilityState.label)}</b><span class="roster-item-dots">${itemDots}</span></div>
-      <div class="roster-card-badges">${actionTurnBadge(player)}${answerSubmissionBadge(player)}${answerResultBadge(player)}${armedAbilityBadge(player)}${emsPlayerBadge(player)}${secondWindBadge(player)}</div>
+      <div class="roster-card-badges">${actionTurnBadge(player)}${answerSubmissionBadge(player)}${answerResultBadge(player)}${armedAbilityBadge(player)}${emsPlayerBadge(player)}${blueFinalInfectionBadge(player)}${blueAcidBurnBadge(player)}${secondWindBadge(player)}</div>
       <div class="roster-card-controls">${playerItemSlotsHtml(player)}${abilityTargetPickerHtml(player)}</div>
     </article>`;
   }).join("");
@@ -12478,7 +14241,7 @@ function renderStatusCore() {
         sourceName: button.dataset.medicReviveTarget || "",
         kind: "medic-revive"
       };
-      announceAbilityUse(`${button.dataset.medicReviveTarget || "Medic"}: select an incapacitated operator for Rebirth.`, "prompt");
+      announceAbilityUse(`${button.dataset.medicReviveTarget || "Medic"}: select an incapacitated operator or an operator with a spent Last Stand.`, "prompt");
       renderStatus();
     });
   });
@@ -12555,6 +14318,16 @@ function combatEncounterStatusHtml() {
   const encounter = currentCombatEncounter();
   if (!encounter) return "";
   const activeEnemies = encounter.enemies.filter((enemy) => !enemy.defeated);
+  if (blueFinalIsolationActive(encounter) && encounter.blueFinalIsolation?.splitRevealed !== false) {
+    const groups = blueFinalIsolationGroups(encounter);
+    const searching = !encounter.blueFinalIsolation?.initialWaveSpawned;
+    return `<section class="combat-status-card boss blue-final-isolation-status">
+      <div><span>${BLUE_FINAL_ISOLATION_PHASE_NAME}</span><strong>${groups.length} SEALED CELL${groups.length === 1 ? "" : "S"} · ROUND ${encounter.round + 1}</strong></div>
+      <div class="combat-health-track"><i style="width:${Math.max(12, 100 - (encounter.blueFinalIsolation?.reunionCount || 0) * 34)}%"></i></div>
+      <p><strong>${searching ? "NO CONTACTS VISIBLE" : "BOSS SIGNAL LOST"}</strong> · ${searching ? "operators are separated beyond visual range and searching for one another" : "operators can engage only the light hostile inside their current cell"}</p>
+      <p class="combat-intent">${escapeHtml(combatIntentText())}</p>
+    </section>`;
+  }
   const percent = encounter.maxHp ? Math.max(0, Math.min(100, encounter.hp / encounter.maxHp * 100)) : 0;
   return `<section class="combat-status-card ${encounter.roomType === "boss" ? "boss" : ""}">
     <div><span>${encounter.roomType === "boss" ? "Boss Contact" : "Hostile Group"}</span><strong>${activeEnemies.length} ACTIVE · ROUND ${encounter.round + 1}</strong></div>
@@ -12603,6 +14376,20 @@ function secondWindBadge(player) {
   if (!state.secondWindUsed || !sameName(player.name, state.secondWindPlayerName)) return "";
   const pending = sameName(player.name, state.secondWindPendingPlayerName);
   return `<span class="second-wind-badge ${pending ? "pending" : ""}" title="${pending ? "Next answer must be correct" : "Second Wind secured"}" aria-label="${pending ? "Second Wind pending" : "Second Wind secured"}">${pending ? "2ND WIND?" : "2ND WIND"}</span>`;
+}
+
+function blueAcidBurnBadge(player) {
+  const turns = Math.max(0, Number(blueAcidBurnState(currentCombatEncounter(), player)?.turnsRemaining) || 0);
+  if (!turns || player.incapacitated) return "";
+  const unit = `turn${turns === 1 ? "" : "s"}`;
+  return `<span class="blue-acid-burn-badge" title="Acid burn: ${turns} ${unit} remaining" aria-label="Acid burn, ${turns} ${unit} remaining">BURN ${turns}</span>`;
+}
+
+function blueFinalInfectionBadge(player) {
+  const stacks = displayedBlueFinalInfectionStacks(currentCombatEncounter(), player);
+  if (!stacks) return "";
+  const unit = `stack${stacks === 1 ? "" : "s"}`;
+  return `<span class="blue-final-infection-badge" title="Final boss infection: ${stacks} ${unit}" aria-label="Final boss infection, ${stacks} ${unit}">INFECTED ${stacks}</span>`;
 }
 
 function statusCodeText(player) {
@@ -12759,7 +14546,9 @@ function renderInventoryActions() {
   }
 
   const suppliesLocked = suppliesAreLocked();
-  const medkitDisabled = suppliesLocked || state.inventory.medkits <= 0 || !state.players.length;
+  const activeCombatEncounter = isCombatNode(state.nodes[state.currentNode]) ? currentCombatEncounter() : null;
+  const medkitEligiblePlayers = state.players.filter((player) => !blueFinalIsolationPlayerAwaitingReunion(activeCombatEncounter, player));
+  const medkitDisabled = suppliesLocked || state.inventory.medkits <= 0 || !medkitEligiblePlayers.length;
   const emsDisabled = suppliesLocked || !state.questionPresentationReady || state.selectedEMS || state.inventory.ems <= 0 || state.resolved;
   els.inventoryActions.innerHTML = `
     <div class="inventory-supplies">
@@ -12772,7 +14561,7 @@ function renderInventoryActions() {
     </div>
     <div class="inventory-action-row">
       <select id="inventoryMedkitTarget" aria-label="Medkit target" ${medkitDisabled ? "disabled" : ""}>
-        ${state.players.map((player, index) => `<option value="${index}">${escapeHtml(player.name)}</option>`).join("")}
+        ${state.players.map((player, index) => `<option value="${index}" ${blueFinalIsolationPlayerAwaitingReunion(activeCombatEncounter, player) ? "disabled" : ""}>${escapeHtml(player.name)}${blueFinalIsolationPlayerAwaitingReunion(activeCombatEncounter, player) ? " — LOST IN DARKNESS" : ""}</option>`).join("")}
       </select>
       <button id="inventoryUseMedkitBtn" class="secondary" type="button" ${medkitDisabled ? "disabled" : ""}>Use Medkit</button>
       <button id="inventoryEmsBtn" class="secondary" type="button" ${emsDisabled ? "disabled" : ""}>
@@ -13007,7 +14796,7 @@ function abilityRejectionText(source, action = "") {
     if (!cooldown.ready) return cooldown.label.toLowerCase();
     if (abilityUsedThisTurn(source)) return "another ability or item is already armed this turn";
     const target = state.players.find((player) => sameName(player.name, medicReviveMatch[1] || ""));
-    if (!target?.incapacitated) return "select an incapacitated operator";
+    if (!target || (!target.incapacitated && lastStandCharged(target))) return "select an incapacitated operator or one with a spent Last Stand";
     return "the current prompt is not accepting Rebirth";
   }
   const classMatch = clean.match(/^CLASS:(soldier|medic|scout|enforcer|engineer|tactician)/i);
@@ -13057,6 +14846,7 @@ function queueClassAbilityUse(sourceName, targetName = "", sourceMode = "teacher
   const classId = String(source.classId || "").toLowerCase();
   if (requestedClassId && String(requestedClassId).toLowerCase() !== classId) return false;
   const combatRoom = isCombatNode(state.nodes[state.currentNode]);
+  const combatEncounter = combatRoom ? currentCombatEncounter() : null;
   if (state.nodes[state.currentNode]?.type === "readiness") return false;
   // Support abilities remain useful during obstacle rooms. Offensive,
   // defensive-combat, and disruption abilities stay combat-only.
@@ -13073,7 +14863,9 @@ function queueClassAbilityUse(sourceName, targetName = "", sourceMode = "teacher
   if (classId === "soldier" && Number(source.answerStreak) < 3) return false;
   const targetable = ["medic", "engineer"].includes(classId);
   const target = targetable
-    ? state.players.find((player) => sameName(player.name, targetName) && !player.incapacitated)
+    ? state.players.find((player) => sameName(player.name, targetName)
+        && !player.incapacitated
+        && blueFinalIsolationAllowsPlayerTarget(combatEncounter, source, player))
     : source;
   if (targetable && !target) return false;
   if (classId === "scout") {
@@ -13117,17 +14909,25 @@ function queueMedicReviveUse(sourceName, targetName = "", sourceMode = "teacher"
   if (state.resolved || state.nodes[state.currentNode]?.type === "readiness" || !isCombatNode(state.nodes[state.currentNode])) return false;
   const source = state.players.find((player) => sameName(player.name, sourceName));
   const target = state.players.find((player) => sameName(player.name, targetName));
-  if (!source || source.incapacitated || !target?.incapacitated) return false;
+  const encounter = currentCombatEncounter();
+  if (!source
+    || source.incapacitated
+    || !target
+    || !blueFinalIsolationAllowsPlayerTarget(encounter, source, target)
+    || (!target.incapacitated && lastStandCharged(target))) return false;
   const cooldown = medicReviveCooldownState(source);
   if (!cooldown.ready || abilityUsedThisTurn(source)) return false;
   markQuestionCooldown(source, cooldown.key);
   source._abilityTurnKey = currentAbilityTurnKey();
   source._levelSixAbilityTurnKey = currentAbilityTurnKey();
-  state.pendingClassAbilityUses.push({ sourceName: source.name, classId: "medic", targetName: target.name, revive: true });
+  const revive = Boolean(target.incapacitated);
+  state.pendingClassAbilityUses.push({ sourceName: source.name, classId: "medic", levelSix: "medic", targetName: target.name, revive, rebirth: true });
   state.classAbilityTargets[normalize(source.name)] = target.name;
   state.classAbilityTargetNotices[normalize(source.name)] = `Queued: Rebirth → ${target.name}`;
   source.abilityNotice = state.classAbilityTargetNotices[normalize(source.name)];
-  announceAbilityUse(`${source.name} queues Rebirth on ${target.name}; the revive will restore 75% HP with a full brace and replace ${source.name}'s attack.`);
+  announceAbilityUse(revive
+    ? `${source.name} queues Rebirth on ${target.name}; the revive restores 75% HP, a full brace, and their Last Stand charge while replacing ${source.name}'s attack.`
+    : `${source.name} queues Rebirth on ${target.name}; their spent Last Stand will recharge while ${source.name} forfeits this turn's attack.`);
   renderStatus();
   return true;
 }
@@ -13187,6 +14987,7 @@ function useTeacherItemAbility(sourceName, itemId, targetName = "", sourceMode =
   if (!source || !item || !ability || source.incapacitated) return false;
   if (state.nodes[state.currentNode]?.type === "readiness") return false;
   const combatRoom = isCombatNode(state.nodes[state.currentNode]);
+  const combatEncounter = combatRoom ? currentCombatEncounter() : null;
   if (!combatRoom && !["heal", "hint"].includes(ability.effect)) return false;
   const cooldown = itemAbilityCooldownState(source, item, ability);
   if (!cooldown.ready) return false;
@@ -13197,7 +14998,11 @@ function useTeacherItemAbility(sourceName, itemId, targetName = "", sourceMode =
     renderStatus();
     return false;
   }
-  const target = targetName ? state.players.find((player) => sameName(player.name, targetName) && !player.incapacitated) : source;
+  const target = targetName
+    ? state.players.find((player) => sameName(player.name, targetName)
+        && !player.incapacitated
+        && blueFinalIsolationAllowsPlayerTarget(combatEncounter, source, player))
+    : source;
   if (ability.effect === "heal" && !target) return false;
   source.classCooldowns = { ...(source.classCooldowns || {}), [cooldown.key]: state.currentQuestion };
   source._abilityTurnKey = currentAbilityTurnKey();
@@ -13224,6 +15029,8 @@ function playerItemSlotsHtml(player) {
   const abilityTurnUsed = abilityUsedThisTurn(player);
   const abilityLabel = abilityTurnUsed ? "USED THIS TURN" : abilityState.label;
   const abilityWindow = isCombatNode(state.nodes[state.currentNode]) && !state.resolved;
+  const combatEncounter = abilityWindow ? state.combatEncounters?.[state.currentNode] || null : null;
+  const currentTeamPlayers = combatAbilityTeamMembers(combatEncounter, player, state.players);
   const classId = String(player.classId || "").toLowerCase();
   const reserveText = classId === "enforcer" ? `RESERVE ${Math.max(0, Math.round(Number(player.enforcerReserve) || 0))}/${enforcerReserveCap(player)}` : "";
   const manualClass = state.deviceMode === "single" && abilityWindow && ["soldier", "medic", "scout", "enforcer", "engineer", "tactician"].includes(classId);
@@ -13250,7 +15057,7 @@ function playerItemSlotsHtml(player) {
     ? `<label class="tactician-protocol-picker"><span>Protocol</span><select data-tactician-protocol-for="${escapeAttribute(player.name)}" ${abilityState.ready && !abilityTurnUsed ? "" : "disabled"}><option value="assault">Assault</option><option value="guard">Guard</option><option value="support">Support</option></select></label>`
     : "";
   const medicReviveControl = manualClass && classId === "medic" && reviveState.unlocked
-    ? `<button type="button" class="player-ability-label class-ability-button medic-revive-button" data-medic-revive-target="${escapeAttribute(player.name)}" ${reviveState.ready && !abilityTurnUsed && state.players.some((candidate) => candidate.incapacitated) ? "" : "disabled"}><span class="player-class-icon" aria-hidden="true">+</span>Rebirth <b class="player-ability-state ${reviveState.ready && !abilityTurnUsed ? "ready" : "recharging"}">${escapeHtml(abilityTurnUsed ? "USED THIS TURN" : reviveState.remaining ? "CHARGING" : "READY")}</b><small>Revive at 75% HP with full brace; forfeit attack</small></button>`
+    ? `<button type="button" class="player-ability-label class-ability-button medic-revive-button" data-medic-revive-target="${escapeAttribute(player.name)}" ${reviveState.ready && !abilityTurnUsed && currentTeamPlayers.some((candidate) => candidate.incapacitated || !lastStandCharged(candidate)) ? "" : "disabled"}><span class="player-class-icon" aria-hidden="true">+</span>Rebirth <b class="player-ability-state ${reviveState.ready && !abilityTurnUsed ? "ready" : "recharging"}">${escapeHtml(abilityTurnUsed ? "USED THIS TURN" : reviveState.remaining ? "CHARGING" : "READY")}</b><small>Revive or recharge one Last Stand; forfeit attack</small></button>`
     : "";
   const levelSixWindow = manualClass || (state.deviceMode === "single" && classId === "scout" && state.questionPresentationReady && !state.resolved);
   const levelSixControl = levelSixWindow && levelSixState.unlocked && classId !== "medic"
@@ -13263,9 +15070,13 @@ function abilityTargetPickerHtml(player) {
   const pending = state.pendingAbilityTarget;
   if (!pending || !sameName(pending.sourceName, player.name)) return "";
   const revive = pending.kind === "medic-revive";
-  const targets = state.players.filter((candidate) => revive ? candidate.incapacitated : !candidate.incapacitated);
+  const encounter = isCombatNode(state.nodes[state.currentNode])
+    ? state.combatEncounters?.[state.currentNode] || null
+    : null;
+  const targets = combatAbilityTeamMembers(encounter, player, state.players)
+    .filter((candidate) => revive ? candidate.incapacitated || !lastStandCharged(candidate) : !candidate.incapacitated);
   if (!targets.length) return "";
-  return `<div class="ability-target-picker"><small>${revive ? "Select incapacitated operator" : "Select target"}</small><div>${targets.map((target) => `<button type="button" class="ability-target-btn" data-ability-target="${escapeAttribute(target.name)}">${escapeHtml(target.name)}</button>`).join("")}</div></div>`;
+  return `<div class="ability-target-picker"><small>${revive ? "Select downed or Last Stand spent" : "Select target"}</small><div>${targets.map((target) => `<button type="button" class="ability-target-btn" data-ability-target="${escapeAttribute(target.name)}">${escapeHtml(target.name)}${revive ? ` · ${target.incapacitated ? "DOWN" : "LAST STAND SPENT"}` : ""}</button>`).join("")}</div></div>`;
 }
 
 function playerItems(player) {
@@ -13601,6 +15412,7 @@ function renderInitiativeTimeline() {
   let attackActors = players
     .filter((actor) => actor.answer?.correct === true)
     .map((actor) => ({ ...actor, kind: "attack", status: "ATTACK" }));
+  let infectionActors = [];
   let opforOpeningActors = [];
   let initiativeActors = [];
 
@@ -13630,6 +15442,21 @@ function renderInitiativeTimeline() {
     && encounter.yellowOpforRetaliationSniperTargetNames?.length
   );
   const yellowPreemptivePending = yellowSniperScopePending || yellowOpforRetaliationPending || yellowC4DetonationPending || yellowFinalRainPending;
+  const blueOpeningAcidPending = Boolean(
+    blueMidBossBehaviorActive(activeBossNode)
+    && !encounter.blueAcidSpitOpeningResolved
+    && Math.max(0, Number(encounter.round) || 0) === 0
+  );
+  const bluePostInfectionAcidPending = Boolean(
+    blueMidBossBehaviorActive(activeBossNode)
+    && !encounter.bluePostInfectionAcidResolved
+    && Number(encounter.bluePostInfectionAcidRound) === Math.max(0, Number(encounter.round) || 0) + 1
+  );
+  const blueAcidPending = blueOpeningAcidPending || bluePostInfectionAcidPending;
+  const blueParasiteInfectionPending = Boolean(encounter.enemies.some((enemy) => enemy.blueChestParasite
+    && !enemy.defeated
+    && Math.max(0, Number(enemy.blueParasiteResolveRound) || 0) <= Math.max(0, Number(encounter.round) || 0) + 1));
+  const scriptedPreemptivePending = yellowPreemptivePending || blueAcidPending;
   const previewOpforMirrors = yellowFinalOpforMirrors(encounter);
   const opforStunLimited = previewOpforMirrors.length > 0;
   const lockedSuppressionAttempted = Boolean(
@@ -13638,7 +15465,7 @@ function renderInitiativeTimeline() {
     && players.some((actor) => sameName(actor.label, operator.name) && actor.answer?.correct === true)
   );
   const lockedSuppression = Boolean(
-    !yellowPreemptivePending
+    !scriptedPreemptivePending
     && !opforStunLimited
     && lockedSuppressionAttempted
   );
@@ -13667,13 +15494,15 @@ function renderInitiativeTimeline() {
 
   const preemptiveEnemyActors = [];
   const enemyActors = [];
-  if (!state.selectedEMS && yellowPreemptivePending) {
+  if (!state.selectedEMS && scriptedPreemptivePending) {
     const boss = bossEnemyForEncounter(encounter);
     if (boss && !boss.defeated) {
       const yellowRainPreviewSequence = yellowFinalRainPending
         ? yellowFinalRainSequenceForEncounter(encounter)
         : [];
-      const count = yellowFinalRainPending
+      const count = blueAcidPending
+        ? BLUE_MID_ACID_STRIKES
+        : yellowFinalRainPending
         ? yellowRainPreviewSequence.length
         : yellowOpforRetaliationPending
           ? encounter.yellowOpforRetaliationSniperTargetNames.length
@@ -13686,7 +15515,9 @@ function renderInitiativeTimeline() {
           glyph: "B",
           color: "#ff4a45",
           kind: "enemy",
-          status: yellowFinalRainPending
+          status: blueAcidPending
+            ? `ACID ${index + 1}/${BLUE_MID_ACID_STRIKES}`
+            : yellowFinalRainPending
             ? yellowRainPreviewSequence[index]?.kind === "c4" ? "C4 DETONATION" : "SNIPER SHOT"
             : yellowC4DetonationPending ? "C4 DETONATION" : "SNIPER SHOT"
         });
@@ -13695,8 +15526,20 @@ function renderInitiativeTimeline() {
   }
   if (!lockedSuppression && !state.selectedEMS) {
     encounter.enemies.filter((enemy) => !enemy.defeated).forEach((enemy) => {
+      if (blueFinalIsolationActive(encounter) && enemy.boss) return;
+      if (blueFinalIsolationActive(encounter) && enemy.blueIsolationInfection) {
+        infectionActors.push({
+          label: enemy.label || "Infection Stalker",
+          glyph: "?",
+          color: "#4ea8ff",
+          kind: "enemy",
+          status: "HOST SELECTION"
+        });
+        return;
+      }
       if (enemy.boss && encounter.greenPossessionActive) return;
       if (enemy.boss && (previewOpforMirrors.length || yellowFinalRainPending)) return;
+      if (enemy.boss && (blueAcidPending || blueParasiteInfectionPending)) return;
       const midBossHalfHealthAttack = Boolean(
         enemy.boss
         && bossUsesRedAssaultBehavior(state.nodes[state.currentNode])
@@ -13773,19 +15616,39 @@ function renderInitiativeTimeline() {
       return true;
     }).map((actor) => ({ ...actor, kind: "ability", status: "ABILITY" }));
     attackActors = (resolvedRound.attackResults || []).map((attack) => actorForName(attack.player?.name)).filter(Boolean).map((actor) => ({ ...actor, kind: "attack", status: "ATTACK" }));
+    infectionActors = [
+      ...(resolvedRound.blueFinalInfectionKillActions || []),
+      ...(resolvedRound.enemyActions || []).filter((action) => action.blueFinalIsolationInfection)
+    ].map((action) => ({
+      label: action.enemy?.label || "Infection Stalker",
+      glyph: "?",
+      color: "#4ea8ff",
+      kind: "enemy",
+      status: action.blueFinalIsolationInfectionKilled ? "HOST DENIED" : "HOST SELECTION"
+    }));
     preemptiveEnemyActors.splice(0, preemptiveEnemyActors.length, ...(resolvedRound.preemptiveEnemyActions || []).filter((action) => !action.disrupted).map((action) => ({
       label: action.enemy?.label || "Hostile",
       glyph: "B",
       color: "#ff4a45",
       kind: "enemy",
-      status: action.yellowC4Bomb ? "C4 DETONATION" : "SNIPER SHOT"
+      status: action.blueAcidSpit
+        ? `ACID ${action.blueAcidSpitIndex}/${BLUE_MID_ACID_STRIKES}`
+        : action.blueAcidBurnTick
+          ? "ACID BURN"
+          : action.blueChestBurst
+            ? "CHEST BURST"
+            : action.yellowC4Bomb ? "C4 DETONATION" : "SNIPER SHOT"
     })));
-    enemyActors.splice(0, enemyActors.length, ...(resolvedRound.enemyActions || []).filter((action) => !action.disrupted && !action.opforImmediateAbilityAttack).map((action) => ({
+    enemyActors.splice(0, enemyActors.length, ...(resolvedRound.enemyActions || []).filter((action) => !action.disrupted && !action.opforImmediateAbilityAttack && !action.blueFinalIsolationInfection).map((action) => ({
       label: action.enemy?.label || "Hostile",
       glyph: action.possessed ? "P" : action.yellowOpforMirror ? playerClassIcon(action.enemy?.mirrorClassId) : action.enemy?.boss ? "B" : "H",
       color: action.possessed ? "#68ff9a" : action.yellowOpforMirror ? action.enemy?.mirrorColor || "#ffd85a" : action.enemy?.boss ? "#ff4a45" : "#d6a84f",
       kind: "enemy",
-      status: action.yellowOpforMirror ? opforAttackTimelineStatus(action) : "ATTACK"
+      status: action.blueAcidSpit
+        ? `ACID ${action.blueAcidSpitIndex}/${BLUE_MID_ACID_STRIKES}`
+        : action.blueChestParasite
+          ? action.blueChestParasiteKilled ? "KILLED" : "PARASITE"
+          : action.yellowOpforMirror ? opforAttackTimelineStatus(action) : "ATTACK"
     })));
     if (resolvedRound.initiativeSequence?.length) {
       const sequencedOpforActions = new Set(resolvedRound.initiativeSequence
@@ -13810,7 +15673,7 @@ function renderInitiativeTimeline() {
       });
       attackActors = [];
       enemyActors.splice(0, enemyActors.length, ...(resolvedRound.enemyActions || [])
-        .filter((action) => !action.disrupted && !action.opforImmediateAbilityAttack && !sequencedOpforActions.has(action))
+        .filter((action) => !action.disrupted && !action.opforImmediateAbilityAttack && !action.blueFinalIsolationInfection && !sequencedOpforActions.has(action))
         .map((action) => ({
           label: action.enemy?.label || "Hostile",
           glyph: action.possessed ? "P" : action.yellowOpforMirror ? playerClassIcon(action.enemy?.mirrorClassId) : action.enemy?.boss ? "B" : "H",
@@ -13821,7 +15684,7 @@ function renderInitiativeTimeline() {
     }
   }
 
-  const actors = [...abilityActors, ...preemptiveEnemyActors, ...opforOpeningActors, ...attackActors, ...initiativeActors, ...enemyActors];
+  const actors = [...abilityActors, ...infectionActors, ...preemptiveEnemyActors, ...opforOpeningActors, ...attackActors, ...initiativeActors, ...enemyActors];
   const activeTurn = state.initiativeCurrentTurn;
   const actorOccurrences = new Map();
   let activeTokenRendered = false;
@@ -13872,7 +15735,13 @@ function setInitiativeCurrentTurn(kind = "", actorName = "", occurrence = 0) {
 }
 
 function resetBossIntroVideo() {
-  els.combatStage?.classList.remove("boss-intro-playing", "boss-intro-handoff", "boss-intro-complete");
+  els.combatStage?.classList.remove(
+    "boss-intro-playing",
+    "boss-intro-handoff",
+    "boss-intro-complete",
+    "blue-final-awaiting-contact",
+    ...BLUE_FINAL_ISOLATION_INTRO_STAGE_CLASSES
+  );
   if (els.combatBossIntro) {
     els.combatBossIntro.classList.remove("fading");
     els.combatBossIntro.hidden = true;
@@ -13974,7 +15843,13 @@ function playBossIntroVideo(runId, nodeIndex, onComplete) {
   if (playRequest?.catch) playRequest.catch(() => beginHandoff("play rejected"));
   combatPresentationTimer(
     () => beginHandoff("watchdog"),
-    BOSS_INTRO_WATCHDOG_MS - BOSS_INTRO_START_DELAY_MS - BOSS_INTRO_VIDEO_FADE_MS - BOSS_INTRO_STATIC_FADE_MS - 500,
+    BOSS_INTRO_WATCHDOG_MS
+      - BOSS_INTRO_START_DELAY_MS
+      - BOSS_INTRO_VIDEO_FADE_MS
+      - BOSS_INTRO_STATIC_FADE_MS
+      - BLUE_FINAL_TEAM_SPLIT_MS
+      - BLUE_FINAL_ENEMY_REVEAL_MS
+      - 500,
     runId
   );
 }
@@ -14103,6 +15978,8 @@ function clearCombatPresentation() {
   state.bossPreCombatMountHoldNode = null;
   state.combatMountBlocked = false;
   state.combatDisplayedHp = {};
+  state.combatDisplayedBlueFinalInfectionStacks = {};
+  state.combatDisplayedPlayerResults = [];
   state.initiativeCurrentTurn = null;
   resetBossIntroVideo();
   if (els?.combatStage) {
@@ -14198,6 +16075,7 @@ function combatEnemyGlyph(enemy) {
 
 function combatEnemyCardMarkup(enemy, hp = enemy.hp, defeated = enemy.defeated, visualState = null) {
   const percent = enemy.maxHp ? Math.max(0, Math.min(100, hp / enemy.maxHp * 100)) : 0;
+  const oneHpClass = !enemy.boss && Math.max(0, Number(enemy.maxHp) || 0) === 1 ? "one-hp" : "";
   const sprite = enemy.boss
     ? `<div class="combat-unit-sprite combat-boss-eyes-target" aria-hidden="true"><span class="combat-hit-ring"></span></div>`
     : enemy.imageSrc
@@ -14224,7 +16102,12 @@ function combatEnemyCardMarkup(enemy, hp = enemy.hp, defeated = enemy.defeated, 
   const opforAnswerAttribute = enemy.yellowOpforMirror && typeof visibleOpforCorrect === "boolean"
     ? ` data-opfor-result="${visibleOpforCorrect ? "CORRECT" : "INCORRECT"}"`
     : "";
-  return `<article class="combat-enemy-unit ${enemy.tier} ${enemy.boss ? "boss" : ""} ${enemy.summoned ? "summoned" : ""} ${enemy.yellowOpforMirror ? "opfor-mirror" : ""} ${visibleOpforAbilityActive ? "opfor-phase-active" : visibleOpforAbilityArmed ? "opfor-ability-armed" : ""} ${opforAnswerClass} ${defeated ? "defeated" : ""}" data-enemy-id="${escapeAttribute(enemy.id)}"${enemy.yellowOpforMirror ? ` data-mirror-target="${escapeAttribute(normalize(enemy.mirrorTargetName))}"` : ""}${opforAnswerAttribute}${mirrorStyle}>
+  const blueIsolationClass = enemy.blueIsolationInfection
+    ? "blue-isolation-infection"
+    : enemy.blueIsolationLight
+      ? "blue-isolation-light"
+      : "";
+  return `<article class="combat-enemy-unit ${enemy.tier} ${enemy.boss ? "boss" : ""} ${enemy.blueFinalHidden ? "blue-final-hidden-boss" : ""} ${oneHpClass} ${enemy.summoned ? "summoned" : ""} ${blueIsolationClass} ${enemy.blueFinalChestBurstLight ? "blue-final-burst-light" : ""} ${enemy.yellowOpforMirror ? "opfor-mirror" : ""} ${visibleOpforAbilityActive ? "opfor-phase-active" : visibleOpforAbilityArmed ? "opfor-ability-armed" : ""} ${opforAnswerClass} ${defeated ? "defeated" : ""}" data-enemy-id="${escapeAttribute(enemy.id)}"${enemy.blueIsolationGroupId ? ` data-blue-isolation-group="${escapeAttribute(enemy.blueIsolationGroupId)}"` : ""}${enemy.yellowOpforMirror ? ` data-mirror-target="${escapeAttribute(normalize(enemy.mirrorTargetName))}"` : ""}${opforAnswerAttribute}${mirrorStyle}>
     ${enemy.yellowOpforMirror && visibleOpforBubble ? '<span class="combat-bubble" aria-label="OPFOR protection bubble active"></span>' : ""}
     ${sprite}
     <strong>${escapeHtml(enemy.label)}</strong>
@@ -14257,14 +16140,136 @@ function enemyNarrationNamingRule() {
   return "Enemy visual naming: light hostiles are soldier-like, medium hostiles are ghostly, and heavy hostiles are monstrous. Use each hostile's canonical label or a natural synonym from that same archetype; vary repeated wording, but never describe one tier as another archetype.";
 }
 
+function blueFinalIsolationHallwayLayout(isolationSnapshot) {
+  const groups = (isolationSnapshot.groups || []).filter((group) => group.active !== false);
+  const hallwayPlacements = new Map();
+  const activeBoundaries = new Set();
+  let hallwayCursor = 1;
+  groups.forEach((group, index) => {
+    const span = blueFinalIsolationGroupHallwaySpan(isolationSnapshot, group);
+    hallwayPlacements.set(group.id, { start: hallwayCursor, span });
+    hallwayCursor += span;
+    if (index < groups.length - 1) activeBoundaries.add(hallwayCursor - 1);
+  });
+  const hallwayCount = Math.max(
+    1,
+    hallwayCursor - 1,
+    groups.length + Math.max(0, Number(isolationSnapshot.reunionCount) || 0)
+  );
+  return { groups, hallwayPlacements, activeBoundaries, hallwayCount };
+}
+
+function arrangeBlueFinalIsolationFormation(encounter, isolationSnapshot) {
+  if (!els.combatEnemyFormation || !els.combatPartyFormation || !isolationSnapshot?.active) return;
+  const {
+    groups,
+    hallwayPlacements,
+    activeBoundaries,
+    hallwayCount
+  } = blueFinalIsolationHallwayLayout(isolationSnapshot);
+  els.combatStage?.style.setProperty("--blue-isolation-columns", String(hallwayCount));
+  let hallwayDividers = els.combatStage?.querySelector(".blue-isolation-hallway-dividers");
+  if (!hallwayDividers && els.combatStage) {
+    hallwayDividers = document.createElement("div");
+    hallwayDividers.className = "blue-isolation-hallway-dividers";
+    hallwayDividers.setAttribute("aria-hidden", "true");
+    els.combatStage.appendChild(hallwayDividers);
+  }
+  if (hallwayDividers) {
+    hallwayDividers.innerHTML = "";
+    for (let boundary = 1; boundary < hallwayCount; boundary += 1) {
+      const divider = document.createElement("i");
+      divider.style.left = `${boundary / hallwayCount * 100}%`;
+      divider.classList.toggle("hallway-reconnected", !activeBoundaries.has(boundary));
+      hallwayDividers.appendChild(divider);
+    }
+  }
+  const enemyCards = new Map([...els.combatEnemyFormation.querySelectorAll(".combat-enemy-unit")]
+    .map((card) => [card.dataset.enemyId || "", card]));
+  els.combatEnemyFormation.innerHTML = "";
+  for (const group of groups) {
+    const cardGroup = document.createElement("div");
+    cardGroup.className = "blue-isolation-card-group blue-isolation-enemy-group";
+    cardGroup.classList.toggle("blue-isolation-hallway-darkened", Boolean(group.strandedDowned));
+    cardGroup.dataset.blueIsolationGroup = group.id;
+    cardGroup.dataset.blueIsolationLabel = group.label;
+    const hallwayPlacement = hallwayPlacements.get(group.id) || { start: 1, span: 1 };
+    cardGroup.style.gridColumn = `${hallwayPlacement.start} / span ${hallwayPlacement.span}`;
+    for (const enemy of encounter.enemies.filter((candidate) => candidate.blueIsolationGroupId === group.id && !candidate.boss)) {
+      const card = enemyCards.get(enemy.id);
+      if (!card) continue;
+      card.dataset.blueIsolationGroup = group.id;
+      cardGroup.appendChild(card);
+    }
+    els.combatEnemyFormation.appendChild(cardGroup);
+  }
+  const partyCards = new Map([...els.combatPartyFormation.querySelectorAll(".combat-party-unit")]
+    .map((card) => [card.dataset.playerName || "", card]));
+  els.combatPartyFormation.innerHTML = "";
+  for (const group of groups) {
+    const cardGroup = document.createElement("div");
+    cardGroup.className = "blue-isolation-card-group blue-isolation-party-group";
+    cardGroup.classList.toggle("blue-isolation-hallway-darkened", Boolean(group.strandedDowned));
+    cardGroup.dataset.blueIsolationGroup = group.id;
+    cardGroup.dataset.blueIsolationLabel = group.label;
+    cardGroup.style.setProperty("--blue-isolation-member-count", String(Math.max(1, group.memberNames?.length || 0)));
+    const hallwayPlacement = hallwayPlacements.get(group.id) || { start: 1, span: 1 };
+    cardGroup.style.gridColumn = `${hallwayPlacement.start} / span ${hallwayPlacement.span}`;
+    for (const memberName of group.memberNames || []) {
+      const card = partyCards.get(normalize(memberName));
+      if (!card) continue;
+      card.dataset.blueIsolationGroup = group.id;
+      card.classList.toggle("blue-isolation-awaiting-reunion", Boolean(group.strandedDowned));
+      cardGroup.appendChild(card);
+    }
+    els.combatPartyFormation.appendChild(cardGroup);
+  }
+}
+
+function syncCombatPartyCardElements(markup, options = {}) {
+  if (!els.combatPartyFormation) return;
+  const reuseExisting = Boolean(options.reuseExisting);
+  const existingCards = new Map([...els.combatPartyFormation.querySelectorAll(".combat-party-unit")]
+    .map((card) => [card.dataset.playerName || "", card]));
+  if (!reuseExisting || !existingCards.size) {
+    els.combatPartyFormation.innerHTML = markup;
+    return;
+  }
+  const template = document.createElement("template");
+  template.innerHTML = markup;
+  const fragment = document.createDocumentFragment();
+  for (const desiredCard of template.content.querySelectorAll(".combat-party-unit")) {
+    const playerName = desiredCard.dataset.playerName || "";
+    const existingCard = existingCards.get(playerName);
+    if (!existingCard) {
+      fragment.appendChild(desiredCard);
+      continue;
+    }
+    for (const attribute of [...existingCard.attributes]) existingCard.removeAttribute(attribute.name);
+    for (const attribute of [...desiredCard.attributes]) existingCard.setAttribute(attribute.name, attribute.value);
+    existingCard.innerHTML = desiredCard.innerHTML;
+    fragment.appendChild(existingCard);
+  }
+  els.combatPartyFormation.replaceChildren(fragment);
+}
+
 function renderCombatStage(encounter, options = {}) {
   if (!els.combatStage || !encounter) return;
   const enemyStates = new Map((options.enemyStates || []).map((entry) => [entry.id, entry]));
+  const hiddenEnemyIds = new Set(options.hiddenEnemyIds || []);
   const playerStates = new Map((options.playerStates || []).map((entry) => [normalize(entry.name), entry]));
-  const playerResults = new Map((options.playerResults || []).map((entry) => [normalize(entry.name), entry.correct]));
+  const visiblePlayerResults = Array.isArray(options.playerResults)
+    ? options.playerResults
+    : state.combatDisplayedPlayerResults;
+  const playerResults = new Map((visiblePlayerResults || []).map((entry) => [normalize(entry.name), entry.correct]));
   const bossFight = encounter.roomType === "boss";
   const bossNode = state.nodes?.[encounter.nodeIndex ?? state.currentNode];
   const finalBoss = bossFight && bossNode?.bossPhase === "final";
+  const hasBlueIsolationOverride = Object.prototype.hasOwnProperty.call(options, "blueFinalIsolationSnapshot");
+  const blueIsolationSnapshot = hasBlueIsolationOverride
+    ? options.blueFinalIsolationSnapshot
+    : blueFinalIsolationSnapshot(encounter);
+  const blueIsolationVisualActive = Boolean(blueIsolationSnapshot?.active && blueIsolationSnapshot.splitRevealed !== false);
   const hasYellowSniperTargetsOverride = Object.prototype.hasOwnProperty.call(options, "yellowSniperTargetNames");
   const hasYellowSniperTargetOverride = Object.prototype.hasOwnProperty.call(options, "yellowSniperTargetName");
   const yellowSniperTargetNames = hasYellowSniperTargetsOverride
@@ -14307,6 +16312,20 @@ function renderCombatStage(encounter, options = {}) {
   els.combatStage.classList.toggle("boss-fight", bossFight);
   els.combatStage.classList.toggle("final-boss-visual", finalBoss);
   els.combatStage.classList.toggle("mid-boss-visual", bossFight && !finalBoss);
+  els.combatStage.classList.remove("blue-isolation-split-reveal", "blue-isolation-enemy-reveal", "blue-isolation-reunion", "blue-final-reunion-reveal", "blue-final-party-reforming");
+  els.combatStage.classList.toggle("blue-final-isolation-active", blueIsolationVisualActive);
+  els.combatStage.classList.toggle(
+    "blue-final-hallways-divided",
+    Boolean(blueIsolationVisualActive && blueIsolationSnapshot.hallwaysDivided)
+  );
+  els.combatStage.classList.toggle(
+    "blue-final-awaiting-contact",
+    Boolean(blueIsolationVisualActive && blueIsolationSnapshot.introPhase === "lost")
+  );
+  if (!blueIsolationVisualActive) {
+    els.combatStage.classList.remove("blue-final-hidden-strike");
+    els.combatStage.style.removeProperty("--blue-isolation-columns");
+  }
   // Resolution mutates the encounter before its animation begins. When a
   // caller supplies a round-start override, it must win over that future state.
   const hasPossessionVisualOverride = Object.prototype.hasOwnProperty.call(options, "forceGreenPossession");
@@ -14325,20 +16344,26 @@ function renderCombatStage(encounter, options = {}) {
   if (bossFight) primeBossThemeForNode(encounter.nodeIndex ?? state.currentNode);
   els.combatStage.hidden = false;
   syncBossThemePresence();
-  els.combatStageLabel.textContent = encounter.roomType === "boss" ? "CRITICAL HOSTILE" : "HOSTILE CONTACT";
+  els.combatStageLabel.textContent = blueIsolationVisualActive
+    ? `${BLUE_FINAL_ISOLATION_PHASE_NAME.toUpperCase()} // LOST IN THE DARK`
+    : encounter.roomType === "boss" ? "CRITICAL HOSTILE" : "HOSTILE CONTACT";
   els.combatStageRound.textContent = `ROUND ${Math.max(1, encounter.round + (options.beforeRound ? 0 : 1))}`;
   const restrictToRoundStartEnemies = Boolean(options.beforeRound && Array.isArray(options.enemyStates));
-  els.combatEnemyFormation.innerHTML = encounter.enemies.filter((enemy) => {
+  const visibleEnemies = encounter.enemies.filter((enemy) => {
+    if (hiddenEnemyIds.has(enemy.id)) return false;
+    if (blueIsolationVisualActive && enemy.boss) return false;
     const snapshot = enemyStates.get(enemy.id);
     if (restrictToRoundStartEnemies && !snapshot) return false;
     return !(snapshot ? snapshot.defeated : enemy.defeated);
-  }).map((enemy) => {
+  });
+  els.combatStage.classList.toggle("boss-adds-active", Boolean(bossFight && visibleEnemies.some((enemy) => !enemy.boss)));
+  els.combatEnemyFormation.innerHTML = visibleEnemies.map((enemy) => {
     const snapshot = enemyStates.get(enemy.id);
     const hp = snapshot ? snapshot.hp : enemy.hp;
     const defeated = snapshot ? snapshot.defeated : enemy.defeated;
     return combatEnemyCardMarkup(enemy, hp, defeated, snapshot || null);
   }).join("");
-  els.combatPartyFormation.innerHTML = state.players.map((player) => {
+  const partyCardMarkup = state.players.map((player) => {
     const snapshot = playerStates.get(normalize(player.name));
     const visibleHp = snapshot ? snapshot.hp : player.hp;
     const visibleDown = snapshot ? visibleHp <= 0 : player.incapacitated;
@@ -14375,13 +16400,29 @@ function renderCombatStage(encounter, options = {}) {
         player._engineerBubbleReady
         || (encounter.bubbleTargetName && sameName(encounter.bubbleTargetName, player.name))
       ));
+    const visibleLastStand = snapshot && typeof snapshot.lastStandAvailable === "boolean"
+      ? snapshot.lastStandAvailable
+      : lastStandCharged(player);
+    const infectionStacks = snapshot && Object.prototype.hasOwnProperty.call(snapshot, "blueFinalInfectionStacks")
+      ? Math.max(0, Number(snapshot.blueFinalInfectionStacks) || 0)
+      : displayedBlueFinalInfectionStacks(encounter, player);
+    const infectionClass = infectionStacks > 0 ? "blue-final-infected" : "";
+    const infectionStyle = blueFinalInfectionVisualStyle(infectionStacks);
     const equippedNames = playerItems(player).map((item) => item.name).join(" · ");
-    return `<article class="combat-party-unit ${visibleDown ? "down" : ""} ${visiblePossessed ? "possessed" : ""} ${visibleConfused ? "possession-confused" : ""} ${answerClass} ${classArmed ? "class-armed" : ""} ${itemArmed ? "item-armed" : ""} ${yellowTargetClass}" style="--player-color:${playerColor(player.name)}" data-player-name="${escapeAttribute(normalize(player.name))}"${yellowTargetLabel ? ` data-yellow-target="${yellowTargetLabel}"` : ""}>
+    const lastStandState = visibleLastStand ? "charged" : "spent";
+    const lastStandLabel = visibleLastStand
+      ? "Last Stand charged — blocks one incapacitating hit after a correct brace"
+      : "Last Stand spent — Medic Rebirth can recharge it";
+    return `<article class="combat-party-unit last-stand-${lastStandState} ${visibleDown ? "down" : ""} ${visiblePossessed ? "possessed" : ""} ${visibleConfused ? "possession-confused" : ""} ${answerClass} ${classArmed ? "class-armed" : ""} ${itemArmed ? "item-armed" : ""} ${yellowTargetClass} ${infectionClass}" style="--player-color:${playerColor(player.name)};${infectionStyle}" data-player-name="${escapeAttribute(normalize(player.name))}"${infectionStacks ? ` data-blue-infection-stacks="${infectionStacks}"` : ""}${yellowTargetLabel ? ` data-yellow-target="${yellowTargetLabel}"` : ""}>
       ${bubbleActive ? '<span class="combat-bubble" aria-label="Protection bubble active"></span>' : ""}
-      <div class="combat-party-avatar" style="--player-color:${playerColor(player.name)}"><span>${escapeHtml(player.name.slice(0, 1).toUpperCase())}</span></div>
+      <div class="combat-party-avatar" style="--player-color:${playerColor(player.name)}"><span>${escapeHtml(player.name.slice(0, 1).toUpperCase())}</span></div><i class="combat-last-stand-sigil ${lastStandState}" role="img" aria-label="${escapeAttribute(lastStandLabel)}" title="${escapeAttribute(lastStandLabel)}"><b>◆</b><small>LS</small></i>
       <div><strong>${escapeHtml(player.name)}${answerCue ? `<b class="combat-answer-cue">${answerCue}</b>` : ""}</strong><small>${escapeHtml(classLabel)} · LV ${player.level || 1}</small><em class="combat-ability-label">${escapeHtml(classDefinition.gear || "Ability ready")}</em>${equippedNames ? `<em class="combat-item-label">${escapeHtml(equippedNames)}</em>` : ""}<div class="combat-unit-hp party"><i style="width:${hpPercent}%"></i></div><em>${visibleHp} / ${player.maxHp} HP</em></div>
     </article>`;
   }).join("");
+  syncCombatPartyCardElements(partyCardMarkup, {
+    reuseExisting: Boolean(encounter.blueFinalIsolation)
+  });
+  if (blueIsolationVisualActive) arrangeBlueFinalIsolationFormation(encounter, blueIsolationSnapshot);
   positionPossessedCombatCards();
   renderInitiativeTimeline();
 }
@@ -14404,13 +16445,178 @@ function organizeCombatFormations() {
   }
   if (els.combatEnemyFormation) {
     const bossFight = Boolean(els.combatStage?.classList.contains("boss-fight"));
+    const nonBossCards = enemyCards.filter((card) => !card.classList.contains("boss"));
+    const oneHpCards = nonBossCards.filter((card) => card.classList.contains("one-hp"));
+    els.combatStage?.classList.toggle("boss-adds-active", Boolean(bossFight && nonBossCards.length));
     const widths = ["0", "min(34%, 18rem)", "min(58%, 32rem)", "min(82%, 46rem)"];
     els.combatEnemyFormation.style.width = bossFight
       ? (enemyCards.length > 1 ? "min(92%, 58rem)" : "min(78%, 46rem)")
       : (widths[Math.min(3, enemyCards.length)] || "min(94%, 58rem)");
-    els.combatEnemyFormation.style.gap = enemyCards.length >= 4 ? ".45rem" : enemyCards.length === 3 ? ".8rem" : "1.25rem";
+    els.combatEnemyFormation.style.gap = oneHpCards.length >= 4 ? ".05rem" : oneHpCards.length ? ".25rem" : enemyCards.length >= 4 ? ".45rem" : enemyCards.length === 3 ? ".8rem" : "1.25rem";
     els.combatEnemyFormation.dataset.formationCount = String(enemyCards.length);
   }
+}
+
+function mountBlueFinalIsolationOpeningWave(spawnedEnemies = []) {
+  if (!els.combatEnemyFormation) return;
+  for (const enemy of spawnedEnemies) {
+    const groupId = enemy.blueIsolationGroupId || "";
+    const group = els.combatEnemyFormation.querySelector(
+      `.blue-isolation-enemy-group[data-blue-isolation-group="${CSS.escape(groupId)}"]`
+    );
+    if (!group || group.querySelector(`[data-enemy-id="${CSS.escape(enemy.id)}"]`)) continue;
+    group.insertAdjacentHTML("beforeend", combatEnemyCardMarkup(enemy));
+  }
+  els.combatEnemyFormation.dataset.formationCount = String(
+    els.combatEnemyFormation.querySelectorAll(".combat-enemy-unit:not(.defeated)").length
+  );
+  els.combatStage?.classList.toggle("boss-adds-active", spawnedEnemies.length > 0);
+  renderInitiativeTimeline();
+}
+
+function waitForBlueFinalIsolationEnemyImages(timeoutMs = BLUE_FINAL_CONTACT_IMAGE_WAIT_MS) {
+  const images = [...(els.combatEnemyFormation?.querySelectorAll(
+    ".blue-isolation-enemy-group .combat-enemy-image"
+  ) || [])];
+  if (!images.length) return Promise.resolve();
+  const imagePromises = images.map((image) => {
+    if (typeof image.decode === "function") return image.decode().catch(() => {});
+    if (image.complete) return Promise.resolve();
+    return new Promise((resolve) => {
+      image.addEventListener("load", resolve, { once: true });
+      image.addEventListener("error", resolve, { once: true });
+    });
+  });
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      resolve();
+    };
+    const timeout = window.setTimeout(finish, Math.max(0, Number(timeoutMs) || 0));
+    Promise.all(imagePromises).then(finish, finish);
+  });
+}
+
+function playBlueFinalIsolationOpeningSequence(encounter, runId, nodeIndex, onComplete) {
+  const isolation = encounter?.blueFinalIsolation;
+  if (!isolation?.active || isolation.splitRevealed !== false) {
+    onComplete();
+    return;
+  }
+  const valid = () => runId === state.combatPresentationRunId
+    && nodeIndex === state.currentNode
+    && !els.combatStage?.hidden;
+  if (!valid()) return;
+  const stage = els.combatStage;
+  const setIntroPhase = (phase) => {
+    isolation.introPhase = phase;
+  };
+  stage?.classList.remove(...BLUE_FINAL_ISOLATION_INTRO_STAGE_CLASSES, "blue-final-awaiting-contact");
+  setIntroPhase("boss-fade");
+  stage?.classList.add("blue-isolation-boss-fade");
+  if (els.combatActionBanner) {
+    els.combatActionBanner.textContent = "VISUAL CONTACT COLLAPSING // HOLD FORMATION";
+  }
+
+  combatPresentationTimer(() => {
+    if (!valid()) return;
+    stage?.classList.remove("blue-isolation-boss-fade");
+    stage?.classList.add("blue-isolation-blackout");
+    setIntroPhase("blackout");
+    if (els.combatActionBanner) {
+      els.combatActionBanner.textContent = "NO VISUAL // LISTEN FOR YOUR SQUAD";
+    }
+
+    combatPresentationTimer(() => {
+      if (!valid()) return;
+      setIntroPhase("splitting");
+      isolation.splitRevealed = true;
+      isolation.hallwaysDivided = false;
+      renderCombatStage(encounter);
+      stage?.classList.add("blue-isolation-blackout", "blue-isolation-split-reveal");
+      if (els.combatActionBanner) {
+        els.combatActionBanner.textContent = "SQUAD CHANNELS SEVERING // DO NOT LOSE THE SIGNAL";
+      }
+      publishPlayerVitals();
+
+      combatPresentationTimer(() => {
+        if (!valid()) return;
+        setIntroPhase("hallway-lock");
+        isolation.hallwaysDivided = true;
+        stage?.classList.remove("blue-isolation-blackout", "blue-isolation-split-reveal");
+        stage?.classList.add("blue-isolation-hallway-lock", "blue-final-hallways-divided");
+        if (els.combatActionBanner) {
+          els.combatActionBanner.textContent = "HALLWAYS SEALED // SQUAD SIGNALS SEPARATED";
+        }
+
+        combatPresentationTimer(() => {
+          if (!valid()) return;
+          setIntroPhase("lost");
+          stage?.classList.remove("blue-isolation-hallway-lock");
+          stage?.classList.add("blue-final-awaiting-contact");
+          if (els.combatActionBanner) {
+            els.combatActionBanner.textContent = "NO CONTACTS // FOOTSTEPS BEYOND VISUAL RANGE";
+          }
+          publishPlayerVitals();
+
+          combatPresentationTimer(() => {
+            if (!valid()) return;
+            setIntroPhase("contact");
+            stage?.classList.remove("blue-final-awaiting-contact");
+            stage?.classList.add("blue-isolation-enemy-staged");
+            const spawnedEnemies = spawnBlueFinalIsolationOpeningWave(encounter);
+            mountBlueFinalIsolationOpeningWave(spawnedEnemies);
+            if (els.combatActionBanner) {
+              els.combatActionBanner.textContent = spawnedEnemies.length
+                ? "MOVEMENT STOPPED // SHAPES STANDING IN EACH HALLWAY"
+                : "HALLWAYS SEALED // HOSTILE SIGNALS ALREADY PRESENT";
+            }
+            publishPlayerVitals();
+
+            const revealOpeningWave = () => {
+              if (!valid()) return;
+              setIntroPhase("revealing");
+              window.requestAnimationFrame(() => {
+                if (!valid()) return;
+                window.requestAnimationFrame(() => {
+                  if (!valid()) return;
+                  stage?.classList.remove("blue-isolation-enemy-staged");
+                  stage?.classList.add("blue-isolation-enemy-reveal");
+                  if (els.combatActionBanner) {
+                    els.combatActionBanner.textContent = "CONTACTS EMERGING // STAY WITH YOUR CELL";
+                  }
+                });
+              });
+
+              combatPresentationTimer(() => {
+                if (!valid()) return;
+                stage?.classList.remove("blue-isolation-enemy-reveal");
+                setIntroPhase("ready");
+                if (els.combatActionBanner) {
+                  els.combatActionBanner.textContent = "CONTACT CONFIRMED // ISOLATED ENGAGEMENT";
+                }
+
+                combatPresentationTimer(() => {
+                  if (!valid()) return;
+                  onComplete();
+                }, BLUE_FINAL_POST_REVEAL_HOLD_MS, runId);
+              }, BLUE_FINAL_ENEMY_REVEAL_MS, runId);
+            };
+            const minimumSilhouetteHold = new Promise((resolve) => {
+              combatPresentationTimer(resolve, BLUE_FINAL_CONTACT_SILHOUETTE_MS, runId);
+            });
+            Promise.all([
+              minimumSilhouetteHold,
+              waitForBlueFinalIsolationEnemyImages()
+            ]).then(revealOpeningWave);
+          }, BLUE_FINAL_EMPTY_HALLWAY_HOLD_MS, runId);
+        }, BLUE_FINAL_HALLWAY_LOCK_MS, runId);
+      }, BLUE_FINAL_TEAM_SPLIT_MS, runId);
+    }, BLUE_FINAL_BLACKOUT_HOLD_MS, runId);
+  }, BLUE_FINAL_BOSS_FADE_MS, runId);
 }
 
 function activateGreenPossessionCombatVisual(possessedNames = []) {
@@ -14523,7 +16729,7 @@ function syncCombatStage() {
       els.mapPanel?.classList.add("combat-map-transitioning");
       roomTransitionTraceEmit("MARK", "combat map blackout started", { entryRunId, entryNodeIndex });
     });
-    const completeEntry = () => {
+    const finalizeEntry = () => {
       if (entryRunId !== state.combatPresentationRunId || state.currentNode !== entryNodeIndex) return;
       if (entryRunId === state.combatPresentationRunId) {
         window.clearTimeout(state.combatEntryWatchdogTimer);
@@ -14536,8 +16742,12 @@ function syncCombatStage() {
         const finalGreenOpening = encounter.round === 0
           && encounter.greenFinalInfectionTriggered
           && state.nodes[entryNodeIndex]?.bossPhase === "final";
+        const finalBlueIsolationOpening = encounter.round === 0
+          && blueFinalIsolationActive(encounter, state.nodes[entryNodeIndex]);
         els.combatActionBanner.textContent = encounter.cleared
           ? "HOSTILE LINE CLEARED"
+          : finalBlueIsolationOpening
+            ? `${BLUE_FINAL_ISOLATION_PHASE_NAME.toUpperCase()} — SQUAD SIGNALS SEVERED`
           : finalGreenOpening
             ? `${GREEN_FINAL_INFECTION_PHASE_NAME.toUpperCase()} — ALL OPERATORS INFECTED`
             : combatIntentText();
@@ -14546,6 +16756,17 @@ function syncCombatStage() {
         loadBackgroundMusic("boss", state.backgroundMusicLoaded ? { transition: true } : { fadeIn: true });
       }
       renderMapQuestionOverlay();
+    };
+    const completeEntry = () => {
+      const finalBlueIsolationOpening = encounter.round === 0
+        && blueFinalBossBehaviorActive(state.nodes[entryNodeIndex])
+        && encounter.blueFinalIsolation?.active
+        && encounter.blueFinalIsolation.splitRevealed === false;
+      if (finalBlueIsolationOpening) {
+        playBlueFinalIsolationOpeningSequence(encounter, entryRunId, entryNodeIndex, finalizeEntry);
+        return;
+      }
+      finalizeEntry();
     };
     if (els.combatActionBanner) {
       els.combatActionBanner.textContent = bossEntry
@@ -14576,6 +16797,39 @@ function combatPresentationTimer(callback, delay, runId) {
     callback();
   }, delay);
   state.combatPresentationTimers.push(timer);
+}
+
+function combatPartyCardRects() {
+  return new Map(
+    [...(els.combatPartyFormation?.querySelectorAll(".combat-party-unit") || [])]
+      .map((card) => [card.dataset.playerName || "", card.getBoundingClientRect()])
+  );
+}
+
+function animateBlueFinalPartyReunion(originRects, runId) {
+  if (!originRects?.size || !els.combatPartyFormation) return;
+  const cards = [...els.combatPartyFormation.querySelectorAll(".combat-party-unit")];
+  els.combatStage?.classList.add("blue-final-party-reforming");
+  cards.forEach((card, index) => {
+    const origin = originRects.get(card.dataset.playerName || "");
+    const destination = card.getBoundingClientRect();
+    if (!origin || !destination.width) return;
+    card.style.setProperty("--blue-reunion-dx", `${origin.left - destination.left}px`);
+    card.style.setProperty("--blue-reunion-dy", `${origin.top - destination.top}px`);
+    card.style.setProperty("--blue-reunion-delay", `${index * 65}ms`);
+    card.classList.remove("blue-final-party-return");
+    void card.offsetWidth;
+    card.classList.add("blue-final-party-return");
+  });
+  combatPresentationTimer(() => {
+    els.combatStage?.classList.remove("blue-final-party-reforming");
+    for (const card of cards) {
+      card.classList.remove("blue-final-party-return");
+      card.style.removeProperty("--blue-reunion-dx");
+      card.style.removeProperty("--blue-reunion-dy");
+      card.style.removeProperty("--blue-reunion-delay");
+    }
+  }, 1450, runId);
 }
 
 function showCombatFloat(card, text, kind) {
@@ -14625,21 +16879,29 @@ function updateCombatEnemyVisual(attack) {
     }
   }
   showCombatFloat(card, attack.aoe ? `AOE -${attack.damage}` : `-${attack.damage}`, "damage");
-  if (attack.defeated?.length) playEnemyDeathSound(attack.defeated.length);
+  const finalBossDefeated = attack.defeated?.some((enemy) => enemy.boss)
+    && state.nodes[state.currentNode]?.bossPhase === "final";
+  if (finalBossDefeated) playFinalBossDeathSound();
+  else if (attack.defeated?.length) playEnemyDeathSound(attack.defeated.length);
   if (attack.defeated?.length) {
     const runId = state.combatPresentationRunId;
     combatPresentationTimer(() => {
       for (const enemy of attack.defeated) {
-        const defeatedCard = els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(enemy.id)}"]`);
-        defeatedCard?.classList.add("defeated");
-        window.setTimeout(() => {
-          defeatedCard?.remove();
-          els.combatStage?.classList.toggle("yellow-opfor-active", Boolean(els.combatEnemyFormation?.querySelector(".combat-enemy-unit.opfor-mirror:not(.defeated)")));
-          organizeCombatFormations();
-        }, 520);
+        removeDefeatedCombatEnemy(enemy.id);
       }
     }, 260, runId);
   }
+}
+
+function removeDefeatedCombatEnemy(enemyId, delayMs = 520) {
+  const card = els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(enemyId || "")}"]`);
+  if (!card) return;
+  card.classList.add("defeated");
+  window.setTimeout(() => {
+    card.remove();
+    els.combatStage?.classList.toggle("yellow-opfor-active", Boolean(els.combatEnemyFormation?.querySelector(".combat-enemy-unit.opfor-mirror:not(.defeated)")));
+    organizeCombatFormations();
+  }, Math.max(0, Number(delayMs) || 0));
 }
 
 function playEnemyDeathSound(count = 1) {
@@ -14655,6 +16917,17 @@ function playEnemyDeathSound(count = 1) {
       audio.play().catch(() => {});
     }, index * 120);
   }
+}
+
+function playFinalBossDeathSound() {
+  stopBackgroundMusic();
+  if (state.audioDisabled || state.sfxPreset === "off") return;
+  const audio = new Audio("audio-effects/bossdeath.mp3?v=echo-5s-2");
+  audio.preload = "auto";
+  audio.studyAdventureBaseVolume = state.sfxPreset === "cinematic" ? 0.96 : 0.68;
+  audio.volume = effectiveGameSfxVolume(audio);
+  setNarrationLowPass(audio, state.ttsPlaybackActive);
+  audio.play().catch(() => {});
 }
 
 function updateCombatPlayerVisual(hit, card) {
@@ -14679,6 +16952,27 @@ function updateCombatPlayerVisual(hit, card) {
   // waiting for the full round to finish. The payload uses combatDisplayedHp,
   // so each hit publishes the same intermediate value shown on the battle card.
   publishPlayerVitals();
+}
+
+function updateCombatLastStandVisual(card, charged, triggered = false) {
+  if (!card) return;
+  const stateName = charged ? "charged" : "spent";
+  const label = charged
+    ? "Last Stand charged — blocks one incapacitating hit after a correct brace"
+    : "Last Stand spent — Medic Rebirth can recharge it";
+  card.classList.toggle("last-stand-charged", charged);
+  card.classList.toggle("last-stand-spent", !charged);
+  const sigil = card.querySelector(".combat-last-stand-sigil");
+  sigil?.classList.toggle("charged", charged);
+  sigil?.classList.toggle("spent", !charged);
+  sigil?.setAttribute("aria-label", label);
+  sigil?.setAttribute("title", label);
+  if (triggered) {
+    card.classList.remove("last-stand-triggered");
+    void card.offsetWidth;
+    card.classList.add("last-stand-triggered");
+    window.setTimeout(() => card.classList.remove("last-stand-triggered"), 900);
+  }
 }
 
 function showCombatBubble(card) {
@@ -14780,7 +17074,7 @@ function presentCombatResolution(result, options = {}) {
   state.combatPresentationTimers = [];
   const playerRoundStart = new Map();
   const roundStartVitals = new Map((result.roundStartVitals || []).map((player) => [normalize(player.name), player]));
-  for (const action of result.enemyActions || []) {
+  for (const action of [...(result.enemyActions || []), ...(result.endOfRoundStatusActions || [])]) {
     for (const hit of action.targets || []) {
       const key = normalize(hit.target.name);
       if (!playerRoundStart.has(key)) playerRoundStart.set(key, { name: hit.target.name, hp: hit.hpBefore });
@@ -14790,6 +17084,17 @@ function presentCombatResolution(result, options = {}) {
     const snapshot = roundStartVitals.get(normalize(player.name)) || playerRoundStart.get(normalize(player.name));
     return [normalize(player.name), snapshot ? snapshot.hp : player.hp];
   }));
+  state.combatDisplayedBlueFinalInfectionStacks = Object.fromEntries(state.players.map((player) => {
+    const snapshot = roundStartVitals.get(normalize(player.name));
+    return [normalize(player.name), snapshot
+      ? Math.max(0, Number(snapshot.blueFinalInfectionStacks) || 0)
+      : blueFinalInfectionStacks(result.encounter, player)];
+  }));
+  // Combat-stage rerenders can be triggered by polling and status updates while
+  // the resolution timeline is still playing. Preserve the submitted answer
+  // colors across those rerenders so a reunited Blue squad keeps its green/red
+  // borders through the immediate Acid Spit sequence.
+  state.combatDisplayedPlayerResults = (result.combatPlayerResults || []).map((entry) => ({ ...entry }));
   renderCombatStage(result.encounter, {
     enemyStates: result.roundStartEnemies,
     playerStates: state.players.map((player) => {
@@ -14815,6 +17120,7 @@ function presentCombatResolution(result, options = {}) {
     yellowFinalRainC4Targets: result.yellowFinalRainPendingAtRoundStart
       ? result.yellowFinalRainC4TargetsAtRoundStart
       : [],
+    blueFinalIsolationSnapshot: result.blueFinalIsolationAtRoundStart,
     beforeRound: true
   });
   // Publish the round-start snapshot before the first incoming attack so
@@ -14825,16 +17131,71 @@ function presentCombatResolution(result, options = {}) {
   let cursor = 520;
   const enemyInitiativeOccurrences = new Map();
   const opforAbilityOccurrences = new Map();
+  const scheduleBlueFinalHallwayDarkening = (events = []) => {
+    for (const event of events) {
+      combatPresentationTimer(() => {
+        const groupSelector = `.blue-isolation-card-group[data-blue-isolation-group="${CSS.escape(event.groupId || "")}"]`;
+        const cardGroups = els.combatStage?.querySelectorAll(groupSelector) || [];
+        const enemyCards = [];
+        for (const enemyId of event.vanishedEnemyIds || []) {
+          const enemyCard = els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(enemyId)}"]`);
+          if (enemyCard) enemyCards.push(enemyCard);
+        }
+        cardGroups.forEach((group) => group.classList.add("blue-isolation-hallway-darkened"));
+        enemyCards.forEach((enemyCard) => enemyCard.classList.add("blue-infection-vanishing"));
+        els.combatActionBanner.textContent = `${event.groupLabel || "HALLWAY"} // SIGNAL LOST`;
+        for (const memberName of event.memberNames || []) {
+          const playerCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(memberName))}"]`);
+          playerCard?.classList.add("blue-isolation-awaiting-reunion");
+          showCombatFloat(playerCard, "DOWN\nWAITING IN DARKNESS", "damage");
+        }
+        showCombatFloat(
+          els.combatEnemyFormation?.querySelector(groupSelector),
+          event.vanishedEnemyIds?.length ? "CONTACTS VANISHED" : "HALLWAY SILENT",
+          "block"
+        );
+        appendCombatActionStatus(
+          statusLog,
+          `${event.groupLabel || "The hallway"} goes dark. Remaining enemies vanish, and its downed operator${event.memberNames?.length === 1 ? "" : "s"} cannot be targeted until reunion.`
+        );
+        combatPresentationTimer(() => {
+          for (const enemyId of event.vanishedEnemyIds || []) removeDefeatedCombatEnemy(enemyId, 80);
+        }, 560, runId);
+      }, cursor, runId);
+      cursor += 900;
+    }
+  };
   for (const ability of result.combatSupportEvents || []) {
     combatPresentationTimer(() => {
       setInitiativeCurrentTurn("ability", ability.source);
       const sourceCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(ability.source))}"]`);
-      const targetCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(ability.target || ability.source))}"]`);
-      const restorative = ["heal", "regen", "revive"].includes(ability.kind);
+      const simultaneousHeals = Array.isArray(ability.heals) ? ability.heals : [];
+      const simultaneousHealCards = simultaneousHeals
+        .map((heal) => ({
+          heal,
+          card: els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(heal.target))}"]`)
+        }))
+        .filter((entry) => entry.card);
+      const targetCard = simultaneousHealCards[0]?.card
+        || els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(ability.target || ability.source))}"]`);
+      const restorative = ["heal", "regen", "revive", "last-stand"].includes(ability.kind);
       sourceCard?.classList.add("ability-casting");
-      targetCard?.classList.add(restorative ? "healing" : "ability-targeted");
+      const affectedCards = simultaneousHealCards.length
+        ? simultaneousHealCards.map((entry) => entry.card)
+        : [targetCard].filter(Boolean);
+      affectedCards.forEach((card) => card.classList.add(restorative ? "healing" : "ability-targeted"));
       if (ability.kind === "bubble") showCombatBubble(targetCard);
-      if (restorative && ability.target) {
+      if (simultaneousHealCards.length) {
+        for (const { heal, card } of simultaneousHealCards) {
+          const targetPlayer = state.players.find((player) => sameName(player.name, heal.target));
+          if (!targetPlayer) continue;
+          updateCombatPlayerVisual(
+            { target: { ...targetPlayer, maxHp: heal.maxHp || targetPlayer.maxHp }, hpAfter: heal.hpAfter },
+            card
+          );
+          showCombatFloat(card, `+${heal.amount}`, "heal");
+        }
+      } else if (restorative && ability.target) {
         const targetPlayer = state.players.find((player) => sameName(player.name, ability.target));
         if (targetPlayer) {
           const key = normalize(targetPlayer.name);
@@ -14847,12 +17208,19 @@ function presentCombatResolution(result, options = {}) {
           updateCombatPlayerVisual({ target: { ...targetPlayer, maxHp }, hpAfter: nextHp }, targetCard);
         }
       }
+      if (ability.lastStandRecharged) updateCombatLastStandVisual(targetCard, true);
       els.combatActionBanner.textContent = `${ability.source} — ${String(ability.label || "ABILITY").toUpperCase()}`;
-      showCombatFloat(targetCard, ability.kind === "revive" ? `REVIVED +${ability.amount}${ability.braced ? "\nBRACED" : ""}` : restorative ? `+${ability.amount}` : ability.kind === "protocol" ? String(ability.label || "PROTOCOL").toUpperCase() : String(ability.kind || "ABILITY").toUpperCase(), restorative ? "heal" : "block");
+      if (!simultaneousHealCards.length) {
+        showCombatFloat(targetCard, ability.kind === "revive"
+          ? `REVIVED +${ability.amount}${ability.braced ? "\nBRACED" : ""}${ability.lastStandRecharged ? "\nLAST STAND READY" : ""}`
+          : ability.kind === "last-stand"
+            ? "LAST STAND\nRECHARGED"
+            : restorative ? `+${ability.amount}` : ability.kind === "protocol" ? String(ability.label || "PROTOCOL").toUpperCase() : String(ability.kind || "ABILITY").toUpperCase(), restorative ? "heal" : "block");
+      }
       appendCombatActionStatus(statusLog, supportEventStatusLine(ability));
       combatPresentationTimer(() => {
         sourceCard?.classList.remove("ability-casting");
-        targetCard?.classList.remove("healing", "ability-targeted");
+        affectedCards.forEach((card) => card.classList.remove("healing", "ability-targeted"));
       }, 620, runId);
     }, cursor, runId);
     cursor += 900;
@@ -14887,8 +17255,83 @@ function presentCombatResolution(result, options = {}) {
     }, cursor, runId);
     cursor += result.greenPossessionRescuePhase ? 950 : 1650;
   }
+  for (const action of result.blueFinalInfectionKillActions || []) {
+    combatPresentationTimer(() => {
+      const enemyKey = normalize(action.enemy.label || "Infection Stalker");
+      const occurrence = enemyInitiativeOccurrences.get(enemyKey) || 0;
+      enemyInitiativeOccurrences.set(enemyKey, occurrence + 1);
+      setInitiativeCurrentTurn("enemy", action.enemy.label || "Infection Stalker", occurrence);
+      const enemyCard = els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(action.enemy.id)}"]`);
+      const killerCard = action.killer
+        ? els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(action.killer.name))}"]`)
+        : null;
+      killerCard?.classList.add("attacking");
+      enemyCard?.classList.add("hit");
+      els.combatActionBanner.textContent = `${action.killer?.name || "ISOLATED CELL"} — INFECTION KILLED`;
+      showCombatFloat(enemyCard, "HOST DENIED", "damage");
+      showCombatFloat(killerCard, "CORRECT\nKILL", "block");
+      playEnemyDeathSound(1);
+      appendCombatActionStatus(statusLog, ...enemyActionStatusLines([action]));
+      combatPresentationTimer(() => {
+        killerCard?.classList.remove("attacking");
+        removeDefeatedCombatEnemy(action.enemy.id, 120);
+      }, 680, runId);
+    }, cursor, runId);
+    cursor += 1150;
+  }
+  for (const action of (result.enemyActions || []).filter((candidate) => candidate.blueFinalIsolationInfection)) {
+    combatPresentationTimer(() => {
+      const enemyKey = normalize(action.enemy.label || "Infection Stalker");
+      const occurrence = enemyInitiativeOccurrences.get(enemyKey) || 0;
+      enemyInitiativeOccurrences.set(enemyKey, occurrence + 1);
+      setInitiativeCurrentTurn("enemy", action.enemy.label || "Infection Stalker", occurrence);
+      const enemyCard = els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(action.enemy.id)}"]`);
+      const hit = action.targets?.[0];
+      const playerCard = hit?.target
+        ? els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(hit.target.name))}"]`)
+        : null;
+      const cardGroups = els.combatStage?.querySelectorAll(`.blue-isolation-card-group[data-blue-isolation-group="${CSS.escape(action.blueIsolationGroupId || "")}"]`) || [];
+      enemyCard?.classList.add("attacking");
+      cardGroups.forEach((group) => group.classList.add("infection-feeding"));
+      els.combatActionBanner.textContent = `${action.enemy.label} — HOST SELECTED: ${hit?.target?.name || "UNKNOWN"}`;
+      const fullyProtected = Boolean(hit?.blocked || hit?.bubbleBlocked || hit?.redirected);
+      playerCard?.classList.add(fullyProtected ? "blocking" : "hit");
+      showCombatFloat(enemyCard, "LOWEST ACCURACY\nLOCKED", "block");
+      showCombatFloat(playerCard, hit?.redirected ? "REDIRECTED" : fullyProtected ? "BLOCKED" : action.blueFinalInfectionApplied ? `INFECTED\n-${hit?.damage || 0}` : `HIT\n-${hit?.damage || 0}`, hit?.redirected ? "redirect" : fullyProtected ? "block" : "damage");
+      if (fullyProtected) playGameSfx("blocked", { minInterval: 120 });
+      else if (hit?.damage > 0) playGameSfx("damage");
+      if (hit) updateCombatPlayerVisual(hit, playerCard);
+      if (action.blueFinalInfectionApplied && action.blueFinalInfectionTargetName) {
+        const infectedPlayer = state.players.find((player) => sameName(player.name, action.blueFinalInfectionTargetName));
+        const infectedCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(action.blueFinalInfectionTargetName))}"]`);
+        const stacks = setDisplayedBlueFinalInfectionStacks(infectedPlayer, action.blueFinalInfectionStacksAfter);
+        applyBlueFinalInfectionCardVisual(infectedCard, stacks);
+        showCombatFloat(infectedCard, `INFECTION\nSTACK ${stacks}`, "damage");
+        publishPlayerVitals();
+      }
+      if (hit?.bubbleBlocked) clearCombatBubble(playerCard);
+      appendCombatActionStatus(statusLog, ...enemyActionStatusLines([action]));
+      combatPresentationTimer(() => enemyCard?.classList.add("blue-infection-vanishing"), 460, runId);
+      combatPresentationTimer(() => {
+        enemyCard?.classList.remove("attacking");
+        playerCard?.classList.remove("blocking", "hit");
+        cardGroups.forEach((group) => group.classList.remove("infection-feeding"));
+        removeDefeatedCombatEnemy(action.enemy.id);
+      }, 820, runId);
+    }, cursor, runId);
+    cursor += 1450;
+  }
+  scheduleBlueFinalHallwayDarkening(
+    (result.blueFinalIsolationDarkenedEvents || []).filter((event) => event.presentationPhase === "infection")
+  );
   for (const action of result.preemptiveEnemyActions || []) {
     combatPresentationTimer(() => {
+      if (action.blueChestBurst && action.spawnedEnemy && els.combatEnemyFormation
+        && !els.combatEnemyFormation.querySelector(`[data-enemy-id="${CSS.escape(action.spawnedEnemy.id)}"]`)) {
+        els.combatEnemyFormation.insertAdjacentHTML("afterbegin", combatEnemyCardMarkup(action.spawnedEnemy));
+        els.combatEnemyFormation.querySelector(`[data-enemy-id="${CSS.escape(action.spawnedEnemy.id)}"]`)?.classList.add("summoning");
+        organizeCombatFormations();
+      }
       const enemyKey = normalize(action.enemy.label || "Hostile");
       const occurrence = enemyInitiativeOccurrences.get(enemyKey) || 0;
       enemyInitiativeOccurrences.set(enemyKey, occurrence + 1);
@@ -14896,14 +17339,26 @@ function presentCombatResolution(result, options = {}) {
       const enemyCard = els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(action.enemy.id)}"]`);
       enemyCard?.classList.add("aoe-telegraph");
       const abilityName = action.yellowAbilityName || (action.yellowC4Bomb ? YELLOW_MID_C4_PHASE_NAME : YELLOW_MID_SNIPER_PHASE_NAME);
-      const label = action.yellowSniperFallback
+      const label = action.blueAcidSpit
+        ? `${BLUE_MID_ACID_PHASE_NAME.toUpperCase()} // AOE ${action.blueAcidSpitIndex}/${BLUE_MID_ACID_STRIKES}`
+        : action.blueAcidBurnTick
+          ? "ACID BURN // DAMAGE OVER TIME"
+          : action.blueChestBurst
+            ? `${BLUE_MID_CHEST_BURSTER_PHASE_NAME.toUpperCase()} // ${action.blueChestBurstCorrect ? "50% MAX-HP BURST" : "IMMEDIATE INCAPACITATION"}`
+        : action.yellowSniperFallback
         ? "SCOPE TARGET DOWN // RANDOM SINGLE-TARGET ATTACK"
         : action.yellowC4Bomb
         ? `${abilityName.toUpperCase()} // PREEMPTIVE DETONATION`
         : `${abilityName.toUpperCase()} // PREEMPTIVE SHOT${action.yellowScriptedActivation ? ` ${action.yellowScriptedActivation}` : ""}`;
       els.combatActionBanner.textContent = `${action.enemy.label} // ${label}`;
-      showCombatFloat(enemyCard, action.yellowSniperFallback ? "TARGET SWITCH" : action.yellowC4Bomb ? "C4 DETONATION" : "SNIPER FIRE", "block");
-      appendCombatActionStatus(statusLog, action.yellowSniperFallback
+      showCombatFloat(enemyCard, action.blueAcidSpit ? "ACID SPIT" : action.blueAcidBurnTick ? "ACID BURN" : action.blueChestBurst ? "CHEST BURST" : action.yellowSniperFallback ? "TARGET SWITCH" : action.yellowC4Bomb ? "C4 DETONATION" : "SNIPER FIRE", "block");
+      appendCombatActionStatus(statusLog, action.blueAcidSpit
+        ? `${action.enemy.label}'s ${BLUE_MID_ACID_PHASE_NAME} strike ${action.blueAcidSpitIndex}/${BLUE_MID_ACID_STRIKES} hits every active operator; unbraced targets begin burning.`
+        : action.blueAcidBurnTick
+          ? "Ongoing acid burns resolve together at the end of the combat round."
+          : action.blueChestBurst
+            ? `${BLUE_MID_CHEST_BURSTER_PHASE_NAME} resolves before operator fire and cannot be mitigated.`
+        : action.yellowSniperFallback
         ? `${action.enemy.label}'s scoped target ${action.yellowSniperOriginalTargetName || "operator"} is already down; the shot converts into a normal single-target attack against a random active operator.`
         : `${action.enemy.label}'s ${abilityName} triggers before the player attack phase and cannot be stunned.`);
     }, cursor, runId);
@@ -14911,9 +17366,13 @@ function presentCombatResolution(result, options = {}) {
     combatPresentationTimer(() => {
       const enemyCard = els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(action.enemy.id)}"]`);
       enemyCard?.classList.remove("aoe-telegraph");
-      enemyCard?.classList.add("boss-swiping");
-      els.combatStage?.classList.add("boss-eyes-attacking");
-      showBossSwipeAttack();
+      if (action.enemy.boss && !action.blueAcidBurnTick) {
+        enemyCard?.classList.add("boss-swiping");
+        els.combatStage?.classList.add("boss-eyes-attacking");
+        showBossSwipeAttack();
+      } else if (!action.blueAcidBurnTick) {
+        enemyCard?.classList.add("attacking");
+      }
       for (const hit of action.targets || []) {
         const playerCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(hit.target.name))}"]`);
         playerCard?.classList.remove("blocking", "hit");
@@ -14921,10 +17380,19 @@ function presentCombatResolution(result, options = {}) {
         const fullyProtected = Boolean(hit.blocked || hit.bubbleBlocked || hit.redirected);
         const protectedHit = fullyProtected || Boolean(hit.braced);
         playerCard?.classList.add(protectedHit ? "blocking" : "hit");
-        showBossClawImpact(playerCard, fullyProtected);
+        if (hit.lastStandTriggered) updateCombatLastStandVisual(playerCard, false, true);
+        if (action.enemy.boss && !action.blueAcidBurnTick) showBossClawImpact(playerCard, fullyProtected);
         if (hit.bubbleBlocked) clearCombatBubble(playerCard);
-        const floatText = hit.yellowC4CarrierFailure
+        const floatText = action.blueChestBurst
+          ? action.blueChestBurstCorrect ? `CHEST BURST\n-${hit.damage}` : "CHEST BURST\nINCAPACITATED"
+          : action.blueAcidBurnTick
+            ? `ACID BURN\n-${hit.damage}`
+            : action.blueAcidSpit && hit.blueBurnApplied
+              ? `ACID\n-${hit.damage}\nBURNING`
+        : hit.yellowC4CarrierFailure
           ? "C4 DETONATION\n1 HP"
+          : hit.lastStandTriggered
+            ? "LAST STAND\nHIT REJECTED"
           : hit.redirected
             ? "REDIRECTED"
             : fullyProtected
@@ -14960,7 +17428,7 @@ function presentCombatResolution(result, options = {}) {
         }, 820, runId);
       }
       combatPresentationTimer(() => {
-        enemyCard?.classList.remove("boss-swiping");
+        enemyCard?.classList.remove("attacking", "boss-swiping");
         els.combatStage?.classList.remove("boss-eyes-attacking");
       }, 1080, runId);
     }, cursor, runId);
@@ -15068,8 +17536,11 @@ function presentCombatResolution(result, options = {}) {
           const fullyProtected = Boolean(hit.blocked || hit.bubbleBlocked || hit.redirected);
           const protectedHit = fullyProtected || Boolean(hit.braced);
           playerCard?.classList.add(protectedHit ? "blocking" : "hit");
+          if (hit.lastStandTriggered) updateCombatLastStandVisual(playerCard, false, true);
           if (hit.bubbleBlocked) clearCombatBubble(playerCard);
-          const floatText = hit.redirected
+          const floatText = hit.lastStandTriggered
+            ? "LAST STAND\nHIT REJECTED"
+            : hit.redirected
             ? "REDIRECTED"
             : fullyProtected
               ? hit.bubbleBlocked ? "BUBBLE" : "BLOCKED"
@@ -15155,6 +17626,14 @@ function presentCombatResolution(result, options = {}) {
           els.combatActionBanner.textContent = `${attack.player.name} — TARGET PHASED OUT`;
           showCombatFloat(playerCard, "MISS", "block");
           appendCombatActionStatus(statusLog, `${attack.player.name}'s attack passes through the vanished boss and misses.`);
+        } else if (attack.blueFinalIsolationSearching) {
+          els.combatActionBanner.textContent = `${attack.player.name} — CALLING INTO THE DARK`;
+          showCombatFloat(playerCard, "NO ANSWER\nKEEP MOVING", "block");
+          appendCombatActionStatus(statusLog, `${attack.player.name} searches for the missing squad; nothing visible answers.`);
+        } else if (attack.blueFinalIsolationHolding) {
+          els.combatActionBanner.textContent = `${attack.player.name} — CORRIDOR CLEAR / MOVING`;
+          showCombatFloat(playerCard, "FOLLOWING\nNEAREST SIGNAL", "block");
+          appendCombatActionStatus(statusLog, `${attack.player.name}'s corridor is clear; they move toward the nearest surviving squad signal.`);
         } else if (attack.opforStunned) {
           els.combatActionBanner.textContent = `${attack.player.name} — ATTACK DISRUPTED`;
           playerCard?.classList.add("stunned");
@@ -15248,6 +17727,145 @@ function presentCombatResolution(result, options = {}) {
       }, cursor, runId);
       cursor += 1450;
     }
+    if (attack.blueChestParasitesTriggeredAfter) {
+      combatPresentationTimer(() => {
+        if (attack.blueChestParasiteSpawnedEnemies?.length && els.combatEnemyFormation) {
+          els.combatEnemyFormation.insertAdjacentHTML("beforeend", attack.blueChestParasiteSpawnedEnemies.map((enemy) => combatEnemyCardMarkup(enemy)).join(""));
+          for (const enemy of attack.blueChestParasiteSpawnedEnemies) {
+            els.combatEnemyFormation.querySelector(`[data-enemy-id="${CSS.escape(enemy.id)}"]`)?.classList.add("summoning");
+          }
+          organizeCombatFormations();
+        }
+        els.combatActionBanner.textContent = `${BLUE_MID_CHEST_BURSTER_PHASE_NAME.toUpperCase()} — INFECTION HOSTILES DEPLOYED`;
+        appendCombatActionStatus(statusLog, `${attack.blueChestParasiteSpawnedEnemies?.length || 0} assigned 1-HP infection parasite${attack.blueChestParasiteSpawnedEnemies?.length === 1 ? "" : "s"} deploy for the next combat phase.`);
+      }, cursor, runId);
+      cursor += 1450;
+    }
+    if (attack.blueFinalSecondIsolationTriggeredAfter) {
+      combatPresentationTimer(() => {
+        const phaseTag = `BossPhase 50% â€” ${BLUE_FINAL_ISOLATION_PHASE_NAME}`;
+        appendBossPhasePromptToMissionLog(phaseTag);
+        els.combatActionBanner.textContent = `${BLUE_FINAL_ISOLATION_PHASE_NAME.toUpperCase()} // COMBAT INTERRUPTED`;
+        appendCombatActionStatus(statusLog, "Half integrity reached. Every remaining combat activation is canceled as the boss pulls the squad back into isolated hallways.");
+      }, cursor, runId);
+      cursor += 360;
+    }
+    if (attack.blueFinalChestBurstTriggeredAfter) {
+      const burstActions = (attack.blueFinalChestBurstActions || [])
+        .filter((action) => action.targets?.[0]?.target);
+      const burstEnemies = attack.blueFinalChestBurstSpawnedEnemies || [];
+      combatPresentationTimer(() => {
+        els.combatActionBanner.textContent = `${BLUE_FINAL_CHEST_BURST_PHASE_NAME.toUpperCase()} // INTERNAL MOVEMENT DETECTED`;
+        for (const action of burstActions) {
+          const hit = action.targets?.[0];
+          const playerCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(hit.target.name))}"]`);
+          showCombatFloat(
+            playerCard,
+            `INFECTION ×${action.stackCount}\nBECOMING ACTIVE`,
+            "block"
+          );
+        }
+        appendCombatActionStatus(
+          statusLog,
+          `${BLUE_FINAL_CHEST_BURST_PHASE_NAME} begins: every stored infection is moving inside its host. Each stack will rupture separately, dealing half of that operator's current HP before the next stack resolves.`
+        );
+      }, cursor, runId);
+      cursor += 1150;
+
+      for (const action of burstActions) {
+        const hit = action.targets[0];
+        const targetName = hit.target.name;
+        const spawnedForTarget = burstEnemies.filter((enemy) => sameName(enemy.blueFinalChestBurstSourceName, targetName));
+        const actionStart = cursor;
+        combatPresentationTimer(() => {
+          const playerCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(targetName))}"]`);
+          playerCard?.classList.add("blue-final-chest-burst-priming");
+          els.combatActionBanner.textContent = `${targetName.toUpperCase()} // ${action.stackCount} INFECTION STACK${action.stackCount === 1 ? "" : "S"} MOVING`;
+          showCombatFloat(
+            playerCard,
+            `INFECTION ×${action.stackCount}\nPRESSURE RISING`,
+            "block"
+          );
+          appendCombatActionStatus(
+            statusLog,
+            `${targetName}'s ${action.stackCount} infection stack${action.stackCount === 1 ? "" : "s"} begin rupturing in sequence.`
+          );
+        }, actionStart, runId);
+
+        combatPresentationTimer(() => {
+          const playerCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(targetName))}"]`);
+          els.combatStage?.classList.remove("blue-final-chest-burst");
+          if (els.combatStage) void els.combatStage.offsetWidth;
+          els.combatStage?.classList.add("blue-final-chest-burst");
+          playerCard?.classList.remove("blue-final-chest-burst-priming");
+          playerCard?.classList.add("hit", "blue-final-chest-burst-hit");
+          setDisplayedBlueFinalInfectionStacks(hit.target, 0);
+          applyBlueFinalInfectionCardVisual(playerCard, 0);
+          updateCombatPlayerVisual(hit, playerCard);
+          els.combatActionBanner.textContent = `${targetName.toUpperCase()} // CHEST BURST`;
+          showCombatFloat(
+            playerCard,
+            action.criticalAfterBurst
+              ? `INFECTION ×${action.stackCount}\nCHEST BURST\nINCAPACITATED`
+              : `INFECTION ×${action.stackCount}\nCHEST BURST\n-${hit.damage}`,
+            "damage"
+          );
+          if (hit.kickStarted) {
+            showCombatBubble(playerCard);
+            showCombatFloat(playerCard, `KICK START\n${hit.hpAfter} HP + BUBBLE`, "heal");
+          }
+          playGameSfx("damage", { minInterval: 120 });
+          appendCombatActionStatus(
+            statusLog,
+            `${targetName} takes ${hit.damage} damage as ${action.stackCount} stack${action.stackCount === 1 ? "" : "s"} each remove half of the HP remaining at that moment${action.criticalAfterBurst ? "; the final result is at or below 25% maximum health, forcing incapacitation" : ""}.`
+          );
+          publishPlayerVitals();
+        }, actionStart + 720, runId);
+
+        combatPresentationTimer(() => {
+          if (spawnedForTarget.length && els.combatEnemyFormation) {
+            els.combatEnemyFormation.insertAdjacentHTML(
+              "beforeend",
+              spawnedForTarget.map((enemy) => combatEnemyCardMarkup(enemy)).join("")
+            );
+            for (const enemy of spawnedForTarget) {
+              els.combatEnemyFormation
+                .querySelector(`[data-enemy-id="${CSS.escape(enemy.id)}"]`)
+                ?.classList.add("blue-final-burst-emerging");
+            }
+            organizeCombatFormations();
+          }
+          els.combatActionBanner.textContent = `${targetName.toUpperCase()} // ${spawnedForTarget.length} SPAWN${spawnedForTarget.length === 1 ? "" : "S"} EMERGE`;
+          appendCombatActionStatus(
+            statusLog,
+            `${spawnedForTarget.length} light hostile${spawnedForTarget.length === 1 ? "" : "s"} tear free from ${targetName}, one for every consumed infection stack.`
+          );
+        }, actionStart + 1180, runId);
+
+        combatPresentationTimer(() => {
+          const playerCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(targetName))}"]`);
+          playerCard?.classList.remove("hit", "blue-final-chest-burst-hit", "blue-final-chest-burst-priming");
+          els.combatStage?.classList.remove("blue-final-chest-burst");
+          for (const enemy of spawnedForTarget) {
+            els.combatEnemyFormation
+              ?.querySelector(`[data-enemy-id="${CSS.escape(enemy.id)}"]`)
+              ?.classList.remove("blue-final-burst-emerging");
+          }
+        }, actionStart + 1900, runId);
+        cursor += 2200;
+      }
+
+      combatPresentationTimer(() => {
+        els.combatStage?.classList.remove("blue-final-chest-burst");
+        els.combatActionBanner.textContent = `${BLUE_FINAL_CHEST_BURST_PHASE_NAME.toUpperCase()} // FEEDING CYCLE ACTIVE`;
+        appendCombatActionStatus(
+          statusLog,
+          `${burstEnemies.length} total light hostile${burstEnemies.length === 1 ? "" : "s"} remain. Normal boss attacks stop and the boss heals 10% maximum health per turn until every burst spawn is destroyed.`
+        );
+        publishPlayerVitals();
+      }, cursor, runId);
+      cursor += 950;
+    }
     if (attack.yellowFinalRainTriggeredAfter) {
       combatPresentationTimer(() => {
         showYellowFinalRainTargets(result.encounter);
@@ -15270,7 +17888,7 @@ function presentCombatResolution(result, options = {}) {
     scheduleOpforAction(opforAction);
   }
   cursor += 650;
-  if (result.bossPhasePrompt) {
+  if (result.bossPhasePrompt && !result.blueFinalSecondIsolationTriggered) {
     combatPresentationTimer(() => {
       appendBossPhasePromptToMissionLog(result.bossPhasePrompt);
       els.combatActionBanner.textContent = result.bossPhasePrompt;
@@ -15278,7 +17896,11 @@ function presentCombatResolution(result, options = {}) {
     cursor += BOSS_PHASE_PROMPT_DELAY_MS;
   }
   combatPresentationTimer(() => {
-    els.combatActionBanner.textContent = result.yellowOpforRoundHalted
+    els.combatActionBanner.textContent = result.blueFinalSecondIsolationRoundHalted
+      ? "COMBAT INTERRUPTED â€” SIGNALS SEVERING"
+      : result.blueInfectionRoundHalted
+      ? "ROUND ENDED — INFECTION PHASE DEPLOYED"
+      : result.yellowOpforRoundHalted
       ? "ROUND ENDED — OPFOR DEPLOYMENT"
       : result.greenPossessionRoundHalted
       ? "ROUND ENDED — SPECTRAL CONTROL SHIFT"
@@ -15296,13 +17918,199 @@ function presentCombatResolution(result, options = {}) {
       combatPresentationTimer(() => enemyCards.forEach((enemyCard) => enemyCard.classList.remove("stunned")), 850, runId);
     }
   }, cursor, runId);
-  cursor += result.lockedSuppression || result.yellowOpforRoundHalted ? 1500 : 950;
+  cursor += result.blueFinalSecondIsolationRoundHalted
+    ? 240
+    : result.lockedSuppression || result.yellowOpforRoundHalted || result.blueInfectionRoundHalted
+      ? 1500
+      : 950;
   let lastEnemyActionEndsAt = 0;
+  let blueFinalIsolationEventsPresented = false;
+  const scheduleBlueFinalIsolationEvents = () => {
+    if (blueFinalIsolationEventsPresented || !result.blueFinalIsolationEvents?.length) return;
+    blueFinalIsolationEventsPresented = true;
+    for (const event of result.blueFinalIsolationEvents) {
+      combatPresentationTimer(() => {
+        const reunionOrigins = event.kind === "complete" ? combatPartyCardRects() : null;
+        const displayedPlayerStates = state.players.map((player) => ({
+          ...player,
+          hp: Number.isFinite(Number(state.combatDisplayedHp[normalize(player.name)]))
+            ? Number(state.combatDisplayedHp[normalize(player.name)])
+            : player.hp
+        }));
+        renderCombatStage(result.encounter, {
+          playerStates: displayedPlayerStates,
+          playerResults: result.combatPlayerResults,
+          blueFinalIsolationSnapshot: event.snapshot || blueFinalIsolationSnapshot(result.encounter),
+          hiddenEnemyIds: event.spawnAtRoundEnd
+            ? (event.spawnedEnemies || []).map((enemy) => enemy.id)
+            : []
+        });
+        if (event.kind === "complete") animateBlueFinalPartyReunion(reunionOrigins, runId);
+        els.combatStage?.classList.add(
+          event.kind === "complete"
+            ? "blue-final-reunion-reveal"
+            : event.kind === "ambush"
+              ? "blue-isolation-enemy-reveal"
+              : "blue-isolation-reunion"
+        );
+        els.combatActionBanner.textContent = event.kind === "complete"
+          ? "ALL SIGNALS RESTORED // SOMETHING ANSWERS"
+          : event.kind === "ambush"
+            ? "FOOTSTEPS STOP // CONTACTS EMERGING"
+            : event.earlyJoin
+              ? `${event.sourceLabel} // ENTERS ${event.targetLabel}`
+            : event.crossedOccupiedHallway
+              ? `${event.sourceLabel} // SIGNAL FOUND BEYOND THE OCCUPIED HALL`
+              : `${event.sourceLabel} // RECONNECTED WITH ${event.targetLabel}`;
+        if (event.kind === "complete") {
+          showCombatFloat(els.combatEnemyFormation?.querySelector(".combat-enemy-unit.boss"), "EYES ON THE WHOLE SQUAD", "block");
+        } else if (event.kind === "ambush") {
+          if (!event.spawnAtRoundEnd) {
+            for (const enemy of event.spawnedEnemies || []) {
+              els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(enemy.id)}"]`)?.classList.add("summoning");
+            }
+          }
+          showCombatFloat(els.combatEnemyFormation, "THEY WERE WAITING", "block");
+        } else {
+          for (const memberName of event.memberNames || []) {
+            const playerCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(memberName))}"]`);
+            playerCard?.classList.remove("blue-isolation-awaiting-reunion");
+            playerCard?.classList.add("blue-isolation-reconnected");
+            showCombatFloat(
+              playerCard,
+              (event.reunitedDownedMemberNames || []).some((name) => sameName(name, memberName))
+                ? "DOWNED OPERATOR\nRECONNECTED"
+                : "SIGNAL RESTORED",
+              "heal"
+            );
+          }
+          if (!event.spawnAtRoundEnd) {
+            for (const enemy of event.spawnedEnemies || []) {
+              els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(enemy.id)}"]`)?.classList.add("summoning");
+            }
+          }
+        }
+        appendCombatActionStatus(statusLog, event.kind === "complete"
+          ? `Every isolated cell reconnects. ${bossEnemyForEncounter(result.encounter)?.label || "The boss"} emerges from the signal void.`
+          : event.kind === "ambush"
+            ? event.snapshot?.openingLightEnemy === false
+              ? "The squad's first answers echo into the dark. One infection stalker emerges per living operator, capped at two in each hallway."
+              : "The squad's first answers echo into the dark. Infection stalkers and corridor hunters step into view around each separated group."
+            : event.earlyJoin
+              ? `${event.sourceLabel} clears early and joins ${event.targetLabel}. Its ${event.destinationEnemyCount} existing contact${event.destinationEnemyCount === 1 ? "" : "s"} remain active; the reunion wave will emerge when the combat round ends.`
+              : `${event.crossedOccupiedHallway ? "The cleared signals bypass the occupied hall; " : ""}${event.sourceLabel} reconnects with ${event.targetLabel}; the larger cell draws a fresh infection wave${event.reunitedDownedMemberNames?.length ? ` and recovers ${event.reunitedDownedMemberNames.join(" and ")} from the dark` : ""}.`);
+      }, cursor, runId);
+      cursor += event.kind === "complete" ? 1650 : event.kind === "ambush" ? 1900 : 1450;
+    }
+  };
+  scheduleBlueFinalIsolationEvents();
+  if (result.blueFinalBossLightHeal) {
+    const heal = result.blueFinalBossLightHeal;
+    combatPresentationTimer(() => {
+      const bossCard = els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(heal.enemy.id)}"]`);
+      const fill = bossCard?.querySelector(".combat-unit-hp i");
+      const label = bossCard?.querySelector("small");
+      const percent = Math.max(0, Math.min(100, heal.hpAfter / Math.max(1, heal.maxHp) * 100));
+      if (fill) fill.style.width = `${percent}%`;
+      if (label) label.textContent = `${heal.hpAfter} / ${heal.maxHp} Â· ${Math.round(percent)}%`;
+      bossCard?.classList.add("blue-final-feeding-heal");
+      els.combatActionBanner.textContent = `${heal.enemy.label} // FEEDS ON ${heal.remainingLights} LIVING SPAWN`;
+      showCombatFloat(bossCard, `+${heal.amount} HP`, "heal");
+      appendCombatActionStatus(statusLog, `${heal.enemy.label} heals ${heal.amount} HP because ${heal.remainingLights} light spawn${heal.remainingLights === 1 ? "" : "s"} remain. Its normal attack pattern stays suppressed.`);
+      combatPresentationTimer(() => bossCard?.classList.remove("blue-final-feeding-heal"), 820, runId);
+    }, cursor, runId);
+    cursor += 1150;
+  }
   for (const action of result.enemyActions || []) {
     if (scheduledInitiativeOpforActions.has(action)) continue;
     if (action.yellowOpforMirror) {
       scheduleOpforAction(action);
       lastEnemyActionEndsAt = cursor;
+      continue;
+    }
+    if (action.blueFinalIsolationInfection) continue;
+    if (action.blueFinalHiddenSwipe) {
+      combatPresentationTimer(() => {
+        const groupSelector = `.blue-isolation-card-group[data-blue-isolation-group="${CSS.escape(action.blueIsolationGroupId || "")}"]`;
+        const cardGroups = els.combatStage?.querySelectorAll(groupSelector) || [];
+        els.combatStage?.classList.add("blue-final-hidden-strike", "boss-eyes-attacking");
+        cardGroups.forEach((group) => group.classList.add("blue-isolation-struck"));
+        els.combatActionBanner.textContent = `SIGNAL VOID // ${action.blueIsolationGroupLabel} IMPACT`;
+        showBossSwipeAttack();
+        showCombatFloat(els.combatEnemyFormation, "IT WAS ALREADY THERE", "block");
+        for (const hit of action.targets || []) {
+          const playerCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(hit.target.name))}"]`);
+          const fullyProtected = Boolean(hit.blocked || hit.bubbleBlocked || hit.redirected);
+          playerCard?.classList.add(fullyProtected ? "blocking" : "hit");
+          showBossClawImpact(playerCard, fullyProtected);
+          showCombatFloat(playerCard, hit.redirected ? "REDIRECTED" : fullyProtected ? "BLOCKED" : `HIDDEN STRIKE\n-${hit.damage}`, hit.redirected ? "redirect" : fullyProtected ? "block" : "damage");
+          if (hit.bubbleBlocked) clearCombatBubble(playerCard);
+          updateCombatPlayerVisual(hit, playerCard);
+          if (fullyProtected) playGameSfx("blocked", { minInterval: 120 });
+          else if (hit.damage > 0) playGameSfx("damage");
+        }
+        appendCombatActionStatus(statusLog, ...enemyActionStatusLines([action]));
+        combatPresentationTimer(() => {
+          els.combatStage?.classList.remove("blue-final-hidden-strike", "boss-eyes-attacking");
+          cardGroups.forEach((group) => group.classList.remove("blue-isolation-struck"));
+          for (const hit of action.targets || []) {
+            els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(hit.target.name))}"]`)?.classList.remove("blocking", "hit");
+          }
+        }, 1120, runId);
+      }, cursor, runId);
+      lastEnemyActionEndsAt = cursor + 1200;
+      cursor += 1850;
+      continue;
+    }
+    if (action.blueChestParasite) {
+      combatPresentationTimer(() => {
+        if (action.spawnedEnemy && els.combatEnemyFormation
+          && !els.combatEnemyFormation.querySelector(`[data-enemy-id="${CSS.escape(action.spawnedEnemy.id)}"]`)) {
+          els.combatEnemyFormation.insertAdjacentHTML("afterbegin", combatEnemyCardMarkup(action.spawnedEnemy));
+          organizeCombatFormations();
+        }
+        const hit = action.targets?.[0];
+        const enemyCard = els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(action.enemy.id)}"]`);
+        const playerCard = hit?.target
+          ? els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(hit.target.name))}"]`)
+          : null;
+        setInitiativeCurrentTurn("enemy", action.enemy.label || "Parasite");
+        enemyCard?.classList.add(action.blueChestParasiteKilled ? "hit" : "attacking");
+        if (action.blueChestParasiteKilled) {
+          els.combatActionBanner.textContent = `${hit.target.name} — ASSIGNED PARASITE DESTROYED`;
+          showCombatFloat(enemyCard, "1 HP\nKILLED", "damage");
+          showCombatFloat(playerCard, "CORRECT\nNO DAMAGE", "block");
+          playGameSfx("damage");
+        } else {
+          els.combatActionBanner.textContent = `${action.enemy.label} — TARGET ${hit.target.name}`;
+          const fullyProtected = Boolean(hit.blocked || hit.bubbleBlocked || hit.redirected);
+          playerCard?.classList.add(fullyProtected ? "blocking" : "hit");
+          showCombatFloat(playerCard, hit.redirected ? "REDIRECTED" : fullyProtected ? "BLOCKED" : `-${hit.damage}`, hit.redirected ? "redirect" : fullyProtected ? "block" : "damage");
+          if (fullyProtected) playGameSfx("blocked", { minInterval: 120 });
+          else if (hit.damage > 0) playGameSfx("damage");
+          updateCombatPlayerVisual(hit, playerCard);
+          if (hit.bubbleBlocked) clearCombatBubble(playerCard);
+          if (hit.redirected?.target) {
+            const redirectedTarget = hit.redirected.target;
+            const redirectedCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(redirectedTarget.name))}"]`);
+            showFatalRedirectEffect(playerCard, redirectedCard);
+            showCombatFloat(redirectedCard, "RRR INTERCEPT", "redirect");
+            updateCombatPlayerVisual({ target: redirectedTarget, hpAfter: redirectedTarget.hp }, redirectedCard);
+          }
+          if (hit.kickStarted) {
+            showCombatBubble(playerCard);
+            showCombatFloat(playerCard, `KICK START\n${hit.hpAfter} HP + BUBBLE`, "heal");
+          }
+        }
+        appendCombatActionStatus(statusLog, ...enemyActionStatusLines([action]));
+        combatPresentationTimer(() => {
+          enemyCard?.classList.remove("attacking", "hit");
+          removeDefeatedCombatEnemy(action.enemy.id);
+          playerCard?.classList.remove("blocking", "hit");
+        }, 760, runId);
+      }, cursor, runId);
+      lastEnemyActionEndsAt = cursor + 900;
+      cursor += 1500;
       continue;
     }
     if (action.opforNoAttack && !action.disrupted) {
@@ -15344,7 +18152,9 @@ function presentCombatResolution(result, options = {}) {
     if (bossAoeTelegraph) {
       combatPresentationTimer(() => {
         const enemyCard = els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(action.enemy.id)}"]`);
-        const warningLabel = action.midBossHalfHealthAttack
+        const warningLabel = action.blueAcidSpit
+          ? `${BLUE_MID_ACID_PHASE_NAME.toUpperCase()} // AOE ${action.blueAcidSpitIndex}/${BLUE_MID_ACID_STRIKES}`
+          : action.midBossHalfHealthAttack
           ? "FERAL RUPTURE // AOE INCOMING"
           : action.yellowSniperAoe
             ? `${(action.yellowFinalDoubleKillAoe ? YELLOW_FINAL_DOUBLE_KILL_PHASE_NAME : YELLOW_MID_SNIPER_PHASE_NAME).toUpperCase()} // 25% AOE INCOMING`
@@ -15364,7 +18174,9 @@ function presentCombatResolution(result, options = {}) {
         enemyCard?.classList.add("aoe-telegraph");
         els.combatActionBanner.textContent = `${action.enemy.label} // ${warningLabel}`;
         showCombatFloat(enemyCard, "AOE INCOMING", "block");
-        const aoeDetail = action.yellowC4Bomb
+        const aoeDetail = action.blueAcidSpit
+          ? ` The strike deals 10% max health before brace mitigation; unbraced operators burn for ${BLUE_MID_ACID_BURN_DAMAGE} damage over ${BLUE_MID_ACID_BURN_TURNS} turns.`
+          : action.yellowC4Bomb
           ? ` ${YELLOW_MID_C4_PHASE_NAME} detonates for ${YELLOW_MID_C4_DAMAGE} base damage across the squad; ${action.yellowC4CarrierCorrect ? "the carrier's correct response grants everyone 90% mitigation" : `the carrier ${action.yellowC4CarrierName || "operator"} is forced to 1 HP while everyone else uses their own brace`}.`
           : action.yellowC4Aoe
             ? ` The follow-up is 25% of the boss's maximum normal damage (${action.yellowC4FollowupDamage}).`
@@ -15434,10 +18246,13 @@ function presentCombatResolution(result, options = {}) {
           const fullyProtected = Boolean(hit.blocked || hit.bubbleBlocked || hit.redirected);
           const protectedHit = fullyProtected || Boolean(hit.braced);
           playerCard?.classList.add(protectedHit ? "blocking" : "hit");
+          if (hit.lastStandTriggered) updateCombatLastStandVisual(playerCard, false, true);
           if (bossSwipe) showBossClawImpact(playerCard, fullyProtected);
           if (hit.bubbleBlocked) clearCombatBubble(playerCard);
-          const protectionLabel = hit.redirected ? "REDIRECT" : hit.bubbleBlocked ? "BUBBLE" : fullyProtected ? "BLOCKED" : "BRACED";
-          const floatText = hit.yellowC4CarrierFailure
+          const protectionLabel = hit.lastStandTriggered ? "LAST STAND\nHIT REJECTED" : hit.redirected ? "REDIRECT" : hit.bubbleBlocked ? "BUBBLE" : fullyProtected ? "BLOCKED" : "BRACED";
+          const floatText = action.blueAcidSpit && hit.blueBurnApplied
+            ? `ACID\n-${hit.damage}\nBURNING`
+            : hit.yellowC4CarrierFailure
             ? "C4 DETONATION\n1 HP"
             : hit.redirected
             ? "REDIRECTED"
@@ -15465,17 +18280,15 @@ function presentCombatResolution(result, options = {}) {
             const redirectedCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(redirectedTarget.name))}"]`);
             updateCombatPlayerVisual({ target: redirectedTarget, hpAfter: redirectedTarget.hp }, redirectedCard);
           }
-          appendCombatActionStatus(statusLog, hit.yellowC4CarrierFailure
-            ? `${YELLOW_MID_C4_PHASE_NAME} detonates on ${hit.target.name}; their incorrect response forces them directly to 1 HP.`
-            : hit.kickStarted
-            ? `${hit.kickStarted.source}'s Kick Start Your Heart revives ${hit.target.name} at ${hit.hpAfter} HP with a protection bubble.`
-            : hit.redirected
-            ? `${hit.target.name}'s fatal damage is redirected to ${hit.redirected.target.name} by RRR at half strength.`
-            : hit.bubbleBlocked
-              ? `${hit.target.name}'s Engineer bubble absorbs ${action.enemy.label}'s attack.`
-              : hit.blocked
-                ? `${hit.target.name} braces and blocks ${action.enemy.label}'s attack.`
-                 : `${action.enemy.label} attacks ${hit.target.name} for ${hit.damage} damage${hit.braced ? ` after bracing (${Math.round(hit.braceMitigation * 100)}% mitigated)` : ""}.`);
+          if (hit.blueFinalInfectionApplied && hit.blueFinalInfectionTargetName) {
+            const infectedPlayer = state.players.find((player) => sameName(player.name, hit.blueFinalInfectionTargetName));
+            const infectedCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(normalize(hit.blueFinalInfectionTargetName))}"]`);
+            const stacks = setDisplayedBlueFinalInfectionStacks(infectedPlayer, hit.blueFinalInfectionStacksAfter);
+            applyBlueFinalInfectionCardVisual(infectedCard, stacks);
+            showCombatFloat(infectedCard, `INFECTION\nSTACK ${stacks}`, "damage");
+            publishPlayerVitals();
+          }
+          appendCombatActionStatus(statusLog, ...enemyActionStatusLines([{ ...action, targets: [hit] }]));
           combatPresentationTimer(() => {
             playerCard?.classList.remove("blocking", "hit");
           }, bossSwipe ? 820 : 620, runId);
@@ -15499,6 +18312,87 @@ function presentCombatResolution(result, options = {}) {
       appendCombatActionStatus(statusLog, supportEventStatusLine(ability));
     }, cursor, runId);
     cursor += 900;
+  }
+  for (const action of result.endOfRoundStatusActions || []) {
+    combatPresentationTimer(() => {
+      const hitsByTarget = new Map();
+      for (const hit of action.targets || []) {
+        const key = normalize(hit.target?.name);
+        if (!key) continue;
+        const grouped = hitsByTarget.get(key) || {
+          target: hit.target,
+          damage: 0,
+          hpAfter: hit.hpAfter,
+          downed: false,
+          kickStarted: null,
+          labels: new Set()
+        };
+        grouped.damage += Math.max(0, Number(hit.damage) || 0);
+        grouped.hpAfter = hit.hpAfter;
+        grouped.downed = grouped.downed || Boolean(hit.downed);
+        grouped.kickStarted = hit.kickStarted || grouped.kickStarted;
+        grouped.labels.add(hit.statusLabel || "Status");
+        hitsByTarget.set(key, grouped);
+      }
+      els.combatActionBanner.textContent = "END OF ROUND — STATUS DAMAGE";
+      for (const [key, grouped] of hitsByTarget) {
+        const playerCard = els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(key)}"]`);
+        playerCard?.classList.add("hit", "status-damage-tick");
+        const labels = [...grouped.labels];
+        const label = labels.length === 1 ? labels[0].toUpperCase() : `STATUS ×${labels.length}`;
+        showCombatFloat(playerCard, `${label}\n-${grouped.damage}`, "damage");
+        updateCombatPlayerVisual({ target: grouped.target, hpAfter: grouped.hpAfter, downed: grouped.downed }, playerCard);
+        if (grouped.kickStarted) {
+          showCombatBubble(playerCard);
+          showCombatFloat(playerCard, `KICK START\n${grouped.hpAfter} HP + BUBBLE`, "heal");
+        }
+      }
+      if (hitsByTarget.size) playGameSfx("damage", { minInterval: 120 });
+      appendCombatActionStatus(statusLog, ...enemyActionStatusLines([action]));
+      combatPresentationTimer(() => {
+        for (const key of hitsByTarget.keys()) {
+          els.combatPartyFormation?.querySelector(`[data-player-name="${CSS.escape(key)}"]`)?.classList.remove("hit", "status-damage-tick");
+        }
+      }, 760, runId);
+    }, cursor, runId);
+    lastEnemyActionEndsAt = Math.max(lastEnemyActionEndsAt, cursor + 900);
+    cursor += 1250;
+  }
+  scheduleBlueFinalHallwayDarkening(
+    (result.blueFinalIsolationDarkenedEvents || []).filter((event) => event.presentationPhase !== "infection")
+  );
+  for (const event of (result.blueFinalIsolationEvents || []).filter((candidate) => candidate.spawnAtRoundEnd)) {
+    const liveSpawnedEnemyIds = (event.spawnedEnemies || [])
+      .map((enemy) => enemy.id)
+      .filter((enemyId) => {
+        const enemy = result.encounter.enemies.find((candidate) => candidate.id === enemyId);
+        return Boolean(enemy && !enemy.defeated && enemy.hp > 0);
+      });
+    if (!liveSpawnedEnemyIds.length) continue;
+    combatPresentationTimer(() => {
+      const displayedPlayerStates = state.players.map((player) => ({
+        ...player,
+        hp: Number.isFinite(Number(state.combatDisplayedHp[normalize(player.name)]))
+          ? Number(state.combatDisplayedHp[normalize(player.name)])
+          : player.hp
+      }));
+      renderCombatStage(result.encounter, {
+        playerStates: displayedPlayerStates,
+        playerResults: result.combatPlayerResults,
+        blueFinalIsolationSnapshot: blueFinalIsolationSnapshot(result.encounter)
+      });
+      els.combatStage?.classList.add("blue-isolation-enemy-reveal");
+      for (const enemyId of liveSpawnedEnemyIds) {
+        els.combatEnemyFormation?.querySelector(`[data-enemy-id="${CSS.escape(enemyId)}"]`)?.classList.add("summoning");
+      }
+      els.combatActionBanner.textContent = `END OF ROUND // NEW CONTACTS IN ${event.targetLabel}`;
+      showCombatFloat(els.combatEnemyFormation, "THE DARKNESS FOLLOWED THEM", "block");
+      appendCombatActionStatus(
+        statusLog,
+        `${event.targetLabel}'s reunion wave emerges at the end of the combat round. These new enemies act beginning next round.`
+      );
+    }, cursor, runId);
+    cursor += 1750;
   }
   if (result.yellowC4AppliedAfterRound) {
     const c4 = result.yellowC4AppliedAfterRound;
@@ -15532,6 +18426,10 @@ function presentCombatResolution(result, options = {}) {
     ? lastEnemyActionEndsAt + 160
     : cursor + 650;
   combatPresentationTimer(() => {
+    const completeCombatFinalization = () => {
+    state.combatDisplayedHp = {};
+    state.combatDisplayedBlueFinalInfectionStacks = {};
+    state.combatDisplayedPlayerResults = [];
     if (result.combatCleared) applyCombatVictoryXp(result.encounter);
     renderCombatStage(result.encounter);
     setInitiativeCurrentTurn();
@@ -15540,7 +18438,6 @@ function presentCombatResolution(result, options = {}) {
     els.combatActionBanner.textContent = result.combatCleared ? "HOSTILE LINE CLEARED" : combatIntentText();
     const xpAwardCount = showCombatXpAwards(result, runId);
     if (xpAwardCount) els.combatActionBanner.textContent = `EXPERIENCE AWARDED — ${xpAwardCount} OPERATOR${xpAwardCount === 1 ? "" : "S"}`;
-    state.combatDisplayedHp = {};
     renderStatus();
     if (typeof options.onComplete === "function") options.onComplete(result);
     if (result.combatCleared || state.currentNode !== result.encounter.nodeIndex) {
@@ -15548,7 +18445,8 @@ function presentCombatResolution(result, options = {}) {
         state.retiredCombatNodes.add(result.encounter.nodeIndex);
         state.combatMountBlocked = true;
         els.combatStage.classList.add("exiting");
-        if (!state.bossReadyPending && state.backgroundMusicMode !== "normal") loadBackgroundMusic("normal", { transition: true });
+        if (finalBossDefeated) stopBackgroundMusic();
+        else if (!state.bossReadyPending && state.backgroundMusicMode !== "normal") loadBackgroundMusic("normal", { transition: true });
         combatPresentationTimer(() => {
           if (els.combatStage) {
             els.combatStage.hidden = true;
@@ -15578,10 +18476,27 @@ function presentCombatResolution(result, options = {}) {
           if (xpAwardCount) combatPresentationTimer(beginExit, 350, runId);
           else beginExit();
         };
-      } else if (finalBossDefeated) combatPresentationTimer(beginExit, 2300, runId);
+      } else if (finalBossDefeated) combatPresentationTimer(beginExit, 5200, runId);
       else if (xpAwardCount) combatPresentationTimer(beginExit, 1650, runId);
       else beginExit();
     } else settleCombatResolutionGate(resolutionGate, "combat round complete");
+    };
+    if (result.blueFinalSecondIsolationTriggered && !result.combatCleared) {
+      state.combatDisplayedHp = {};
+      state.combatDisplayedBlueFinalInfectionStacks = {};
+      state.combatDisplayedPlayerResults = [];
+      renderCombatStage(result.encounter);
+      els.combatStage.classList.add("resolving");
+      els.combatActionBanner.textContent = `${BLUE_FINAL_ISOLATION_PHASE_NAME.toUpperCase()} // COMBAT INTERRUPTED`;
+      playBlueFinalIsolationOpeningSequence(
+        result.encounter,
+        runId,
+        result.encounter.nodeIndex ?? state.currentNode,
+        completeCombatFinalization
+      );
+      return;
+    }
+    completeCombatFinalization();
   }, combatFinalizationDelay, runId);
   return resolutionGate;
 }
@@ -18040,7 +20955,8 @@ function activateLocalEMS() {
 function useLocalMedkit(playerIndex) {
   const before = snapshotPlayers();
   const player = state.players[playerIndex];
-  if (suppliesAreLocked() || !player || state.inventory.medkits <= 0) return;
+  const encounter = isCombatNode(state.nodes[state.currentNode]) ? currentCombatEncounter() : null;
+  if (suppliesAreLocked() || !player || state.inventory.medkits <= 0 || blueFinalIsolationPlayerAwaitingReunion(encounter, player)) return;
   playGameSfx("recovery");
   state.inventory.medkits -= 1;
   if (player.incapacitated) {
@@ -19537,6 +22453,8 @@ function crossedBossPhasePrompt(node, hpBefore, hpAfter, maxHp) {
       ? node.bossPhase === "final" ? [60, 40] : [50]
       : bossUsesYellowBallisticsBehavior(node)
         ? node.bossPhase === "final" ? [75, 30] : [50]
+      : bossUsesBlueXenomorphBehavior(node)
+        ? node.bossPhase === "mid" ? [50] : []
       : [];
   const crossed = thresholds.filter((threshold) => beforePercent > threshold && afterPercent <= threshold);
   if (!crossed.length) return "";
@@ -19555,6 +22473,9 @@ function crossedBossPhasePrompt(node, hpBefore, hpAfter, maxHp) {
     const threshold = Math.min(...crossed);
     const phaseName = threshold === 30 ? YELLOW_FINAL_RAIN_PHASE_NAME : YELLOW_FINAL_OPFOR_PHASE_NAME;
     return `BossPhase ${threshold}% — ${phaseName}`;
+  }
+  if (blueMidBossBehaviorActive(node) && crossed.includes(50)) {
+    return `BossPhase 50% — ${BLUE_MID_CHEST_BURSTER_PHASE_NAME}`;
   }
   return `BossPhase ${Math.min(...crossed)}%`;
 }
@@ -20199,6 +23120,11 @@ function combatNarrationEventPacket(result = {}) {
   asArray(result.postEnemySupportEvents).forEach((event) => {
     lines.push(`AFTERMATH — ${event.source} resolves ${event.label || event.kind}${event.target ? ` on ${event.target}` : ""}${event.amount ? `; effect magnitude ${event.amount}` : ""}.`);
   });
+  asArray(result.endOfRoundStatusActions).forEach((action) => {
+    asArray(action.targets).forEach((hit) => {
+      lines.push(`END-OF-ROUND STATUS — ${hit.statusLabel || "Status damage"} ticks on ${hit.target?.name || "an operator"}; ${hit.damage || 0} damage.`);
+    });
+  });
   return lines.join("\n") || "No combat event packet was recorded; use only the supplied consequence facts.";
 }
 
@@ -20216,7 +23142,8 @@ function combatNarrationFocus(result = {}, playerEvents = []) {
   const ultimateEvents = supportEvents.filter((event) => event?.kind === "ultimate");
   const ultimateKeys = new Set(ultimateEvents.map((event) => `${normalize(event.source)}:${normalize(event.label)}`));
   const abilityEvents = supportEvents.filter((event) => event?.kind !== "ultimate" && !ultimateKeys.has(`${normalize(event.source)}:${normalize(event.label)}`));
-  const hostileHits = asArray(result.enemyActions).flatMap((action) => asArray(action.targets).map((hit) => ({ action, hit })));
+  const hostileHits = [...asArray(result.enemyActions), ...asArray(result.endOfRoundStatusActions)]
+    .flatMap((action) => asArray(action.targets).map((hit) => ({ action, hit })));
   hostileHits.forEach(({ hit }) => {
     if (!hit.kickStarted) return;
     ultimateEvents.push({ kind: "ultimate", source: hit.kickStarted.source, target: hit.target?.name || "downed operator", amount: 0, label: "Kick Start Your Heart" });
@@ -20225,7 +23152,7 @@ function combatNarrationFocus(result = {}, playerEvents = []) {
     .filter(({ hit }) => hit.downed)
     .map(({ action, hit }) => ({
       name: hit.target?.name || "operator",
-      source: action.enemy?.label || "hostile",
+      source: hit.statusDamage ? hit.statusLabel || "status damage" : action.enemy?.label || "hostile",
       damage: Math.max(0, Number(hit.damage) || 0),
       immediatelyRevived: Boolean(hit.kickStarted),
       reviveSource: hit.kickStarted?.source || ""
@@ -21407,9 +24334,15 @@ function renderPreQuestionStage(payload = {}) {
       && ["mid", "final"].includes(node.bossPhase)
       && bossUsesYellowBallisticsBehavior(node)
     );
+    const blueAcidOpening = Boolean(
+      openingRound
+      && !encounter?.blueAcidSpitAnnounced
+      && blueMidBossBehaviorActive(node)
+    );
     stageTexts = [
       openingRound ? NARRATION_DEFAULTS.bossPreCombat : "",
       yellowSniperOpening ? yellowSniperScopeOpeningPrompt(node) : "",
+      blueAcidOpening ? blueAcidSpitOpeningPrompt(node) : "",
       NARRATION_DEFAULTS.bossPreRound
     ];
   } else {
@@ -21427,9 +24360,11 @@ function renderPreQuestionStage(payload = {}) {
   payload.preQuestionStageRendered = true;
   return stageTexts.reduce((sequence, stageText) => sequence.then(() => {
     const yellowSniperOpening = stageText === yellowSniperScopeOpeningPrompt(node);
+    const blueAcidOpening = stageText === blueAcidSpitOpeningPrompt(node);
     if (yellowSniperOpening) activateYellowSniperScopeOpening(currentCombatEncounter(), node);
+    if (blueAcidOpening) activateBlueAcidSpitOpening(currentCombatEncounter(), node);
     const stage = document.createElement("section");
-    stage.className = `transcript-entry question-setup-entry${yellowSniperOpening ? " boss-phase-prompt-entry" : ""}`;
+    stage.className = `transcript-entry question-setup-entry${yellowSniperOpening || blueAcidOpening ? " boss-phase-prompt-entry" : ""}`;
     const text = document.createElement("p");
     text.className = "typewriter";
     text.dataset.text = stageText;
@@ -21791,6 +24726,14 @@ function queueMapQuestionReveal(onReady, waitStartedAt = Date.now(), alertDelayM
       const opening = activateYellowSniperScopeOpening(encounter, currentNode);
       if (opening?.newlyActivated) {
         appendBossPhasePromptToMissionLog(yellowSniperScopeOpeningPrompt());
+        trackTypeTimer(() => {
+          if (revealRunId === state.questionRevealRunId && !state.resolved) queueMapQuestionReveal(onReady, waitStartedAt, 0);
+        }, BOSS_PHASE_PROMPT_DELAY_MS);
+        return;
+      }
+      const blueOpening = activateBlueAcidSpitOpening(encounter, currentNode);
+      if (blueOpening?.newlyActivated) {
+        appendBossPhasePromptToMissionLog(blueAcidSpitOpeningPrompt(currentNode));
         trackTypeTimer(() => {
           if (revealRunId === state.questionRevealRunId && !state.resolved) queueMapQuestionReveal(onReady, waitStartedAt, 0);
         }, BOSS_PHASE_PROMPT_DELAY_MS);
@@ -22633,7 +25576,8 @@ function escapeAttribute(value) {
 function useMedkit(playerIndex) {
   const before = snapshotPlayers();
   const player = state.players[playerIndex];
-  if (suppliesAreLocked() || !player || state.inventory.medkits <= 0) return;
+  const encounter = isCombatNode(state.nodes[state.currentNode]) ? currentCombatEncounter() : null;
+  if (suppliesAreLocked() || !player || state.inventory.medkits <= 0 || blueFinalIsolationPlayerAwaitingReunion(encounter, player)) return;
   playGameSfx("recovery");
   state.inventory.medkits -= 1;
   if (player.incapacitated) {

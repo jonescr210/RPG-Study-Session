@@ -757,6 +757,47 @@ body.mission-active .combat-stage.entering.boss-fight.boss-intro-complete::befor
   animation: live-console-boss-eyes-idle 3s ease-in-out infinite;
 }
 
+body.mission-active .combat-stage.boss-fight.blue-isolation-boss-fade::before {
+  animation: blue-final-intro-eyes-fade 850ms cubic-bezier(.38, 0, .72, .32) both !important;
+}
+
+body.mission-active .combat-stage.boss-fight.blue-isolation-boss-fade .combat-enemy-formation {
+  animation: blue-final-intro-hud-fade 700ms ease-in both !important;
+}
+
+body.mission-active .combat-stage.boss-fight.blue-isolation-blackout::before {
+  opacity: 0 !important;
+  animation: none !important;
+}
+
+body.mission-active .combat-stage.boss-fight.blue-isolation-blackout .combat-enemy-formation {
+  opacity: 0 !important;
+  animation: none !important;
+}
+
+@keyframes blue-final-intro-eyes-fade {
+  0% {
+    opacity: .68;
+    transform: scale(1);
+    filter: brightness(1) contrast(1);
+  }
+  58% {
+    opacity: .22;
+    transform: scale(1.012);
+    filter: brightness(.42) contrast(1.18);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.025);
+    filter: brightness(0) contrast(1.35) blur(3px);
+  }
+}
+
+@keyframes blue-final-intro-hud-fade {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
 @keyframes boss-intro-image-handoff {
   0% { opacity: 0; transform: scale(1.018); filter: brightness(.45) contrast(1.12); }
   48% { opacity: .38; transform: scale(1.008); filter: brightness(.72) contrast(1.08); }
@@ -2881,4 +2922,44 @@ body.mission-active.boss-theme-active .combat-stage.boss-fight.final-boss-defeat
   body.mission-active.boss-theme-active .combat-stage.boss-fight::before {
     animation: none !important;
   }
+}
+
+/* Isolation uses the full combat width even though the normal mission-console
+   party is a compact centered token row. Each active hallway owns its original
+   third, and a reunited group spans the combined thirds. */
+body.mission-active .combat-stage.blue-final-isolation-active .combat-party-formation,
+body.mission-active .combat-stage.boss-fight.blue-final-isolation-active .combat-party-formation,
+body.mission-active .combat-stage.boss-fight.blue-final-isolation-active.combat-question-open .combat-party-formation {
+  right: 0;
+  left: 0;
+  width: auto;
+  max-width: none;
+  display: grid;
+  grid-template-columns: repeat(var(--blue-isolation-columns, 3), minmax(0, 1fr));
+  justify-content: stretch;
+  align-items: end;
+  gap: 0;
+  opacity: 1;
+  filter: none;
+  transform: none;
+  animation: none !important;
+}
+
+body.mission-active .combat-stage.entering.blue-final-isolation-active .blue-isolation-enemy-group .combat-enemy-unit {
+  opacity: 1;
+  filter: none;
+  transform: none;
+  animation: none !important;
+}
+
+body.mission-active .combat-stage.entering.blue-final-isolation-active.blue-isolation-enemy-reveal .blue-isolation-enemy-group .combat-enemy-unit {
+  animation: blue-isolation-enemy-card-reveal 1.55s linear both !important;
+}
+
+body.mission-active .combat-stage.entering.blue-final-isolation-active.blue-isolation-enemy-reveal .blue-isolation-enemy-group:nth-child(2) .combat-enemy-unit {
+  animation-delay: .15s !important;
+}
+
+body.mission-active .combat-stage.entering.blue-final-isolation-active.blue-isolation-enemy-reveal .blue-isolation-enemy-group:nth-child(3) .combat-enemy-unit {
+  animation-delay: .3s !important;
 }

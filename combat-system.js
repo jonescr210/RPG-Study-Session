@@ -36,7 +36,7 @@
     },
     medic: {
       id: "medic", label: "Medic", gear: "Surgical Carbine", color: "#63e38b",
-      summary: "Heal 3–6 HP from streak strength; recharges after 2 questions. At level 6, Rebirth revives an operator at 75% HP with a full brace for the enemy phase in exchange for the Medic's attack."
+      summary: "Heal 3–6 HP from streak strength; recharges after 2 questions. At level 6, Rebirth revives an operator at 75% HP with a full brace or recharges a spent Last Stand in exchange for the Medic's attack."
     },
     scout: {
       id: "scout", label: "Scout", gear: "Spectrum Longrifle", color: "#f5d76e",
@@ -106,6 +106,9 @@
       answerStreak: clamp(player.answerStreak, 0, 999),
       totalAnswers,
       correctAnswers,
+      // Every operator begins a mission with one lethal-hit negate. Explicit
+      // false is preserved so normal roster normalization cannot refill it.
+      lastStandAvailable: player.lastStandAvailable !== false,
       enforcerReserve: classId === "enforcer" ? clamp(player.enforcerReserve, 0, Math.floor(maxHp * 0.5)) : 0,
       equippedItem: null,
       items: Array.isArray(player.items)

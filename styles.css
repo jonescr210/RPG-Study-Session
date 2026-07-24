@@ -5270,6 +5270,7 @@ body.mission-active .question-text {
 }
 
 .ems-player-badge,
+.blue-acid-burn-badge,
 .second-wind-badge {
   display: inline-flex;
   align-items: center;
@@ -5281,6 +5282,13 @@ body.mission-active .question-text {
   font-weight: 950;
   letter-spacing: 0.04em;
   white-space: nowrap;
+}
+
+.blue-acid-burn-badge {
+  border: 1px solid rgba(99, 214, 255, 0.88);
+  color: #b9efff;
+  background: rgba(15, 65, 92, 0.76);
+  box-shadow: 0 0 13px rgba(55, 181, 255, 0.4), inset 0 0 8px rgba(98, 218, 255, 0.14);
 }
 
 .ems-player-badge {
@@ -8929,6 +8937,13 @@ body.mission-active .player-dm-controls {
   animation: none;
 }
 
+.combat-enemy-unit.one-hp:not(.boss) {
+  flex: 0 0 min(13.05rem, 31%);
+  margin-inline: max(-3.2625rem, -7.75%);
+  scale: 0.5;
+  transform-origin: center bottom;
+}
+
 .combat-enemy-unit.opfor-mirror {
   z-index: 4;
   display: flex;
@@ -9065,7 +9080,15 @@ body.mission-active .player-dm-controls {
   padding-top: clamp(9rem, 28vh, 14rem);
 }
 
-.combat-stage.boss-fight.yellow-opfor-active .combat-enemy-unit.boss {
+.combat-stage.boss-fight.boss-adds-active:not(.yellow-opfor-active) .combat-enemy-formation {
+  align-items: flex-end;
+  justify-content: center;
+  width: min(98%, 72rem);
+  padding: clamp(8rem, 25vh, 12rem) 0.35rem 0;
+}
+
+.combat-stage.boss-fight.yellow-opfor-active .combat-enemy-unit.boss,
+.combat-stage.boss-fight.boss-adds-active .combat-enemy-unit.boss {
   position: absolute;
   inset: 0;
   z-index: 0;
@@ -9334,6 +9357,7 @@ html.app-tab-hidden .combat-stage-header {
 }
 
 .combat-party-avatar {
+  position: relative;
   display: grid;
   place-items: center;
   width: 1.85rem;
@@ -9344,6 +9368,37 @@ html.app-tab-hidden .combat-stage-header {
   background: rgba(0,0,0,0.72);
   font-weight: 900;
 }
+
+.combat-last-stand-sigil {
+  position: absolute;
+  right: auto;
+  top: 0.12rem;
+  bottom: auto;
+  left: 0.12rem;
+  z-index: 12;
+  display: grid;
+  place-items: center;
+  width: 1rem;
+  height: 1rem;
+  overflow: visible !important;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  background: radial-gradient(circle, #332408 0 38%, #080704 42% 100%);
+  color: #ffd86a;
+  box-shadow: 0 0 0 2px rgba(5, 5, 4, 0.9), 0 0 10px rgba(255, 191, 45, 0.7);
+  font-style: normal;
+  pointer-events: none;
+}
+.combat-party-unit .combat-last-stand-sigil b { position: absolute; color: #ffcc4d; font-size: 0.86rem; line-height: 1; text-shadow: 0 0 7px #ff9f1f; }
+.combat-party-unit .combat-last-stand-sigil small { position: relative; z-index: 1; color: #fff7cb; font-size: 0.31rem; font-weight: 1000; letter-spacing: -0.03em; }
+.combat-last-stand-sigil.charged::before { content: ""; position: absolute; inset: -0.24rem; border: 1px solid rgba(255, 213, 93, 0.65); border-radius: 50%; animation: combat-last-stand-charge 1.45s ease-out infinite; }
+.combat-last-stand-sigil.spent { color: #746f67; border-style: dashed; background: #090909; box-shadow: 0 0 0 2px rgba(5, 5, 4, 0.88); filter: grayscale(1); opacity: 0.5; }
+.combat-party-unit .combat-last-stand-sigil.spent b { color: #716c64; text-shadow: none; transform: rotate(22deg) scale(0.82); }
+.combat-party-unit .combat-last-stand-sigil.spent small { color: #9b9690; text-decoration: line-through; }
+.combat-party-unit.last-stand-charged { border-left-color: rgba(255, 211, 91, 0.78); }
+.combat-party-unit.last-stand-triggered { animation: combat-last-stand-trigger 0.86s cubic-bezier(.18,.84,.24,1) both !important; }
+@keyframes combat-last-stand-charge { 0% { opacity: 0.8; transform: scale(0.72); } 75%, 100% { opacity: 0; transform: scale(1.45); } }
+@keyframes combat-last-stand-trigger { 0% { box-shadow: 0 0 0 rgba(255, 205, 68, 0); } 35% { transform: scale(1.06); border-color: #fff3a5; box-shadow: 0 0 38px rgba(255, 193, 42, 0.96), inset 0 0 28px rgba(255, 225, 101, 0.34); filter: brightness(1.85); } 100% { transform: scale(1); } }
 
 .combat-party-unit strong,
 .combat-party-unit small,
@@ -9632,6 +9687,8 @@ html.app-tab-hidden .combat-stage-header {
   .combat-party-unit.healing,
   .combat-party-unit.empowered,
   .combat-party-unit.soldier-double-attack,
+  .combat-party-unit.last-stand-triggered,
+  .combat-last-stand-sigil.charged::before,
   .combat-bubble,
   .combat-enemy-unit.attacking,
   .combat-enemy-unit.boss-swiping,
@@ -9866,6 +9923,8 @@ button.player-ability-label:disabled { cursor: default; opacity: 0.58; }
 .player-vitals-modern-top > b { color: #ffe18a; font-size: 0.72rem; }
 .player-vitals-modern-summary { display: flex; flex-wrap: wrap; gap: 5px; color: #b8cbd1; font-size: 0.64rem; }
 .player-vitals-modern-summary span { padding: 2px 5px; border: 1px solid rgba(255,255,255,0.1); border-radius: 3px; background: rgba(4, 12, 16, 0.54); }
+.player-vitals-modern-summary .player-last-stand-chip.charged { border-color: rgba(255, 213, 89, 0.58); color: #ffe58e; background: rgba(81, 55, 5, 0.5); box-shadow: inset 0 0 9px rgba(255, 194, 42, 0.12); }
+.player-vitals-modern-summary .player-last-stand-chip.spent { border-style: dashed; color: #918d87; filter: grayscale(1); text-decoration: line-through; }
 .player-answer-feedback { display: grid; gap: 2px; padding: 6px 8px; border-left: 3px solid #7ce7a5; background: rgba(12, 55, 40, 0.46); color: #d8f7e4; font-size: 0.66rem; line-height: 1.25; }
 .player-answer-feedback strong { letter-spacing: 0.08em; font-size: 0.68rem; }
 .player-answer-feedback.wrong { border-left-color: #ff9b72; background: rgba(71, 29, 22, 0.48); color: #ffe0d5; }
@@ -11435,5 +11494,977 @@ body.console-visual-test button {
   .player-body.player-time-final .player-card {
     border-color: rgba(224, 70, 56, .78);
     box-shadow: 0 0 0 1px rgba(224, 70, 56, .22), 0 10px 28px rgba(0, 0, 0, .62);
+  }
+}
+
+/* Blue final boss: Severed Signal isolation and reunion sequence. */
+.combat-stage.blue-final-isolation-active {
+  background:
+    linear-gradient(90deg, transparent 32.9%, rgba(44,131,180,.1) 33%, transparent 33.25%, transparent 66%, rgba(44,131,180,.1) 66.1%, transparent 66.35%),
+    radial-gradient(circle at 50% 26%, rgba(19,91,137,.16), transparent 30%),
+    linear-gradient(180deg, #020507 0%, #061017 56%, #010204 100%) !important;
+  isolation: isolate;
+}
+
+.combat-stage.blue-final-isolation-active::before {
+  z-index: 5;
+  opacity: 0 !important;
+  filter: grayscale(.1) sepia(.4) saturate(7) hue-rotate(155deg) contrast(1.9) brightness(1.5) drop-shadow(0 0 32px rgba(35,161,255,.95)) !important;
+  animation: none !important;
+}
+
+.combat-stage.blue-final-isolation-active::after {
+  opacity: .38;
+  background:
+    repeating-linear-gradient(90deg, transparent 0 12px, rgba(58,164,220,.025) 12px 13px),
+    repeating-linear-gradient(0deg, transparent 0 7px, rgba(255,255,255,.025) 7px 8px);
+  mix-blend-mode: screen;
+  animation: blue-isolation-static .28s steps(2,end) infinite;
+}
+
+.combat-stage.blue-final-isolation-active .combat-stage-header {
+  border-top-color: rgba(82,185,255,.78);
+  border-bottom-color: rgba(82,185,255,.34);
+  color: #b8e8ff;
+  text-shadow: 0 0 12px rgba(56,175,255,.72);
+}
+
+.combat-stage.blue-final-isolation-active .combat-enemy-formation,
+.combat-stage.blue-final-isolation-active .combat-party-formation {
+  right: auto;
+  left: 50%;
+  width: min(98%,72rem) !important;
+  display: grid;
+  grid-template-columns: repeat(var(--blue-isolation-columns,3),minmax(0,1fr)) !important;
+  gap: clamp(.24rem,.8vw,.7rem) !important;
+  padding: 0 !important;
+  transform: translateX(-50%);
+}
+
+.combat-stage.blue-final-isolation-active .combat-enemy-formation {
+  top: 2.9rem;
+  bottom: 48%;
+  align-items: stretch;
+}
+
+.combat-stage.blue-final-isolation-active .combat-party-formation {
+  top: 54%;
+  bottom: 3.25rem;
+  align-items: stretch;
+}
+
+.blue-isolation-lane {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid rgba(70,157,208,.25);
+  background: linear-gradient(180deg,rgba(10,30,42,.8),rgba(1,5,8,.94));
+  box-shadow: inset 0 0 28px rgba(0,0,0,.88),0 0 18px rgba(23,122,181,.08);
+}
+
+.blue-isolation-lane::before,
+.blue-isolation-lane::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.blue-isolation-lane::before {
+  inset: 0;
+  background: linear-gradient(90deg,rgba(71,181,235,.08),transparent 8%,transparent 92%,rgba(71,181,235,.08));
+}
+
+.blue-isolation-lane::after {
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: linear-gradient(transparent,rgba(86,199,255,.34),transparent);
+  animation: blue-isolation-scan 2.8s linear infinite;
+}
+
+.blue-isolation-enemy-lane {
+  display: grid;
+  grid-template-rows: auto minmax(0,1fr);
+  border-bottom: 0;
+  clip-path: polygon(0 0,100% 0,100% 93%,95% 100%,5% 100%,0 93%);
+}
+
+.blue-isolation-party-lane {
+  display: grid;
+  grid-template-rows: minmax(0,1fr) auto;
+  border-top-style: dashed;
+  clip-path: polygon(5% 0,95% 0,100% 7%,100% 100%,0 100%,0 7%);
+}
+
+.blue-isolation-lane header,
+.blue-isolation-lane footer {
+  position: relative;
+  z-index: 2;
+  padding: .22rem .35rem;
+  overflow: hidden;
+  color: #72cfff;
+  background: rgba(2,9,14,.86);
+  font-size: clamp(.46rem,.8vw,.62rem);
+  letter-spacing: .11em;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.blue-isolation-lane header {
+  display: flex;
+  justify-content: space-between;
+  gap: .35rem;
+  border-bottom: 1px solid rgba(78,176,226,.28);
+}
+
+.blue-isolation-lane header span { color: #5a7180; font-size: .48rem; }
+.blue-isolation-lane footer { color: #7696a6; border-top: 1px dashed rgba(78,176,226,.22); }
+
+.blue-isolation-threats,
+.blue-isolation-members {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(.12rem,.45vw,.36rem);
+  min-width: 0;
+  padding: .2rem;
+}
+
+.combat-stage.blue-final-isolation-active .blue-isolation-lane .combat-enemy-unit:not(.boss) {
+  flex: 1 1 0;
+  width: auto;
+  min-width: 0;
+  max-width: 9.5rem;
+  padding: .18rem;
+  background: linear-gradient(180deg,rgba(6,20,29,.94),rgba(1,5,8,.96));
+}
+
+.combat-stage.blue-final-isolation-active .blue-isolation-lane .combat-unit-sprite {
+  width: clamp(3.3rem,7vw,6.2rem);
+  aspect-ratio: .95;
+}
+
+.combat-stage.blue-final-isolation-active .blue-isolation-infection {
+  border-color: rgba(59,167,255,.64);
+  box-shadow: inset 0 0 20px rgba(24,106,174,.2),0 0 16px rgba(28,131,219,.2);
+  animation: blue-infection-breathe 1.9s ease-in-out infinite;
+}
+
+.combat-stage.blue-final-isolation-active .blue-isolation-infection .combat-enemy-image {
+  filter: grayscale(.25) sepia(.3) saturate(2.4) hue-rotate(152deg) contrast(1.35) brightness(.72) drop-shadow(0 0 10px rgba(49,172,255,.7));
+}
+
+.combat-stage.blue-final-isolation-active .blue-isolation-light {
+  border-color: rgba(173,207,220,.28);
+  filter: saturate(.52) brightness(.76);
+}
+
+.combat-stage.blue-final-isolation-active .blue-isolation-members { align-content: center; flex-wrap: wrap; }
+
+.combat-stage.blue-final-isolation-active .combat-enemy-unit.boss {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.combat-stage.blue-final-isolation-active .combat-enemy-unit.boss > strong,
+.combat-stage.blue-final-isolation-active .combat-enemy-unit.boss > .combat-unit-hp,
+.combat-stage.blue-final-isolation-active .combat-enemy-unit.boss > small { opacity: 0; }
+
+.combat-stage.blue-final-isolation-active.blue-final-hidden-strike::before {
+  opacity: 1 !important;
+  animation: blue-hidden-eyes-strike 1.12s steps(2,end) both !important;
+}
+
+.combat-stage.blue-final-isolation-active.blue-final-hidden-strike .combat-enemy-unit.boss {
+  opacity: 1;
+  animation: blue-hidden-boss-pulse 1.08s steps(2,end) both !important;
+}
+
+.blue-isolation-lane.blue-isolation-struck {
+  z-index: 6;
+  border-color: rgba(123,216,255,.92);
+  animation: blue-isolation-lane-strike .78s cubic-bezier(.16,.84,.24,1) both;
+}
+
+.blue-isolation-lane.infection-feeding {
+  border-color: rgba(54,168,255,.86);
+  box-shadow: inset 0 0 36px rgba(20,107,174,.42),0 0 22px rgba(36,150,226,.35);
+}
+
+.combat-stage.blue-isolation-reunion .blue-isolation-lane,
+.combat-party-unit.blue-isolation-reconnected {
+  animation: blue-isolation-reconnect .9s cubic-bezier(.18,.8,.2,1) both;
+}
+
+.combat-stage.blue-final-reunion-reveal { animation: blue-final-reunion-stage 1.4s ease-out both; }
+.combat-stage.blue-final-reunion-reveal .combat-enemy-unit.boss { animation: blue-final-eyes-return 1.35s cubic-bezier(.12,.72,.2,1) both !important; }
+
+.combat-stage.blue-final-party-reforming .combat-party-formation {
+  isolation: isolate;
+}
+
+.combat-party-unit.blue-final-party-return {
+  z-index: 14;
+  animation: blue-final-party-return 1.2s cubic-bezier(.16,.82,.2,1) var(--blue-reunion-delay,0ms) both !important;
+}
+
+@keyframes blue-isolation-static {
+  0% { transform: translate(0); filter: contrast(1); }
+  50% { transform: translate(-2px,1px); filter: contrast(1.3); }
+  100% { transform: translate(1px,-1px); filter: contrast(.9); }
+}
+
+@keyframes blue-isolation-scan {
+  0% { transform: translateX(-140%); opacity: 0; }
+  35%,62% { opacity: .75; }
+  100% { transform: translateX(140%); opacity: 0; }
+}
+
+@keyframes blue-infection-breathe {
+  0%,100% { filter: brightness(.72); transform: translateY(0); }
+  50% { filter: brightness(1.18); transform: translateY(-2px); }
+}
+
+@keyframes blue-hidden-eyes-strike {
+  0%,9%,100% { opacity: 0; transform: scale(.86); clip-path: inset(44% 0); }
+  21% { opacity: 1; transform: scale(1.08); clip-path: inset(0); filter: grayscale(.05) sepia(.35) saturate(9) hue-rotate(150deg) contrast(2.2) brightness(2.3) drop-shadow(0 0 38px #39aaff); }
+  38% { opacity: .12; transform: translateX(2%) scale(.98); clip-path: inset(43% 0 45%); }
+  52% { opacity: .94; transform: scale(1.03); clip-path: inset(0); }
+  76% { opacity: .3; transform: scale(.96); clip-path: inset(31% 0 51%); }
+}
+
+@keyframes blue-hidden-boss-pulse {
+  0%,100% { opacity: 0; filter: brightness(0); }
+  20% { opacity: 1; filter: brightness(2.6) drop-shadow(0 0 34px rgba(54,174,255,1)); }
+  54% { opacity: .72; filter: brightness(1.5) drop-shadow(0 0 22px rgba(54,174,255,.85)); }
+}
+
+@keyframes blue-isolation-lane-strike {
+  0%,100% { transform: translate(0); filter: brightness(1); }
+  22% { transform: translate(-8px,2px); filter: brightness(2.1); }
+  38% { transform: translate(7px,-3px); }
+  58% { transform: translate(-4px,1px); filter: brightness(1.35); }
+}
+
+@keyframes blue-isolation-reconnect {
+  0% { opacity: .25; filter: blur(5px) brightness(2); transform: scale(.92); }
+  45% { opacity: 1; filter: blur(0) brightness(1.7); transform: scale(1.035); }
+  100% { opacity: 1; filter: none; transform: scale(1); }
+}
+
+@keyframes blue-final-reunion-stage {
+  0% { filter: brightness(2.2) saturate(.2); }
+  22% { filter: brightness(.2) saturate(2); }
+  100% { filter: none; }
+}
+
+@keyframes blue-final-eyes-return {
+  0% { opacity: 0; filter: brightness(0) blur(8px); transform: scale(.82); }
+  24% { opacity: 1; filter: brightness(2.6) blur(0) drop-shadow(0 0 42px rgba(40,167,255,1)); transform: scale(1.09); }
+  52% { opacity: .32; filter: brightness(.8); transform: scale(.97); }
+  100% { opacity: 1; filter: none; transform: scale(1); }
+}
+
+@keyframes blue-final-party-return {
+  0% {
+    opacity: .58;
+    filter: brightness(1.85) blur(2px);
+    transform: translate(var(--blue-reunion-dx,0),var(--blue-reunion-dy,0)) scale(.97);
+  }
+  68% {
+    opacity: 1;
+    filter: brightness(1.35) blur(0);
+    transform: translate(0,0) scale(1.025);
+  }
+  100% {
+    opacity: 1;
+    filter: none;
+    transform: none;
+  }
+}
+
+.player-body.player-blue-isolated {
+  background:
+    radial-gradient(circle at 50% 16%,rgba(26,118,176,.2),transparent 34%),
+    repeating-linear-gradient(90deg,transparent 0 23px,rgba(72,176,231,.018) 23px 24px),
+    #010507;
+}
+
+.player-body.player-blue-isolated .player-shell { animation: player-isolation-signal-drift 4.8s ease-in-out infinite; }
+
+.player-body.player-blue-isolated .player-card {
+  border-color: rgba(61,158,214,.34);
+  background: linear-gradient(165deg,rgba(7,24,34,.97),rgba(1,5,8,.99));
+  box-shadow: inset 0 0 36px rgba(12,91,143,.1),0 20px 60px rgba(0,0,0,.58);
+}
+
+.player-vitals.blue-isolated {
+  border-color: rgba(74,181,239,.46);
+  box-shadow: inset 0 0 24px rgba(25,112,164,.15),0 0 18px rgba(28,120,176,.1);
+}
+
+.player-isolation-alert {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0,1fr);
+  gap: 2px 8px;
+  padding: 8px 10px;
+  overflow: hidden;
+  border: 1px solid rgba(75,184,241,.48);
+  background: linear-gradient(90deg,rgba(19,92,137,.25),transparent 55%),rgba(1,8,12,.94);
+  box-shadow: inset 0 0 18px rgba(39,142,201,.13);
+}
+
+.player-isolation-alert::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(0deg,transparent 0 4px,rgba(83,188,240,.045) 4px 5px);
+  pointer-events: none;
+  animation: player-isolation-interference .44s steps(2,end) infinite;
+}
+
+.player-isolation-alert span {
+  align-self: center;
+  grid-row: 1 / span 2;
+  padding: 3px 5px;
+  border: 1px solid #56c5ff;
+  color: #9fddff;
+  font-size: .56rem;
+  font-weight: 900;
+  letter-spacing: .12em;
+  writing-mode: vertical-rl;
+}
+
+.player-isolation-alert strong { color: #bce9ff; font-size: .78rem; letter-spacing: .1em; text-shadow: 0 0 10px rgba(65,181,245,.7); }
+.player-isolation-alert small,
+.player-isolation-alert i { grid-column: 2; color: #7293a2; font-size: .6rem; font-style: normal; }
+.player-isolation-alert i { margin-top: 3px; color: #4e6b79; letter-spacing: .03em; }
+
+.player-body.player-blue-isolated .player-prompt {
+  border-color: rgba(67,168,224,.42);
+  box-shadow: inset 0 0 30px rgba(23,110,166,.08);
+}
+
+.player-body.player-blue-isolated .player-signal-field i {
+  background: #4ebeff;
+  box-shadow: 0 0 12px rgba(59,176,255,.82);
+}
+
+@keyframes player-isolation-signal-drift {
+  0%,48%,52%,100% { transform: translate(0); }
+  49% { transform: translate(-1px,1px); }
+  51% { transform: translate(1px,-1px); }
+}
+
+@keyframes player-isolation-interference {
+  0% { transform: translateY(-1px); opacity: .52; }
+  50% { transform: translate(1px,1px); opacity: .2; }
+  100% { transform: translateY(1px); opacity: .48; }
+}
+
+@media (max-width: 760px) {
+  .combat-stage.blue-final-isolation-active .combat-enemy-formation,
+  .combat-stage.blue-final-isolation-active .combat-party-formation { gap: .14rem !important; }
+  .blue-isolation-lane header span,
+  .blue-isolation-lane footer { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .combat-stage.blue-final-isolation-active::after,
+  .blue-isolation-lane::after,
+  .combat-stage.blue-final-isolation-active .blue-isolation-infection,
+  .combat-party-unit.blue-final-party-return,
+  .player-body.player-blue-isolated .player-shell,
+  .player-isolation-alert::after { animation: none !important; }
+}
+
+/* Blue final isolation refinement: normal cards, separated only by darkness. */
+.combat-stage.blue-final-isolation-active {
+  background:
+    radial-gradient(ellipse at 16% 54%, rgba(20, 75, 104, .15), transparent 19%),
+    radial-gradient(ellipse at 50% 52%, rgba(20, 75, 104, .11), transparent 18%),
+    radial-gradient(ellipse at 84% 54%, rgba(20, 75, 104, .15), transparent 19%),
+    linear-gradient(180deg, #000 0%, #020507 52%, #000 100%) !important;
+}
+
+.combat-stage.blue-final-isolation-active.blue-isolation-blackout {
+  background: #000 !important;
+}
+
+.combat-stage.blue-final-isolation-active .combat-enemy-formation,
+.combat-stage.blue-final-isolation-active .combat-party-formation {
+  right: 0;
+  left: 0;
+  width: auto !important;
+  display: grid;
+  grid-template-columns: repeat(var(--blue-isolation-columns, 3), minmax(0, 1fr)) !important;
+  gap: 0 !important;
+  padding: 0 !important;
+  transform: none;
+}
+
+.combat-stage.blue-final-isolation-active .combat-enemy-formation {
+  top: 4.4rem;
+  bottom: auto;
+  min-height: clamp(9rem, 31vh, 15rem);
+  align-items: end;
+}
+
+.combat-stage.blue-final-isolation-active .combat-party-formation {
+  top: auto;
+  bottom: 3.5rem;
+  align-items: end;
+  opacity: 1;
+  filter: none;
+  animation: none !important;
+}
+
+.blue-isolation-hallway-dividers {
+  position: absolute;
+  top: 2.85rem;
+  right: 0;
+  bottom: 2.9rem;
+  left: 0;
+  z-index: 2;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .35s ease;
+}
+
+.combat-stage.blue-final-isolation-active.blue-final-hallways-divided .blue-isolation-hallway-dividers {
+  opacity: 1;
+}
+
+.blue-isolation-hallway-dividers i {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: linear-gradient(
+    180deg,
+    transparent,
+    rgba(88, 182, 226, .28) 9%,
+    rgba(111, 205, 245, .72) 38%,
+    rgba(42, 130, 175, .6) 72%,
+    transparent
+  );
+  box-shadow:
+    0 0 8px rgba(71, 181, 232, .5),
+    0 0 24px rgba(24, 100, 143, .28);
+  transform: translateX(-50%);
+  transition: opacity .7s ease, filter .7s ease, transform .7s ease;
+}
+
+.blue-isolation-hallway-dividers i::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -7px;
+  width: 15px;
+  content: "";
+  background: linear-gradient(90deg, transparent, rgba(52, 154, 204, .09), transparent);
+}
+
+.blue-isolation-hallway-dividers i.hallway-reconnected {
+  opacity: .08;
+  filter: blur(2px);
+  transform: translateX(-50%) scaleY(.72);
+}
+
+.blue-isolation-card-group {
+  --isolation-drift-x: 0px;
+  position: relative;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 1.35rem clamp(1rem, 2vw, 1.75rem) 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
+
+.blue-isolation-card-group::before {
+  position: absolute;
+  top: .15rem;
+  left: 50%;
+  content: attr(data-blue-isolation-label);
+  color: rgba(135, 190, 216, .58);
+  font-size: .58rem;
+  font-weight: 900;
+  letter-spacing: .16em;
+  text-shadow: 0 0 12px rgba(51, 142, 184, .44);
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.blue-isolation-enemy-group {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: clamp(.2rem, .7vw, .55rem);
+}
+
+.blue-isolation-party-group {
+  display: grid;
+  grid-template-columns: repeat(var(--blue-isolation-member-count, 1), max-content);
+  align-items: end;
+  justify-content: center;
+  gap: .42rem;
+}
+
+.combat-stage.blue-final-isolation-active .blue-isolation-enemy-group .combat-enemy-unit:not(.boss) {
+  flex: 0 1 13.05rem;
+  width: min(13.05rem, 48%);
+  min-width: 0;
+  max-width: 13.05rem;
+}
+
+.combat-stage.blue-final-isolation-active .blue-isolation-enemy-group .combat-enemy-unit.one-hp:not(.boss) {
+  flex-basis: min(13.05rem, 48%);
+}
+
+.combat-stage.blue-final-isolation-active .blue-isolation-enemy-group .combat-enemy-unit.blue-isolation-infection {
+  border: 0;
+  outline: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.combat-stage.blue-final-isolation-active .blue-isolation-enemy-group .blue-isolation-infection .combat-unit-sprite {
+  filter:
+    drop-shadow(0 0 8px rgba(73, 183, 255, .82))
+    drop-shadow(0 0 20px rgba(25, 123, 210, .48));
+}
+
+.combat-stage.blue-final-isolation-active .blue-isolation-enemy-group .blue-isolation-infection .combat-enemy-image {
+  filter:
+    grayscale(.25)
+    sepia(.3)
+    saturate(2.4)
+    hue-rotate(152deg)
+    contrast(1.35)
+    brightness(.72)
+    drop-shadow(0 0 8px rgba(95, 203, 255, .9))
+    drop-shadow(0 0 20px rgba(29, 137, 226, .58));
+}
+
+.combat-stage.blue-final-awaiting-contact .combat-enemy-formation::after {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: min(90%, 38rem);
+  content: "NO CONTACTS // ONLY FOOTSTEPS BEYOND VISUAL RANGE";
+  color: rgba(106, 149, 166, .48);
+  font-size: clamp(.62rem, 1.2vw, .82rem);
+  font-weight: 900;
+  letter-spacing: .18em;
+  text-align: center;
+  text-shadow: 0 0 18px #000;
+  transform: translate(-50%, -50%);
+  animation: blue-isolation-lost-message 2.8s steps(2, end) infinite;
+}
+
+.combat-stage.blue-final-awaiting-contact .blue-isolation-party-group {
+  filter: brightness(.58) saturate(.62);
+  animation: blue-isolation-lost-group 4.8s ease-in-out infinite;
+}
+
+.combat-stage.blue-final-awaiting-contact .blue-isolation-party-group:nth-child(1) { --isolation-drift-x: -7px; }
+.combat-stage.blue-final-awaiting-contact .blue-isolation-party-group:nth-child(3) { --isolation-drift-x: 7px; }
+
+.combat-stage.blue-isolation-split-reveal .blue-isolation-party-group {
+  --blue-isolation-split-origin: 0%;
+  animation: blue-isolation-team-split 1.1s cubic-bezier(.16, .82, .2, 1) both;
+}
+
+.combat-stage.blue-isolation-split-reveal .blue-isolation-party-group:first-child {
+  --blue-isolation-split-origin: 100%;
+}
+
+.combat-stage.blue-isolation-split-reveal .blue-isolation-party-group:last-child {
+  --blue-isolation-split-origin: -100%;
+}
+
+.combat-stage.blue-isolation-split-reveal .blue-isolation-party-group:only-child {
+  --blue-isolation-split-origin: 0%;
+}
+
+.combat-stage.blue-final-isolation-active.blue-final-hidden-strike::before {
+  opacity: 1 !important;
+  animation: blue-hidden-eyes-strike 1.12s steps(2, end) both !important;
+}
+
+.blue-isolation-card-group.blue-isolation-struck {
+  z-index: 6;
+  animation: blue-isolation-lane-strike .78s cubic-bezier(.16, .84, .24, 1) both;
+}
+
+.blue-isolation-card-group.infection-feeding {
+  filter: brightness(1.35) drop-shadow(0 0 14px rgba(45, 157, 220, .46));
+}
+
+.combat-stage.blue-isolation-reunion .blue-isolation-card-group,
+.combat-party-unit.blue-isolation-reconnected {
+  animation: blue-isolation-reconnect .9s cubic-bezier(.18, .8, .2, 1) both;
+}
+
+.combat-stage.blue-isolation-enemy-staged .blue-isolation-enemy-group {
+  opacity: 0;
+  filter: brightness(.08) blur(9px);
+  transform: translateY(-1rem) scale(.95);
+}
+
+.combat-stage.entering.blue-final-isolation-active .blue-isolation-enemy-group .combat-enemy-unit {
+  opacity: 1;
+  filter: none;
+  transform: none;
+  animation: none !important;
+}
+
+.combat-stage.blue-isolation-enemy-reveal .blue-isolation-enemy-group {
+  animation: blue-isolation-contact-reveal 1.55s cubic-bezier(.16, .82, .2, 1) both;
+}
+
+.combat-stage.blue-isolation-enemy-reveal .blue-isolation-enemy-group:nth-child(2) { animation-delay: .15s; }
+.combat-stage.blue-isolation-enemy-reveal .blue-isolation-enemy-group:nth-child(3) { animation-delay: .3s; }
+
+.combat-stage.entering.blue-final-isolation-active.blue-isolation-enemy-reveal .blue-isolation-enemy-group .combat-enemy-unit {
+  animation: blue-isolation-enemy-card-reveal 1.55s linear both !important;
+}
+
+.combat-stage.entering.blue-final-isolation-active.blue-isolation-enemy-reveal .blue-isolation-enemy-group:nth-child(2) .combat-enemy-unit {
+  animation-delay: .15s !important;
+}
+
+.combat-stage.entering.blue-final-isolation-active.blue-isolation-enemy-reveal .blue-isolation-enemy-group:nth-child(3) .combat-enemy-unit {
+  animation-delay: .3s !important;
+}
+
+.combat-enemy-unit.blue-infection-vanishing {
+  pointer-events: none;
+  animation: blue-infection-vanish .5s steps(5, end) forwards !important;
+}
+
+.combat-stage.blue-final-isolation-active .blue-isolation-party-group.blue-isolation-hallway-darkened {
+  filter: brightness(.42) saturate(.45);
+}
+
+.combat-stage.blue-final-isolation-active .combat-party-unit.blue-isolation-awaiting-reunion {
+  opacity: .7;
+  box-shadow:
+    inset 0 0 28px rgba(0, 0, 0, .9),
+    0 0 18px rgba(34, 18, 52, .34);
+}
+
+.combat-stage.blue-final-isolation-active .blue-isolation-party-group.blue-isolation-hallway-darkened::after {
+  content: "SIGNAL LOST // WAITING FOR REUNION";
+  position: absolute;
+  left: 50%;
+  bottom: .15rem;
+  z-index: 8;
+  width: max-content;
+  max-width: 90%;
+  transform: translateX(-50%);
+  color: rgba(132, 110, 148, .72);
+  font: 700 .45rem/1.2 var(--font-mono);
+  letter-spacing: .12em;
+  text-align: center;
+  text-shadow: 0 0 10px rgba(57, 23, 76, .8);
+  pointer-events: none;
+}
+
+.player-body.player-blue-searching {
+  background:
+    radial-gradient(circle at 50% 20%, rgba(14, 53, 70, .16), transparent 28%),
+    #000;
+}
+
+.player-body.player-blue-searching .player-card {
+  filter: brightness(.68) saturate(.7);
+}
+
+.player-body.player-blue-searching .player-isolation-alert {
+  border-color: rgba(84, 132, 151, .3);
+  background: rgba(0, 4, 6, .96);
+  box-shadow: inset 0 0 28px rgba(0, 0, 0, .92);
+}
+
+.player-body.player-blue-awaiting-reunion {
+  background:
+    radial-gradient(circle at 50% 24%, rgba(49, 20, 66, .14), transparent 25%),
+    #000;
+}
+
+.player-body.player-blue-awaiting-reunion .player-card {
+  filter: brightness(.36) saturate(.42);
+}
+
+.player-body.player-blue-awaiting-reunion .player-isolation-alert {
+  border-color: rgba(106, 73, 128, .34);
+  background: rgba(3, 0, 5, .98);
+  box-shadow: inset 0 0 34px rgba(0, 0, 0, .96), 0 0 18px rgba(55, 21, 72, .25);
+}
+
+@keyframes blue-isolation-lost-message {
+  0%, 44%, 52%, 100% { opacity: .42; transform: translate(-50%, -50%); }
+  46% { opacity: .12; transform: translate(calc(-50% - 2px), calc(-50% + 1px)); }
+  49% { opacity: .58; transform: translate(calc(-50% + 1px), calc(-50% - 1px)); }
+}
+
+@keyframes blue-isolation-lost-group {
+  0%, 100% { transform: translateX(0); filter: brightness(.58) saturate(.62); }
+  50% { transform: translateX(var(--isolation-drift-x)); filter: brightness(.48) saturate(.52); }
+}
+
+@keyframes blue-isolation-team-split {
+  0% {
+    opacity: .92;
+    filter: brightness(1.5) blur(0);
+    transform: translateX(var(--blue-isolation-split-origin)) scale(1);
+  }
+  42% {
+    opacity: .18;
+    filter: brightness(.35) blur(5px);
+  }
+  72% {
+    opacity: .62;
+    filter: brightness(.7) blur(2px);
+  }
+  100% {
+    opacity: 1;
+    filter: brightness(.58) saturate(.62) blur(0);
+    transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes blue-isolation-contact-reveal {
+  0% { filter: brightness(.12) blur(7px); transform: translateY(-.8rem) scale(.96); }
+  24% { filter: brightness(.18) blur(6px); }
+  52% { filter: brightness(.38) blur(3.5px); }
+  78% { filter: brightness(.72) blur(1.2px); transform: translateY(-.08rem) scale(.99); }
+  100% { filter: none; transform: none; }
+}
+
+@keyframes blue-isolation-enemy-card-reveal {
+  0% { opacity: 0; }
+  20% { opacity: .16; }
+  45% { opacity: .42; }
+  70% { opacity: .7; }
+  86% { opacity: .88; }
+  100% { opacity: 1; }
+}
+
+@keyframes blue-infection-vanish {
+  0% { opacity: 1; filter: brightness(1.8) saturate(1.5); transform: scale(1); }
+  35% { opacity: .72; filter: brightness(2.4) contrast(2); transform: translateY(-4px) scale(.92, 1.08); }
+  70% { opacity: .24; filter: brightness(.5) blur(2px); transform: translateY(7px) scale(.72, 1.18); }
+  100% { opacity: 0; filter: brightness(0) blur(8px); transform: translateY(18px) scale(.2, 1.35); }
+}
+
+@media (max-width: 760px) {
+  .blue-isolation-card-group {
+    padding: 1rem .45rem 0;
+  }
+
+  .blue-isolation-card-group::before {
+    font-size: .46rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .combat-stage.blue-final-awaiting-contact .blue-isolation-party-group,
+  .combat-stage.blue-final-awaiting-contact .combat-enemy-formation::after,
+  .combat-stage.blue-isolation-enemy-staged .blue-isolation-enemy-group,
+  .combat-stage.blue-isolation-enemy-reveal .blue-isolation-enemy-group,
+  .combat-stage.blue-isolation-enemy-reveal .blue-isolation-enemy-group .combat-enemy-unit,
+  .combat-enemy-unit.blue-infection-vanishing {
+    animation: none !important;
+  }
+}
+
+/* Blue Eyes final boss: infection stacks retain the standard player cards and
+   add only a progressively faster, brighter purple perimeter signal. */
+.blue-final-infection-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.25rem;
+  padding: 2px 6px;
+  border: 1px solid rgba(211, 120, 255, .88);
+  border-radius: 4px;
+  color: #edc8ff;
+  background: rgba(73, 18, 102, .76);
+  box-shadow: 0 0 13px rgba(185, 69, 255, .42), inset 0 0 8px rgba(224, 147, 255, .16);
+  font-family: Consolas, "Courier New", monospace;
+  font-size: .62rem;
+  font-weight: 950;
+  letter-spacing: .04em;
+  white-space: nowrap;
+}
+
+body.mission-active .status-card.roster-card.blue-final-infected,
+body.console-visual-test .status-card.roster-card.blue-final-infected {
+  outline: var(--blue-infection-border-width, 1px) solid rgba(202, 83, 255, .58);
+  outline-offset: -1px;
+  animation: blue-final-infection-outline-pulse var(--blue-infection-pulse-duration, 1.75s) ease-in-out infinite;
+}
+
+.combat-party-unit.blue-final-infected::before {
+  position: absolute;
+  inset: -2px;
+  z-index: 11;
+  border: var(--blue-infection-border-width, 1px) solid rgba(205, 91, 255, .72);
+  content: "";
+  pointer-events: none;
+  animation: blue-final-infection-frame-pulse var(--blue-infection-pulse-duration, 1.75s) ease-in-out infinite;
+}
+
+.player-body.player-blue-final-infected .player-card {
+  outline: var(--blue-infection-border-width, 1px) solid rgba(205, 91, 255, .68);
+  outline-offset: -1px;
+  animation: blue-final-infection-outline-pulse var(--blue-infection-pulse-duration, 1.75s) ease-in-out infinite;
+}
+
+.combat-enemy-unit.blue-final-burst-light {
+  border: 0 !important;
+  outline: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.combat-enemy-unit.blue-final-burst-light .combat-unit-sprite {
+  margin-bottom: -.55rem;
+  transform: translateY(-.65rem) scale(.75) !important;
+  transform-origin: center bottom;
+  filter:
+    drop-shadow(0 0 8px rgba(220, 137, 255, .84))
+    drop-shadow(0 0 22px rgba(159, 48, 216, .58));
+}
+
+.combat-enemy-unit.blue-final-burst-light .combat-enemy-image {
+  filter:
+    sepia(.18)
+    saturate(1.45)
+    hue-rotate(225deg)
+    contrast(1.12)
+    drop-shadow(0 0 9px rgba(230, 168, 255, .82))
+    drop-shadow(0 0 24px rgba(174, 61, 229, .54));
+}
+
+/* Keep the boss HUD anchored to the stage instead of allowing the wider
+   multi-enemy formation to stretch and offset its health readout. */
+.combat-stage.boss-fight.boss-adds-active .combat-enemy-unit.boss > strong {
+  left: 50%;
+  width: min(calc(100vw - 4rem),46rem);
+  transform: translateX(-50%);
+}
+
+.combat-stage.boss-fight.boss-adds-active .combat-enemy-unit.boss > .combat-unit-hp {
+  left: 50%;
+  width: min(calc(100vw - 8rem),36.8rem);
+  transform: translateX(-50%);
+}
+
+.combat-stage.boss-fight.boss-adds-active .combat-enemy-unit.boss > small {
+  left: 50%;
+  width: min(calc(100vw - 8rem),36.8rem);
+  transform: translateX(-50%);
+}
+
+.combat-stage.blue-final-chest-burst {
+  animation: blue-final-chest-burst-stage 1.1s steps(4, end) both;
+}
+
+.combat-party-unit.blue-final-chest-burst-priming {
+  z-index: 15;
+  animation: blue-final-chest-burst-prime .78s steps(5, end) both !important;
+}
+
+.combat-party-unit.blue-final-chest-burst-hit {
+  z-index: 16;
+  animation: blue-final-chest-burst-impact .72s cubic-bezier(.18,.76,.24,1) both !important;
+}
+
+.combat-enemy-unit.blue-final-burst-light.blue-final-burst-emerging {
+  animation: blue-final-burst-spawn-reveal .9s cubic-bezier(.16,.84,.22,1) both !important;
+}
+
+.combat-enemy-unit.blue-final-feeding-heal {
+  border-color: #da8cff;
+  box-shadow: 0 0 30px rgba(197, 76, 255, .72), inset 0 0 24px rgba(170, 55, 228, .22);
+}
+
+@keyframes blue-final-infection-outline-pulse {
+  0%, 100% {
+    outline-color: rgba(185, 62, 241, .38);
+    outline-offset: -1px;
+  }
+  50% {
+    outline-color: rgba(228, 166, 255, var(--blue-infection-glow-alpha, .58));
+    outline-offset: 2px;
+  }
+}
+
+@keyframes blue-final-infection-frame-pulse {
+  0%, 100% {
+    opacity: .45;
+    box-shadow: 0 0 4px rgba(166, 45, 225, .24), inset 0 0 5px rgba(166, 45, 225, .12);
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    border-color: rgba(231, 177, 255, var(--blue-infection-glow-alpha, .58));
+    box-shadow: 0 0 var(--blue-infection-glow-size, 16px) rgba(189, 65, 245, var(--blue-infection-glow-alpha, .58)), inset 0 0 12px rgba(189, 65, 245, .25);
+    transform: scale(1.012);
+  }
+}
+
+@keyframes blue-final-chest-burst-stage {
+  0%, 100% { filter: none; }
+  18% { filter: brightness(.35) saturate(2.4) hue-rotate(22deg); }
+  37% { filter: brightness(1.8) saturate(1.8) hue-rotate(-18deg); }
+  62% { filter: brightness(.68) saturate(2.2); }
+}
+
+@keyframes blue-final-chest-burst-prime {
+  0% { filter: brightness(.78) saturate(1); transform: scale(1); }
+  30% { filter: brightness(.42) saturate(2.2) hue-rotate(18deg); transform: scale(.985); }
+  58% { filter: brightness(1.65) saturate(2.8) hue-rotate(-22deg); transform: scale(1.025); }
+  100% { filter: brightness(.55) saturate(2.35); transform: scale(1.012); }
+}
+
+@keyframes blue-final-chest-burst-impact {
+  0% { filter: brightness(.48) saturate(2.4); transform: scale(1.01); }
+  18% { filter: brightness(2.4) saturate(3.2) hue-rotate(-28deg); transform: translateY(-5px) scale(1.055, .94); }
+  42% { filter: brightness(.3) saturate(2.8); transform: translateY(3px) scale(.965, 1.06); }
+  72% { filter: brightness(1.5) saturate(1.8); transform: translateY(-2px) scale(1.025); }
+  100% { filter: brightness(1) saturate(1); transform: none; }
+}
+
+@keyframes blue-final-burst-spawn-reveal {
+  0% { opacity: 0; filter: brightness(0) blur(9px); transform: translateY(16px) scale(.35, 1.2); }
+  38% { opacity: .8; filter: brightness(2.1) blur(2px); transform: translateY(-5px) scale(1.08, .9); }
+  68% { opacity: 1; filter: brightness(1.35); transform: translateY(2px) scale(.97, 1.04); }
+  100% { opacity: 1; filter: none; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.mission-active .status-card.roster-card.blue-final-infected,
+  body.console-visual-test .status-card.roster-card.blue-final-infected,
+  .combat-party-unit.blue-final-infected::before,
+  .player-body.player-blue-final-infected .player-card,
+  .combat-stage.blue-final-chest-burst,
+  .combat-party-unit.blue-final-chest-burst-priming,
+  .combat-party-unit.blue-final-chest-burst-hit,
+  .combat-enemy-unit.blue-final-burst-light.blue-final-burst-emerging {
+    animation: none !important;
   }
 }

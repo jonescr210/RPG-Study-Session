@@ -968,21 +968,26 @@ function targetClassDefinition(entry = {}) {
   return combatSystem.classDefinition?.(entry.classId) || { label: entry.classLabel || "Operator", color: entry.classColor || "#9eeeff" };
 }
 
+function abilityTargetEligible(entry, options = {}) {
+  if (options.medicRebirth) return Boolean(entry?.incapacitated) || entry?.lastStandAvailable === false;
+  return options.incapacitatedOnly ? Boolean(entry?.incapacitated) : !entry?.incapacitated;
+}
+
 function defaultAbilityTarget(states = [], options = {}) {
-  const targets = states.filter((entry) => options.incapacitatedOnly ? entry.incapacitated : !entry.incapacitated);
+  const targets = states.filter((entry) => abilityTargetEligible(entry, options));
   return targets.find((entry) => sameName(entry.name, playerState.playerName))?.name || targets[0]?.name || "";
 }
 
 function selectedAbilityTarget(key, states = [], options = {}) {
   const current = playerState.selectedAbilityTargets[key];
-  if (current && states.some((entry) => (options.incapacitatedOnly ? entry.incapacitated : !entry.incapacitated) && sameName(entry.name, current))) return current;
+  if (current && states.some((entry) => abilityTargetEligible(entry, options) && sameName(entry.name, current))) return current;
   const fallback = defaultAbilityTarget(states, options);
   if (fallback) playerState.selectedAbilityTargets[key] = fallback;
   return fallback;
 }
 
 function playerTargetCardsHtml(states, key, actionWindow, options = {}) {
-  const targets = states.filter((entry) => options.incapacitatedOnly ? entry.incapacitated : !entry.incapacitated);
+  const targets = states.filter((entry) => abilityTargetEligible(entry, options));
   const selected = selectedAbilityTarget(key, states, options);
   if (!targets.length) return `<div class="player-target-empty">No operators available.</div>`;
   return `<div class="player-target-picker-device" data-target-picker-key="${escapeAttribute(key)}">
@@ -996,9 +1001,10 @@ function playerTargetCardsHtml(states, key, actionWindow, options = {}) {
         const selectedClass = sameName(entry.name, selected) ? " selected" : "";
         const incapacitated = Boolean(entry.incapacitated) || hp <= 0;
         const glyph = playerClassGlyphs[String(entry.classId || "").toLowerCase()] || "•";
-        return `<button type="button" class="player-target-card${selectedClass}" data-target-select-key="${escapeAttribute(key)}" data-target-name="${escapeAttribute(entry.name)}" aria-pressed="${selectedClass ? "true" : "false"}" ${!actionWindow || (!options.incapacitatedOnly && incapacitated) ? "disabled" : ""} style="--target-color:${escapeAttribute(entry.classColor || definition.color || "#9eeeff")}">
+        const lastStandState = entry.lastStandAvailable === false ? "LAST STAND SPENT" : "LAST STAND CHARGED";
+        return `<button type="button" class="player-target-card${selectedClass}" data-target-select-key="${escapeAttribute(key)}" data-target-name="${escapeAttribute(entry.name)}" aria-pressed="${selectedClass ? "true" : "false"}" ${!actionWindow || (!options.incapacitatedOnly && !options.medicRebirth && incapacitated) ? "disabled" : ""} style="--target-color:${escapeAttribute(entry.classColor || definition.color || "#9eeeff")}">
           <span class="player-target-card-top"><i>${glyph}</i><strong>${escapeHtml(entry.name)}</strong><b>${hp}/${maxHp}</b></span>
-          <span class="player-target-card-class">${escapeHtml(entry.classLabel || definition.label || "Operator")}</span>
+          <span class="player-target-card-class">${escapeHtml(entry.classLabel || definition.label || "Operator")}${options.medicRebirth ? ` · ${incapacitated ? "DOWN" : lastStandState}` : ""}</span>
           <span class="player-target-card-health"><i style="width:${percentage}%"></i></span>
         </button>`;
       }).join("")}
@@ -1031,6 +1037,17 @@ function renderVitals(session) {
     document.body.classList.toggle("player-status-ok", true);
     document.body.classList.toggle("player-status-low", false);
     document.body.classList.toggle("player-status-downed", false);
+    document.body.classList.remove("player-blue-isolated");
+    document.body.classList.remove("player-blue-searching");
+    document.body.classList.remove("player-blue-awaiting-reunion");
+    document.body.classList.remove("player-blue-final-infected");
+    delete document.body.dataset.blueIsolationGroup;
+    delete document.body.dataset.blueInfectionStacks;
+    document.body.style.removeProperty("--blue-infection-stacks");
+    document.body.style.removeProperty("--blue-infection-border-width");
+    document.body.style.removeProperty("--blue-infection-pulse-duration");
+    document.body.style.removeProperty("--blue-infection-glow-alpha");
+    document.body.style.removeProperty("--blue-infection-glow-size");
     return;
   }
 
@@ -1054,6 +1071,42 @@ function renderVitals(session) {
   const possessed = Boolean(vitals.possessed && !incapacitated);
   const spectralInfected = Boolean(vitals.spectralInfected && !incapacitated && !possessed);
   const possessionConfused = Boolean(vitals.possessionConfused && !incapacitated && !possessed);
+  const acidBurnTurns = Math.max(0, Number(vitals.acidBurnTurns) || 0);
+  const blueFinalInfectionStacks = Math.max(0, Math.round(Number(vitals.blueFinalInfectionStacks) || 0));
+  const blueIsolationAwaitingReunion = Boolean(vitals.blueIsolationAwaitingReunion && incapacitated);
+  const blueIsolationInfectionOnly = Boolean(vitals.blueIsolationInfectionOnly);
+  const blueIsolationActive = Boolean(vitals.blueIsolationActive && (!incapacitated || blueIsolationAwaitingReunion));
+  const blueIsolationSearching = Boolean(blueIsolationActive && vitals.blueIsolationSearching);
+  const blueIsolationGroupId = String(vitals.blueIsolationGroupId || "");
+  const blueIsolationGroupLabel = String(vitals.blueIsolationGroupLabel || "ISOLATED CELL");
+  const blueIsolationMembers = Array.isArray(vitals.blueIsolationMembers)
+    ? vitals.blueIsolationMembers.map(String).filter(Boolean)
+    : [];
+  document.body.classList.toggle("player-blue-isolated", blueIsolationActive);
+  document.body.classList.toggle("player-blue-searching", blueIsolationSearching);
+  document.body.classList.toggle("player-blue-awaiting-reunion", blueIsolationAwaitingReunion);
+  document.body.classList.toggle("player-blue-final-infected", blueFinalInfectionStacks > 0);
+  if (blueFinalInfectionStacks > 0) {
+    const borderWidth = Math.min(4, 1 + Math.floor((blueFinalInfectionStacks - 1) / 2));
+    const pulseSeconds = Math.max(0.48, 1.75 - (blueFinalInfectionStacks - 1) * 0.2);
+    const glowAlpha = Math.min(0.95, 0.46 + blueFinalInfectionStacks * 0.1);
+    const glowSize = Math.min(34, 12 + blueFinalInfectionStacks * 4);
+    document.body.dataset.blueInfectionStacks = String(blueFinalInfectionStacks);
+    document.body.style.setProperty("--blue-infection-stacks", String(blueFinalInfectionStacks));
+    document.body.style.setProperty("--blue-infection-border-width", `${borderWidth}px`);
+    document.body.style.setProperty("--blue-infection-pulse-duration", `${pulseSeconds.toFixed(2)}s`);
+    document.body.style.setProperty("--blue-infection-glow-alpha", glowAlpha.toFixed(2));
+    document.body.style.setProperty("--blue-infection-glow-size", `${glowSize}px`);
+  } else {
+    delete document.body.dataset.blueInfectionStacks;
+    document.body.style.removeProperty("--blue-infection-stacks");
+    document.body.style.removeProperty("--blue-infection-border-width");
+    document.body.style.removeProperty("--blue-infection-pulse-duration");
+    document.body.style.removeProperty("--blue-infection-glow-alpha");
+    document.body.style.removeProperty("--blue-infection-glow-size");
+  }
+  if (blueIsolationActive && blueIsolationGroupId) document.body.dataset.blueIsolationGroup = blueIsolationGroupId;
+  else delete document.body.dataset.blueIsolationGroup;
   const possessionCorrectStreak = Math.max(0, Number(vitals.possessionCorrectStreak) || 0);
   const statusText = possessed
     ? `Possessed — escape ${possessionCorrectStreak}/2`
@@ -1061,9 +1114,15 @@ function renderVitals(session) {
     ? "Dazed and Confused — answer field infected"
     : possessionConfused
     ? "Spectral Delirium — answer field infected"
+    : acidBurnTurns > 0 && !incapacitated
+    ? `Acid burn — ${acidBurnTurns} turn${acidBurnTurns === 1 ? "" : "s"} remaining`
+    : blueFinalInfectionStacks > 0 && !incapacitated
+    ? `Infected — ${blueFinalInfectionStacks} stack${blueFinalInfectionStacks === 1 ? "" : "s"}`
     : secondChanceActive
     ? `Downed — Second Chance ${secondChanceCorrectResponses}/2`
-    : incapacitated ? "Incapacitated" : lowHealth ? "Critical condition" : "Operational";
+    : blueIsolationAwaitingReunion
+    ? `Incapacitated — lost in ${blueIsolationGroupLabel}`
+    : incapacitated ? "Incapacitated" : lowHealth ? "Critical condition" : blueIsolationSearching ? `Lost in darkness — ${blueIsolationGroupLabel}` : blueIsolationActive ? `Signal severed — ${blueIsolationGroupLabel}` : "Operational";
   const vitalsRenderSignature = JSON.stringify({
     hp,
     maxHp: vitals.maxHp,
@@ -1075,6 +1134,7 @@ function renderVitals(session) {
     answerStreak: vitals.answerStreak,
     totalAnswers: vitals.totalAnswers,
     correctAnswers: vitals.correctAnswers,
+    lastStandAvailable: vitals.lastStandAvailable !== false,
     accuracyPercent: vitals.accuracyPercent,
     items: vitals.items,
     answerFeedback: vitals.answerFeedback,
@@ -1083,7 +1143,7 @@ function renderVitals(session) {
     abilityNotice: vitals.abilityNotice,
     abilityUsedThisTurn: Boolean(vitals.abilityUsedThisTurn),
     abilityPending,
-    targetVitals: states.map((entry) => `${entry.name}:${entry.hp}:${entry.maxHp}:${entry.incapacitated ? 1 : 0}`).join("|"),
+    targetVitals: states.map((entry) => `${entry.name}:${entry.hp}:${entry.maxHp}:${entry.incapacitated ? 1 : 0}:${entry.lastStandAvailable === false ? 0 : 1}`).join("|"),
     promptId: session.prompt?.id || "",
     combat: Boolean(session.prompt?.combat),
     accepting: Boolean(session.prompt?.accepting),
@@ -1093,6 +1153,15 @@ function renderVitals(session) {
     possessed,
     possessionConfused,
     spectralInfected,
+    acidBurnTurns,
+    blueFinalInfectionStacks,
+    blueIsolationActive,
+    blueIsolationSearching,
+    blueIsolationAwaitingReunion,
+    blueIsolationInfectionOnly,
+    blueIsolationGroupId,
+    blueIsolationGroupLabel,
+    blueIsolationMembers: blueIsolationMembers.join("|"),
     possessionCorrectStreak
   });
   if (vitalsRenderSignature === playerState.vitalsRenderSignature) return;
@@ -1101,6 +1170,7 @@ function renderVitals(session) {
 
   if (incapacitated) classNames.push("downed");
   else if (lowHealth) classNames.push("low");
+  if (blueIsolationActive) classNames.push("blue-isolated");
 
   if (playerEls.playerVitals) {
     playerEls.playerVitals.className = classNames.join(" ");
@@ -1155,25 +1225,31 @@ function renderVitals(session) {
     const classAbilityAllowed = abilityWindow && (combatRoom || ["medic", "scout"].includes(classId));
     const tacticianProtocolCycleAllowed = classId === "tactician" && !abilityTurnUsed && classAbilityAllowed;
     const itemAbilityAllowed = (effect) => abilityWindow && (combatRoom || ["heal", "hint"].includes(effect));
-    const targets = states.filter((entry) => !entry.incapacitated);
+    const targetStates = blueIsolationActive
+      ? states.filter((entry) => entry.blueIsolationGroupId === blueIsolationGroupId)
+      : states;
+    const targets = targetStates.filter((entry) => !entry.incapacitated);
     const itemHtml = itemCards.length ? itemCards.map((item) => {
       const ability = playerItemAbility(item);
       const key = ability ? `item:${item.id}:${ability.id}` : "";
       const last = key ? Number(cooldowns[key]) : NaN;
       const remaining = ability && Number.isFinite(last) ? Math.max(0, ability.cooldown - (Number(session.prompt?.questionIndex || 0) - last)) : 0;
       const ready = Boolean(ability && !remaining && !abilityTurnUsed && itemAbilityAllowed(ability.effect));
-      const targetSelect = ability?.effect === "heal" ? playerTargetCardsHtml(states, `item:${item.id}`, itemAbilityAllowed("heal")) : "";
+      const targetSelect = ability?.effect === "heal" ? playerTargetCardsHtml(targetStates, `item:${item.id}`, itemAbilityAllowed("heal")) : "";
       return `<div class="player-inventory-row"><div class="player-inventory-copy"><span class="player-inventory-dot rarity-${escapeAttribute(item.rarity)} ${ability ? "has-ability" : ""}" title="${escapeAttribute(ability ? `${item.name}: ${ability.description}` : `${item.name}: ${item.summary}`)}"></span><div><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(ability ? ability.description : item.summary)}</small></div></div>${ability ? `<div class="player-inventory-actions">${targetSelect}<button type="button" class="player-ability-btn" data-player-item="${escapeAttribute(item.id)}" ${ready ? "" : "disabled"}>${escapeHtml(abilityPending ? "Arming..." : abilityTurnUsed ? "Used this turn" : remaining ? `Recharge ${remaining}` : "Use")}</button></div>` : ""}</div>`;
     }).join("") : "<small>No items equipped</small>";
-    const classTargetSelect = ["medic", "engineer"].includes(classId) && classAbilityAllowed ? playerTargetCardsHtml(states, `class:${classId}`, classAbilityAllowed) : "";
+    const classTargetSelect = ["medic", "engineer"].includes(classId) && classAbilityAllowed ? playerTargetCardsHtml(targetStates, `class:${classId}`, classAbilityAllowed) : "";
     const reviveUnlocked = classId === "medic" && level >= 6;
-    const reviveTargets = states.filter((entry) => entry.incapacitated);
+    const reviveTargets = targetStates.filter((entry) => abilityTargetEligible(entry, { medicRebirth: true }));
     const reviveReady = reviveUnlocked && !reviveRemaining && !abilityTurnUsed && combatRoom && classAbilityAllowed && reviveTargets.length > 0;
     const reviveTargetSelect = reviveUnlocked && combatRoom
-      ? playerTargetCardsHtml(states, "class:medic-revive", reviveReady, { incapacitatedOnly: true })
+      ? playerTargetCardsHtml(targetStates, "class:medic-revive", reviveReady, { medicRebirth: true })
       : "";
     const noticeHtml = vitals.itemNotice ? `<div class="player-item-notice" role="status">${escapeHtml(vitals.itemNotice)}</div>` : "";
     const abilityNoticeHtml = vitals.abilityNotice ? `<div class="player-ability-notice" role="status">${escapeHtml(vitals.abilityNotice)}</div>` : "";
+    const isolationHtml = blueIsolationActive
+      ? `<div class="player-isolation-alert" role="status"><span>${blueIsolationAwaitingReunion ? "SIGNAL LOST" : blueIsolationSearching ? "NO VISUAL" : "COMMS LOST"}</span><strong>${escapeHtml(blueIsolationAwaitingReunion ? "WAIT FOR REUNION" : blueIsolationSearching ? "FIND THE OTHERS" : blueIsolationGroupLabel)}</strong><small>${escapeHtml(blueIsolationMembers.join(" / ") || playerState.playerName)} · ${blueIsolationAwaitingReunion ? "you cannot be targeted until another hallway reconnects" : blueIsolationSearching ? "no contacts visible — keep moving and answer" : blueIsolationInfectionOnly ? "destroy your assigned infection to reconnect" : "kill your corridor hunter to reconnect"}</small><i>${blueIsolationAwaitingReunion ? "The contacts around you recede. Only the darkness remains." : blueIsolationSearching ? "Your voices sound farther away every time you call out." : "Something else is moving between the walls."}</i></div>`
+      : "";
     const manualClass = ["soldier", "medic", "scout", "enforcer", "engineer", "tactician"].includes(classId);
     const targetableClass = ["medic", "engineer"].includes(classId);
     const levelSixLabels = { soldier: "Determined Aim", scout: "Intel Sniper", enforcer: "Stand Tough", engineer: "Kick Start Your Heart", tactician: "Inspire the Masses" };
@@ -1196,12 +1272,12 @@ function renderVitals(session) {
       ? `<div class="player-revive-action level-six-action"><strong>${escapeHtml(levelSixLabel)}</strong><small>${levelSixPassive ? "Passive — activates when an operator is incapacitated" : "Level 6 ability — six-question cooldown"}</small><button type="button" class="player-ability-btn class" id="playerLevelSixAbilityBtn" ${levelSixAllowed ? "" : "disabled"}>${levelSixPassive ? `Passive — ${levelSixRemaining ? "Charging" : "Ready"}` : abilityTurnUsed ? "Used this turn" : levelSixRemaining ? "Charging" : "Use ability"}</button></div>`
       : "";
     const classAction = manualClass
-      ? `<div class="player-class-action-row">${classId === "tactician" ? `<label class="player-tactician-protocol-picker"><span>Protocol</span><select id="playerTacticianProtocol" ${tacticianProtocolCycleAllowed ? "" : "disabled"}><option value="assault" ${playerState.selectedTacticianProtocol === "assault" ? "selected" : ""}>Assault</option><option value="guard" ${playerState.selectedTacticianProtocol === "guard" ? "selected" : ""}>Guard</option><option value="support" ${playerState.selectedTacticianProtocol === "support" ? "selected" : ""}>Support</option></select></label>` : ""}${targetableClass ? classTargetSelect : ""}<button type="button" class="player-ability-btn class" id="playerClassAbilityBtn" ${classReady && !abilityTurnUsed && classAbilityAllowed ? "" : "disabled"}>${targetableClass ? "Use ability" : classId === "tactician" ? "Use protocol" : classId === "enforcer" ? "Arm shield" : "Use now"}</button>${reviveUnlocked && combatRoom ? `<div class="player-revive-action"><strong>Rebirth</strong><small>Revive at 75% HP with full brace; forfeit this turn's attack</small>${reviveTargetSelect}<button type="button" class="player-ability-btn class" id="playerMedicReviveBtn" ${reviveReady ? "" : "disabled"}>${abilityTurnUsed ? "Used this turn" : reviveRemaining ? "Charging" : reviveTargets.length ? "Revive operator" : "No operator down"}</button></div>` : ""}${levelSixAction}</div>`
+      ? `<div class="player-class-action-row">${classId === "tactician" ? `<label class="player-tactician-protocol-picker"><span>Protocol</span><select id="playerTacticianProtocol" ${tacticianProtocolCycleAllowed ? "" : "disabled"}><option value="assault" ${playerState.selectedTacticianProtocol === "assault" ? "selected" : ""}>Assault</option><option value="guard" ${playerState.selectedTacticianProtocol === "guard" ? "selected" : ""}>Guard</option><option value="support" ${playerState.selectedTacticianProtocol === "support" ? "selected" : ""}>Support</option></select></label>` : ""}${targetableClass ? classTargetSelect : ""}<button type="button" class="player-ability-btn class" id="playerClassAbilityBtn" ${classReady && !abilityTurnUsed && classAbilityAllowed ? "" : "disabled"}>${targetableClass ? "Use ability" : classId === "tactician" ? "Use protocol" : classId === "enforcer" ? "Arm shield" : "Use now"}</button>${reviveUnlocked && combatRoom ? `<div class="player-revive-action"><strong>Rebirth</strong><small>Revive a downed operator or recharge one spent Last Stand; forfeit this turn's attack</small>${reviveTargetSelect}<button type="button" class="player-ability-btn class" id="playerMedicReviveBtn" ${reviveReady ? "" : "disabled"}>${abilityTurnUsed ? "Used this turn" : reviveRemaining ? "Charging" : reviveTargets.length ? "Use Rebirth" : "No valid target"}</button></div>` : ""}${levelSixAction}</div>`
       : "";
     const abilityPresentation = playerClassAbilityPresentation(classId, level);
     const abilityBadge = abilityPending ? "ARMING..." : abilityTurnUsed ? "USED THIS TURN" : classRemaining ? `RECHARGE ${classRemaining}` : classReady ? (abilityPresentation.upgraded ? "EMPOWERED READY" : "READY") : level < 3 ? "LV 3 UNLOCK" : "STREAK 3 REQUIRED";
     const answerFeedback = vitals.answerFeedback;
-    playerEls.playerVitals.insertAdjacentHTML("beforeend", `<div class="player-vitals-modern"><div class="player-vitals-modern-top"><span class="player-vitals-class-icon ${ultimateCharging ? "ultimate-recharging" : ""}" style="--player-class-color:${escapeAttribute(vitals.classColor || classDefinition?.color || "#9eeeff")}; --ultimate-charge:${ultimateProgress}%" title="${escapeAttribute(ultimateIconTitle)}">${classGlyph}</span><div class="player-vitals-hp-copy"><strong>${hp} / ${maxHp} HP</strong><div class="player-vitals-hp-track" aria-label="Health ${hp} of ${maxHp}"><i style="width:${hpPercent}%"></i></div><small>${escapeHtml(statusText)}</small></div><b>LV ${level}</b></div><div class="player-vitals-modern-summary"><span>${escapeHtml(vitals.classLabel || "Operator")}</span><span>${xp} XP</span><span>${streak} STK</span><span>${points} PTS</span><span title="${totalAnswers ? `${correctAnswers} correct of ${totalAnswers} responses` : "No scored responses yet"}">${accuracyLabel}</span></div>${noticeHtml}${abilityNoticeHtml}</div>`);
+    playerEls.playerVitals.insertAdjacentHTML("beforeend", `<div class="player-vitals-modern">${isolationHtml}<div class="player-vitals-modern-top"><span class="player-vitals-class-icon ${ultimateCharging ? "ultimate-recharging" : ""}" style="--player-class-color:${escapeAttribute(vitals.classColor || classDefinition?.color || "#9eeeff")}; --ultimate-charge:${ultimateProgress}%" title="${escapeAttribute(ultimateIconTitle)}">${classGlyph}</span><div class="player-vitals-hp-copy"><strong>${hp} / ${maxHp} HP</strong><div class="player-vitals-hp-track" aria-label="Health ${hp} of ${maxHp}"><i style="width:${hpPercent}%"></i></div><small>${escapeHtml(statusText)}</small></div><b>LV ${level}</b></div><div class="player-vitals-modern-summary"><span>${escapeHtml(vitals.classLabel || "Operator")}</span><span>${xp} XP</span><span>${streak} STK</span><span>${points} PTS</span><span title="${totalAnswers ? `${correctAnswers} correct of ${totalAnswers} responses` : "No scored responses yet"}">${accuracyLabel}</span><span class="player-last-stand-chip ${vitals.lastStandAvailable === false ? "spent" : "charged"}" title="${vitals.lastStandAvailable === false ? "Medic Rebirth can recharge Last Stand" : "Blocks one lethal hit after a correct brace"}">◆ LS ${vitals.lastStandAvailable === false ? "SPENT" : "CHARGED"}</span></div>${noticeHtml}${abilityNoticeHtml}</div>`);
     if (playerEls.playerAnswerFeedbackPanel) {
       playerEls.playerAnswerFeedbackPanel.hidden = !answerFeedback;
       playerEls.playerAnswerFeedbackPanel.innerHTML = answerFeedback
@@ -1214,13 +1290,13 @@ function renderVitals(session) {
       playerEls.playerLoadoutArea.innerHTML = `<h3 class="player-loadout-section-heading">Abilities &amp; Items</h3><section class="player-class-loadout${abilityTurnUsed ? " armed" : ""}"><div class="player-class-loadout-heading${abilityPresentation.upgraded ? " empowered" : ""}"><strong>${escapeHtml(abilityPresentation.label)}</strong><b class="${classReady ? "ready" : "recharging"}">${escapeHtml(abilityBadge)}</b>${classId === "enforcer" ? `<span class="player-ability-reserve">RESERVE ${reserve}/${reserveCap}</span>` : ""}</div><small>${abilityPresentation.upgraded ? "UPGRADED: " : ""}${escapeHtml(classDefinition?.summary || "Ready")}</small>${classAction}</section><section class="player-inventory-panel"><strong>Inventory</strong>${itemHtml}</section>`;
     }
     playerEls.playerLoadoutArea?.querySelector("#playerClassAbilityBtn")?.addEventListener("click", () => {
-      const target = selectedAbilityTarget(`class:${classId}`, states);
+      const target = selectedAbilityTarget(`class:${classId}`, targetStates);
       const protocol = classId === "tactician" ? (playerEls.playerLoadoutArea?.querySelector("#playerTacticianProtocol")?.value || playerState.selectedTacticianProtocol || "assault") : "";
       const suffix = protocol || target || "";
       submitAction(`CLASS:${classId}${suffix ? `:${suffix}` : ""}`, session.prompt?.id || playerState.promptId);
     });
     playerEls.playerLoadoutArea?.querySelector("#playerMedicReviveBtn")?.addEventListener("click", () => {
-      const target = selectedAbilityTarget("class:medic-revive", states, { incapacitatedOnly: true });
+      const target = selectedAbilityTarget("class:medic-revive", targetStates, { medicRebirth: true });
       if (!target) return;
       submitAction(`CLASS:medic-revive:${target}`, session.prompt?.id || playerState.promptId);
     });
@@ -1246,7 +1322,7 @@ function renderVitals(session) {
     }));
     playerEls.playerLoadoutArea?.querySelectorAll("[data-player-item]").forEach((button) => button.addEventListener("click", () => {
       const itemId = button.dataset.playerItem || "";
-      const target = selectedAbilityTarget(`item:${itemId}`, states);
+      const target = selectedAbilityTarget(`item:${itemId}`, targetStates);
       submitAction(`ABILITY:${itemId}${target ? `:${target}` : ""}`, session.prompt?.id || playerState.promptId);
     }));
     if (tookDamage) {

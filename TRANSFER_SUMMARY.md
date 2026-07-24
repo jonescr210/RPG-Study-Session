@@ -1,6 +1,6 @@
 # Study Adventure - New Chat Transfer
 
-Updated: 2026-07-18
+Updated: 2026-07-23
 
 ## Start Here
 
@@ -21,6 +21,7 @@ The current build includes:
 - Six player classes, class abilities, two-slot inventories, item drops, rarity, XP, leveling, and boss rewards.
 - Light, medium, and heavy enemies with image-based visuals.
 - Mid-boss and final-boss encounters with separate red and green eye visuals and intro videos.
+- The blue-eyes final boss opens with the Severed Signal isolation encounter before becoming targetable.
 - A redesigned three-column mission dashboard, initiative timeline, live mission log, status feed, simulator controls, and responsive player UI.
 - Two mission themes: Decayed Bunker and Abandoned Space Station.
 - Local and multi-device play, simulated players, narration/TTS, music, and sound effects.
@@ -37,6 +38,17 @@ The current build includes:
   - Existing music fades when the readiness gate is actually reached.
   - The sting waits until the previous combat screen is gone and map travel is complete.
   - `boss_music.mp3` begins with the boss fight prompt, not during readiness.
+- Added the blue-eyes final-boss opening:
+  - Active players split evenly into three isolated cells, or into two cells for a two-player party.
+  - The boss intro plays first with the ordinary party formation. After the boss vanishes, the already-mounted player cards split into their hallway teams; only then do the dividers appear and an Infection Stalker plus light Corridor Hunter emerge from the darkness in every group before the opening question is presented.
+  - Players can damage only their own light hostile and cannot target the hidden boss.
+  - Infection Stalkers resolve before operator attacks. They die when every assigned operator answers correctly. Otherwise they attack an incorrect responder, choosing the lowest-accuracy responder when multiple assigned operators are wrong, then vanish immediately after the infection attempt.
+  - The hidden boss withholds its attack during the opening question. Starting with later questions, it swipes one random cell for 10% of each operator's maximum HP; only its eyes pulse into view during the untelegraphed strike.
+  - As soon as one cell has no surviving hallway enemies, it reconnects with the nearest active cell. A non-final merge spawns one Infection Stalker per half of the merged party, rounded up, plus one new light Corridor Hunter.
+  - When the last cells reconnect, the boss emerges and immediately performs Acid Spit. This reunion trigger is independent of boss HP; normal boss combat follows until the future 50% phase is implemented.
+  - Isolation preserves the normal battle-card components. The battle screen is divided into three centered hallway thirds (or two halves for a two-player party) with glowing vertical separators. Each team forms one horizontal player-card row with inset spacing from the separators; reconnecting teams span their combined hallway segments and the crossed separator fades. Full reunion restores the ordinary three-column party layout while retaining the current answer-result borders through Acid Spit.
+  - Direct item/class targets, Medic overflow, Rebirth, Engineer bubbles, Enforcer fatal interception, and Tactician support, buffs, and barriers are restricted to the source operator's current isolation team. Reconnected groups can target their newly joined teammates; full reunion restores unrestricted party targeting.
+  - Teacher and player views add lost-in-darkness messaging, distant group spacing, restrained static, pulsing eyes, strike reactions, enemy emergence, infection-vanish, and reunion animations.
 
 ## Key Files
 

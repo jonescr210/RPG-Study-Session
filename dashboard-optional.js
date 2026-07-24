@@ -247,7 +247,7 @@ function submitSimulatorAutoAnswer(participant, promptId, info, attempt = 0, acc
   if (participantHasCurrentSubmission(participant)) return;
   const shouldBeCorrect = typeof accuracyDecision === "boolean"
     ? accuracyDecision
-    : Math.random() * 100 < state.simulatorAutoAnswerAccuracy;
+    : info.type?.kind === "readiness" || Math.random() * 100 < state.simulatorAutoAnswerAccuracy;
   const simulatorPlayer = state.players.find((player) => sameName(player.name, participant.name)) || null;
   playerSessionApi.submitAnswer({
     roomCode: state.roomCode,
